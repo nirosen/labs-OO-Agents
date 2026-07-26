@@ -15,9 +15,10 @@ If you believe that an existing (public) issue is security-related, please send 
 
 ## CodeAct trust boundary
 
-CodeAct-generated Python with `execution_backend="inprocess"` executes in the
-agent process. Its execution namespace includes the live agent instance as
-`self` plus module-level names that remain after NOOA visibility filtering.
+CodeAct-generated Python with `execution_backend="inprocess"` (the default as
+of this release) executes in the agent process. Its execution namespace
+includes the live agent instance as `self` plus module-level names that remain
+after NOOA visibility filtering.
 
 The visibility controls `@hidden`, `Annotated[..., hidden]`, and `with hidden:`
 reduce discoverability in generated-code surfaces such as `doc(self)`,
