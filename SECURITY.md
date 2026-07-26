@@ -12,3 +12,22 @@ In addition, please include the following information along with your report:
 -   Whether this vulnerability public or known to third parties. If it is, please provide details.
 
 If you believe that an existing (public) issue is security-related, please send an email to `<TODO - contact email here>`. The email should include the issue ID and a short description of why it should be handled according as a security issue.
+
+## CodeAct trust boundary
+
+CodeAct-generated Python executes in the agent process by default. Its execution
+namespace includes the live agent instance as `self` plus module-level names that
+remain after NOOA visibility filtering.
+
+The visibility controls `@hidden`, `Annotated[..., hidden]`, and `with hidden:`
+reduce discoverability in generated-code surfaces such as `doc(self)`,
+`<execution_context>`, and filtered module globals. They do not create a process
+or authorization boundary.
+
+Treat generated CodeAct code as able to use any agent object that it can name or
+reach from `self`, including when the sandbox backend is enabled. Do not keep
+security-critical authorization decisions, secrets, or audit evidence only on
+agent-local Python objects and assume that `hidden` protects them. Put those
+controls in a runtime-owned or external enforcement layer. The sandbox backend
+can add OS-level resource containment on supported Linux hosts, but it does not
+change the `self` authorization boundary.
