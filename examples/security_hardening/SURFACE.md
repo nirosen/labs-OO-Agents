@@ -27,6 +27,8 @@ flowchart LR
 
 All four types are portable shapes. Frozen field bindings do not make nested values tamper-resistant, and equal `run_id` values do not prove trusted provenance.
 
+The checked transport vectors in `tests/security/fixtures/security_transport_conformance_v1.json` pin the current compact UTF-8 JSON bytes for representative `SecurityReceipt`, `SecurityFinding`, and `DetectorInput` instances, then validate those bytes back through the public models. They are regression references for the current `-v1` shapes, not authenticity proofs, total field-space coverage, or policy semantics.
+
 ## Egress Contract
 
 `FdEffectSink` writes LF-delimited UTF-8 JSON frames to a borrowed blocking descriptor. `read_effect_egress()` parses those frames and returns `EffectEgressReadResult`; `require_complete_effect_egress()` turns known reader-visible degradation into `EffectEgressIncompleteError`.

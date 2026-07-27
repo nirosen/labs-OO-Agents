@@ -62,6 +62,31 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Transport Conformance Vectors
+
+> Branch: `codex/security-transport-conformance-vectors`
+
+This slice adds no `src/nooa` runtime behavior. It adds checked JSON reference vectors for the remaining public security transport shapes that already carry `-v1` wire discriminators: `SecurityReceipt`, `SecurityFinding`, and `DetectorInput`. Each vector pins current key order and compact UTF-8 bytes in the writer direction, then validates the fixture bytes back into the same model so reviewers can catch serialization drift without mistaking conformance for authenticity.
+
+```mermaid
+flowchart LR
+    R["SecurityReceipt"] --> V["checked transport vectors"]
+    F["SecurityFinding"] --> V
+    D["DetectorInput"] --> V
+    V --> W["model_dump_json()<br/>exact bytes"]
+    V --> P["model_validate_json()"]
+    P --> E["same model<br/>same -v1 shape"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `tests/security/fixtures/security_transport_conformance_v1.json`, byte-level checks for three public transport shapes, reverse-direction fixture validation, and a surface-guide note |
+| Security claim | Reviewers can now detect accidental drift in the current `SecurityReceipt`, `SecurityFinding`, and `DetectorInput` JSON wire forms, including key order and representative payload encoding. |
+| Non-claim | Checked vectors do not authenticate receipts, findings, detector inputs, or their producers; prove that content is true; cover every possible JSON value; or add verdict, severity, or enforcement semantics. |
+| Base slice | `codex/security-effect-egress-producer-conformance` |
+| Review files | `tests/security/fixtures/security_transport_conformance_v1.json`, `tests/security/test_transport_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_transport_conformance.py`; `pytest tests/security`; `git diff --quiet 5664907 -- src/nooa`; `pytest` |
+
 ## Security Review Follow-On: Producer Egress Conformance Vectors
 
 > Branch: `codex/security-effect-egress-producer-conformance`

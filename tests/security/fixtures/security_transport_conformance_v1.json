@@ -1,0 +1,273 @@
+{
+  "schema_version": "nooa-security-transport-conformance-v1",
+  "types": {
+    "SecurityReceipt": {
+      "wire_schema_version": "nooa-receipt-v1",
+      "keys": [
+        "schema_version",
+        "receipt_id",
+        "receipt_type",
+        "source",
+        "run_id",
+        "target",
+        "effect_type",
+        "issued_at",
+        "attributes"
+      ],
+      "vectors": [
+        {
+          "name": "defaults",
+          "construction_kwargs": {
+            "receipt_id": "receipt-default",
+            "receipt_type": "audit.recorded",
+            "source": "backend-audit"
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-default\",\"receipt_type\":\"audit.recorded\",\"source\":\"backend-audit\",\"run_id\":\"\",\"target\":\"\",\"effect_type\":\"\",\"issued_at\":\"\",\"attributes\":{}}"
+        },
+        {
+          "name": "fully_populated",
+          "construction_kwargs": {
+            "receipt_id": "receipt-full",
+            "receipt_type": "approval.issued",
+            "source": "approval-authority",
+            "run_id": "assessment-1",
+            "target": "contractor@prod-db",
+            "effect_type": "identity.grant",
+            "issued_at": "2026-07-27T00:00:00Z",
+            "attributes": {
+              "request_id": "req-1",
+              "approved": true
+            }
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-full\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}}"
+        },
+        {
+          "name": "payload_encoding",
+          "construction_kwargs": {
+            "receipt_id": "receipt-encoding",
+            "receipt_type": "export.caf\u00e9-\u6f22",
+            "source": "collector-caf\u00e9-\u6f22",
+            "run_id": "assessment-encoding",
+            "target": "s3://caf\u00e9-\u6f22",
+            "effect_type": "data.export",
+            "issued_at": "2026-07-27T00:00:01Z",
+            "attributes": {
+              "ratio": 0.1,
+              "big": 9007199254740991,
+              "nested": {
+                "label": "caf\u00e9-\u6f22"
+              }
+            }
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-encoding\",\"receipt_type\":\"export.caf\u00e9-\u6f22\",\"source\":\"collector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"effect_type\":\"data.export\",\"issued_at\":\"2026-07-27T00:00:01Z\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}"
+        }
+      ]
+    },
+    "SecurityFinding": {
+      "wire_schema_version": "nooa-finding-v1",
+      "keys": [
+        "schema_version",
+        "finding_id",
+        "finding_type",
+        "producer",
+        "run_id",
+        "target",
+        "evidence_refs",
+        "attributes"
+      ],
+      "vectors": [
+        {
+          "name": "defaults",
+          "construction_kwargs": {
+            "finding_id": "finding-default",
+            "finding_type": "policy.suspected",
+            "producer": "detector"
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-default\",\"finding_type\":\"policy.suspected\",\"producer\":\"detector\",\"run_id\":\"\",\"target\":\"\",\"evidence_refs\":[],\"attributes\":{}}"
+        },
+        {
+          "name": "fully_populated",
+          "construction_kwargs": {
+            "finding_id": "finding-full",
+            "finding_type": "authorization.missing_receipt",
+            "producer": "identity-scorer",
+            "run_id": "assessment-1",
+            "target": "contractor@prod-db",
+            "evidence_refs": [
+              "detector-input-1",
+              "effect-1"
+            ],
+            "attributes": {
+              "rule": "require_approval_token",
+              "matched": true
+            }
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-full\",\"finding_type\":\"authorization.missing_receipt\",\"producer\":\"identity-scorer\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"evidence_refs\":[\"detector-input-1\",\"effect-1\"],\"attributes\":{\"rule\":\"require_approval_token\",\"matched\":true}}"
+        },
+        {
+          "name": "payload_encoding",
+          "construction_kwargs": {
+            "finding_id": "finding-encoding",
+            "finding_type": "export.caf\u00e9-\u6f22",
+            "producer": "detector-caf\u00e9-\u6f22",
+            "run_id": "assessment-encoding",
+            "target": "s3://caf\u00e9-\u6f22",
+            "evidence_refs": [
+              "input-caf\u00e9-\u6f22",
+              "effect-caf\u00e9-\u6f22"
+            ],
+            "attributes": {
+              "ratio": 0.1,
+              "big": 9007199254740991,
+              "nested": {
+                "label": "caf\u00e9-\u6f22"
+              }
+            }
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-encoding\",\"finding_type\":\"export.caf\u00e9-\u6f22\",\"producer\":\"detector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"evidence_refs\":[\"input-caf\u00e9-\u6f22\",\"effect-caf\u00e9-\u6f22\"],\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}"
+        }
+      ]
+    },
+    "DetectorInput": {
+      "wire_schema_version": "nooa-detector-input-v1",
+      "keys": [
+        "schema_version",
+        "input_id",
+        "run_id",
+        "effects",
+        "effect_egress_completeness_signals",
+        "effect_egress_completeness_gate_passed",
+        "receipts",
+        "receipt_source",
+        "receipt_coverage",
+        "attributes"
+      ],
+      "vectors": [
+        {
+          "name": "defaults",
+          "construction_kwargs": {
+            "input_id": "input-default"
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-detector-input-v1\",\"input_id\":\"input-default\",\"run_id\":\"\",\"effects\":[],\"effect_egress_completeness_signals\":[],\"effect_egress_completeness_gate_passed\":false,\"receipts\":[],\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"attributes\":{}}"
+        },
+        {
+          "name": "fully_populated",
+          "construction_kwargs": {
+            "input_id": "input-full",
+            "run_id": "assessment-1",
+            "effects": [
+              {
+                "event_type": "EffectRecord",
+                "id": "00000000-0000-0000-0000-000000000011",
+                "metadata": {},
+                "status": "active",
+                "tag": null,
+                "timestamp": "2026-07-27T00:00:11",
+                "effect_type": "identity.grant",
+                "target": "contractor@prod-db",
+                "decision": "allowed",
+                "observer": "agent_call_middleware",
+                "generation_id": "generation-1",
+                "tool_call_id": "tool-call-1",
+                "attributes": {
+                  "request_id": "req-1"
+                }
+              }
+            ],
+            "effect_egress_completeness_signals": [
+              "first_sequence_error",
+              "truncated"
+            ],
+            "effect_egress_completeness_gate_passed": false,
+            "receipts": [
+              {
+                "receipt_id": "receipt-full",
+                "receipt_type": "approval.issued",
+                "source": "approval-authority",
+                "run_id": "assessment-1",
+                "target": "contractor@prod-db",
+                "effect_type": "identity.grant",
+                "issued_at": "2026-07-27T00:00:00Z",
+                "attributes": {
+                  "request_id": "req-1",
+                  "approved": true
+                }
+              }
+            ],
+            "receipt_source": "approval-authority",
+            "receipt_coverage": "asserted_complete",
+            "attributes": {
+              "collector": "pipe-1",
+              "retained_records": 1
+            }
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-detector-input-v1\",\"input_id\":\"input-full\",\"run_id\":\"assessment-1\",\"effects\":[{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000011\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:11\",\"effect_type\":\"identity.grant\",\"target\":\"contractor@prod-db\",\"decision\":\"allowed\",\"observer\":\"agent_call_middleware\",\"generation_id\":\"generation-1\",\"tool_call_id\":\"tool-call-1\",\"attributes\":{\"request_id\":\"req-1\"}}],\"effect_egress_completeness_signals\":[\"first_sequence_error\",\"truncated\"],\"effect_egress_completeness_gate_passed\":false,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-full\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}}],\"receipt_source\":\"approval-authority\",\"receipt_coverage\":\"asserted_complete\",\"attributes\":{\"collector\":\"pipe-1\",\"retained_records\":1}}"
+        },
+        {
+          "name": "payload_encoding",
+          "construction_kwargs": {
+            "input_id": "input-encoding",
+            "run_id": "assessment-encoding",
+            "effects": [
+              {
+                "event_type": "EffectRecord",
+                "id": "00000000-0000-0000-0000-000000000012",
+                "metadata": {
+                  "source": {
+                    "kind": "fixture",
+                    "rank": 1
+                  }
+                },
+                "status": "active",
+                "tag": null,
+                "timestamp": "2026-07-27T00:00:12",
+                "effect_type": "data.export",
+                "target": "s3://caf\u00e9-\u6f22",
+                "decision": "allowed",
+                "observer": "agent_call_middleware",
+                "generation_id": "generation-encoding",
+                "tool_call_id": "tool-call-encoding",
+                "attributes": {
+                  "ratio": 0.1,
+                  "big": 9007199254740991,
+                  "nested": {
+                    "label": "caf\u00e9-\u6f22"
+                  }
+                }
+              }
+            ],
+            "effect_egress_completeness_gate_passed": true,
+            "receipts": [
+              {
+                "receipt_id": "receipt-encoding",
+                "receipt_type": "export.caf\u00e9-\u6f22",
+                "source": "collector-caf\u00e9-\u6f22",
+                "run_id": "assessment-encoding",
+                "target": "s3://caf\u00e9-\u6f22",
+                "effect_type": "data.export",
+                "issued_at": "2026-07-27T00:00:01Z",
+                "attributes": {
+                  "ratio": 0.1,
+                  "big": 9007199254740991,
+                  "nested": {
+                    "label": "caf\u00e9-\u6f22"
+                  }
+                }
+              }
+            ],
+            "receipt_source": "collector-caf\u00e9-\u6f22",
+            "receipt_coverage": "asserted_complete",
+            "attributes": {
+              "ratio": 0.1,
+              "big": 9007199254740991,
+              "nested": {
+                "label": "caf\u00e9-\u6f22"
+              }
+            }
+          },
+          "payload_utf8": "{\"schema_version\":\"nooa-detector-input-v1\",\"input_id\":\"input-encoding\",\"run_id\":\"assessment-encoding\",\"effects\":[{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000012\",\"metadata\":{\"source\":{\"kind\":\"fixture\",\"rank\":1}},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:12\",\"effect_type\":\"data.export\",\"target\":\"s3://caf\u00e9-\u6f22\",\"decision\":\"allowed\",\"observer\":\"agent_call_middleware\",\"generation_id\":\"generation-encoding\",\"tool_call_id\":\"tool-call-encoding\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}],\"effect_egress_completeness_signals\":[],\"effect_egress_completeness_gate_passed\":true,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-encoding\",\"receipt_type\":\"export.caf\u00e9-\u6f22\",\"source\":\"collector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"effect_type\":\"data.export\",\"issued_at\":\"2026-07-27T00:00:01Z\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}],\"receipt_source\":\"collector-caf\u00e9-\u6f22\",\"receipt_coverage\":\"asserted_complete\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}"
+        }
+      ]
+    }
+  }
+}

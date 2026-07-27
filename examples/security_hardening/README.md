@@ -4,6 +4,19 @@ This offline example shows how the security review slices compose around one ide
 
 For the consolidated export map, V1/V2 egress rules, minimal integration, and canonical trust-boundary statements, see [`SURFACE.md`](SURFACE.md).
 
+## Transport Conformance Follow-On
+
+`codex/security-transport-conformance-vectors` adds checked JSON vectors for `SecurityReceipt`, `SecurityFinding`, and `DetectorInput` without changing `src/nooa/**`. The vectors pin the current `-v1` writer bytes for defaults, populated shapes, and representative payload encoding, then validate the same fixture bytes back through each public model.
+
+```mermaid
+flowchart LR
+    T["public transport shape"] --> J["checked JSON bytes"]
+    J --> R["public model parser"]
+    R --> S["same shape"]
+```
+
+These vectors are interoperability regression references, not a trust claim. A byte-conforming receipt, finding, or detector input can still be forged or semantically false, and the vectors do not add policy semantics to the transport objects.
+
 ## Producer Egress Conformance Follow-On
 
 `codex/security-effect-egress-producer-conformance` adds checked writer-direction vectors for the existing `FdEffectSink` V1 and V2 output without changing `src/nooa/**`. The vectors pin the bytes that this implementation emits today, including V2 stream-end counts, and the focused tests feed those same bytes back through `read_effect_egress()` so the producer and reader examples cannot drift independently.
