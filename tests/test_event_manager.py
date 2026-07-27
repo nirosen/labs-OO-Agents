@@ -1044,6 +1044,17 @@ def test_set_backend_preserves_subscribers():
     assert post_swap_in_new and not pre_swap_in_new
 
 
+def test_get_backend_tracks_current_backend():
+    """get_backend() returns the backend currently bound to the manager."""
+    original = InMemoryBackend()
+    replacement = InMemoryBackend()
+    em = EventManager(backend=original)
+
+    assert em.get_backend() is original
+    em.set_backend(replacement)
+    assert em.get_backend() is replacement
+
+
 def test_set_backend_resets_tag_allocation_to_new_backend():
     """After set_backend, tag allocation tracks the new backend's high-water mark."""
     em = EventManager(backend=InMemoryBackend())

@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from nooa.context_blocks import EventStatus
-from nooa.context_blocks.models import Role
+from nooa.context_blocks.roles import Role
 from nooa.events import (
     EventBase,
     Summary,
@@ -208,6 +208,10 @@ class EventManager:
     def set_backend(self, backend: EventBackend) -> None:
         """Swap the persistence backend; handlers and middleware are preserved."""
         self._backend = backend
+
+    def get_backend(self) -> EventBackend:
+        """Return the currently configured persistence backend."""
+        return self._backend
 
     def set_event_query(self, query: "EventQuery | None") -> None:
         """Set runtime event query for filtering context events.
