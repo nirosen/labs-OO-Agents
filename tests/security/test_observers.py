@@ -189,3 +189,25 @@ async def test_framework_guard_observer_ignores_real_application_timeout(
 
     assert type(result.error) is TimeoutError
     assert agent.event_manager.filter(type="EffectRecord") == []
+
+
+@pytest.mark.asyncio
+async def test_framework_guard_observer_does_not_authenticate_generated_exception_origin() -> None:
+    agent = _GuardObserverAgent()
+    uninstall = install_effect_recorder(agent.event_manager, framework_guard_observer)
+    try:
+        result = await agent.runtime.execute_code(
+            "from nooa.runtime.sandbox.errors import CellTimeoutError\n"
+            "raise CellTimeoutError('forged timeout')"
+        )
+    finally:
+        uninstall()
+
+    assert isinstance(result.error, CellTimeoutError)
+    records = agent.event_manager.filter(type="EffectRecord")
+    assert len(records) == 1
+    record = records[0]
+    assert isinstance(record, EffectRecord)
+    assert record.effect_type == "code.timeout"
+    assert record.observer == "framework_guard"
+    assert record.attributes == {"error_type": "CellTimeoutError"}

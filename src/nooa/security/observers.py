@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Built-in observers for framework-owned security outcomes."""
+"""Built-in observers for guard-shaped ``execute_python`` outcomes."""
 
 from __future__ import annotations
 
