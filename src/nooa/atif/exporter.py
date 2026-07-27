@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         Task,
     )
     from nooa.runtime.event_manager import EventManager
+    from nooa.security.effects import EffectRecord
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,7 @@ _HANDLER_DISPATCH: dict[str, str] = {
     "Error": "on_error",
     "Notification": "on_notification",
     "Summary": "on_summary",
+    "EffectRecord": "on_effect_record",
 }
 
 
@@ -740,6 +742,56 @@ class AtifExporter:
                 ps.reasoning_content += "\n" + event.content
             else:
                 ps.reasoning_content = event.content
+
+    def on_effect_record(self, event: EffectRecord) -> None:
+        """``EffectRecord`` ⇒ attach hidden security telemetry to ATIF ``extra``.
+
+        ``EffectRecord`` is a ``Role.METADATA`` event, so the generic ATIF path
+        intentionally skips it. This dedicated handler carries the sanitized
+        record into the current agent step and the root trajectory without
+        rendering it as LLM-visible conversation content.
+        """
+        try:
+            record = event.model_dump(mode="json", exclude_none=True)
+        except Exception:  # noqa: BLE001
+            logger.warning("atif: EffectRecord could not be serialized (ignored)", exc_info=True)
+            return
+
+        generation_id = getattr(event, "generation_id", None)
+        if not isinstance(generation_id, str):
+            logger.warning("atif: EffectRecord missing string generation_id (ignored)")
+            return
+
+        with self._lock:
+            root_extra = self._trajectory.extra
+            if root_extra is None:
+                root_extra = {}
+                self._trajectory.extra = root_extra
+            root_effects = root_extra.setdefault("security_effects", [])
+            if not isinstance(root_effects, list):
+                logger.warning("atif: trajectory extra.security_effects is not a list; resetting")
+                root_effects = []
+                root_extra["security_effects"] = root_effects
+            root_effects.append(record)
+
+            if generation_id:
+                ps = self._pending.get(generation_id)
+                if ps is None:
+                    logger.debug(
+                        "atif: EffectRecord for unknown generation_id=%s (root only)",
+                        generation_id,
+                    )
+            else:
+                ps = self._most_recent_pending()
+            if ps is not None:
+                step_effects = ps.extra.setdefault("security_effects", [])
+                if not isinstance(step_effects, list):
+                    logger.warning("atif: step extra.security_effects is not a list; resetting")
+                    step_effects = []
+                    ps.extra["security_effects"] = step_effects
+                step_effects.append(record)
+
+            self._write()
 
     def on_after_turn(self, event: AfterTurn) -> None:
         """``AfterTurn`` ⇒ finalize the pending step, attach observation, append, write."""
