@@ -62,11 +62,11 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Effect Egress Completeness Gate
+## Security Review Slice: Effect Egress Input Budget
 
-> Branch: `codex/security-effect-egress-completeness-gate`
+> Branch: `codex/security-effect-egress-input-budget`
 
-This branch builds on the public V1 wire contract from `codex/security-effect-egress-contract` and adds the second half of a fail-closed collector read. `read_effect_egress()` already raises on malformed complete frames, unsupported versions, or over-bound input; `require_complete_effect_egress()` now returns the original `EffectRecord` tuple only when a parsed result reports neither a sequence discontinuity nor a truncated trailing frame. Otherwise it raises `EffectEgressIncompleteError` with structured `reasons`, `first_sequence_error`, and `truncated` fields. This keeps downstream policy code from accidentally treating known-degraded transport as complete without moving detector, authorization, or scoring policy into core NOOA. A clean empty result still means only that no known reader degradation was observed, not that no effect was omitted.
+This branch builds on `codex/security-effect-egress-completeness-gate` and closes the remaining unbounded-input gap in the collector reader. `read_effect_egress()` still keeps the V1 wire envelope unchanged, but it now accepts explicit `max_total_bytes` and `max_records` budgets, defaults them to `256 MiB` and `1,048,576`, and raises `EffectEgressInputTooLargeError` when either collector-wide budget is exhausted. This keeps an attacker-controlled descriptor stream from growing parsed collector state without bound while preserving the existing distinction between invalid bytes (`ValueError` subclasses) and parsed-but-incomplete transport (`EffectEgressIncompleteError`). The new budgets are DoS backstops, not detector thresholds or authorization policy.
 
 ```mermaid
 flowchart LR
@@ -74,11 +74,12 @@ flowchart LR
     B -->|1. sink first| C["FdEffectSink<br/>borrowed fd"]
     C --> D["frame 0<br/>EffectRecord"]
     C --> E["frame 1<br/>EffectRecord"]
-    W["public wire contract<br/>version + key set + bound"] --> F["collector<br/>read_effect_egress()"]
+    W["public wire contract<br/>version + key set + bounds"] --> F["collector<br/>read_effect_egress()"]
     V["conformance vectors"] --> W
     D --> F
     E --> F
     F --> G["EffectEgressReadResult<br/>records + diagnostics"]
+    F -.->|"over total bytes or records"| Y["EffectEgressInputTooLargeError"]
     G --> H["require_complete_effect_egress()"]
     H --> J["records for downstream policy"]
     G -.->|"gap or truncated tail"| X["EffectEgressIncompleteError"]
@@ -89,11 +90,11 @@ flowchart LR
 
 | Review item | Detail |
 | --- | --- |
-| Adds | Public `require_complete_effect_egress()`, `EffectEgressIncompleteError`, `EffectEgressCompletenessSignal`, and `EFFECT_EGRESS_COMPLETENESS_SIGNALS` on top of the V1 `FdEffectSink`, `EffectEgressReadResult`, public wire constants, conformance vectors, and exact V1 record-shape checks |
-| Security claim | A downstream collector can fail closed on reader-visible sequence discontinuities and trailing partial frames without reimplementing those checks or silently consuming known-degraded egress as complete. |
-| Non-claim | This gate reports only degradation already visible in `EffectEgressReadResult`. A clean result, including an empty stream, does not authenticate records, prove an effect happened, prove omitted effects did not happen, distinguish a malicious clean stop from a valid one, bound total input, provide detector authority or severity semantics, enforce authorization, or prevent an effect. A descriptor can still be forged, closed, sought, truncated, or reordered by code that can access it. Publishing the V1 wire grammar or the conformance-v2 metadata does not promise future-version stability. |
-| Shared base | `codex/security-effect-egress-contract`; this is a narrow collector-safety follow-up rather than an end-to-end merge. |
-| Review files | `src/nooa/security/egress.py`, `src/nooa/security/__init__.py`, `tests/security/test_egress.py`, `tests/security/fixtures/effect_egress_conformance_v2.json`, `README.md` |
+| Adds | Public `EffectEgressInputTooLargeError`, `DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES`, and `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` on top of the V1 `FdEffectSink`, completeness gate, public wire constants, conformance vectors, and exact V1 record-shape checks |
+| Security claim | A downstream collector can bound both total consumed egress bytes and retained complete records while keeping over-budget input distinct from parsed short or gapped transport. |
+| Non-claim | These limits are local collector resource backstops. A clean result, including an empty stream, does not authenticate records, prove an effect happened, prove omitted effects did not happen, distinguish a malicious clean stop from a valid one, provide detector authority or severity semantics, enforce authorization, or prevent an effect. A descriptor can still be forged, closed, sought, truncated, or reordered by code that can access it. Publishing the V1 wire grammar or the conformance-v3 metadata does not promise future-version stability. |
+| Shared base | `codex/security-effect-egress-completeness-gate`; this is a narrow collector-safety follow-up rather than an end-to-end merge. |
+| Review files | `src/nooa/security/egress.py`, `src/nooa/security/__init__.py`, `tests/security/test_egress.py`, `tests/security/fixtures/effect_egress_conformance_v3.json`, `README.md` |
 | Validation | `pytest tests/security/test_egress.py tests/security/test_sinks.py` |
 
 ## Effect Egress V1 Wire Contract
@@ -113,6 +114,8 @@ An independent collector may rely on these public exports:
 | `MAX_EFFECT_EGRESS_JSON_INTEGER` | `9007199254740991` |
 | `MAX_EFFECT_EGRESS_SEQUENCE` | `9007199254740991` |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | `1048576` |
+| `DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES` | `268435456` |
+| `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` | `1048576` |
 
 A collector that wants a fail-closed handoff can pass the
 `EffectEgressReadResult` from `read_effect_egress()` to
@@ -123,9 +126,9 @@ Otherwise it raises `EffectEgressIncompleteError`, whose `reasons`,
 degradation without inventing a detector verdict.
 
 The conformance fixture's own `schema_version` is
-`"nooa-effect-egress-conformance-v2"` because it now publishes the completeness
-signal tokens. Its `wire_schema_version` remains `"nooa-effect-egress-v1"`;
-the wire vectors themselves are unchanged.
+`"nooa-effect-egress-conformance-v3"` because it now publishes the collector
+budget defaults and their refusal vectors. Its `wire_schema_version` remains
+`"nooa-effect-egress-v1"`; the wire envelope itself is unchanged.
 
 The V1 transport is LF-delimited UTF-8 JSON. Each complete frame ends in one LF
 byte, has no BOM or leading/trailing whitespace outside the JSON object, and
@@ -150,16 +153,18 @@ The contract is intentionally narrow:
 - `read_effect_egress()` starts sequence validation at `0`, so attaching to a stream after its first frame intentionally reports an initial discontinuity and `require_complete_effect_egress()` refuses that parsed result by design.
 - A trailing unterminated line is reported as `truncated=True` and is not parsed as a record.
 - `require_complete_effect_egress()` is a convenience gate over those two reader diagnostics only. A clean result, including an empty stream, is not proof that no effect was omitted or that the records are authentic.
-- A newline-terminated malformed frame raises a generic `ValueError`. Callers that distinguish outcomes must catch `UnsupportedEffectEgressVersionError` and `EffectEgressFrameTooLargeError` before a generic `ValueError` handler because both distinguished errors subclass `ValueError`; `EffectEgressIncompleteError` is a `RuntimeError`, so `require_complete_effect_egress(read_effect_egress(fh))` keeps invalid bytes distinct from a parsed short or gapped stream.
-- A line larger than the configured maximum, counting the terminating LF byte for complete frames, raises `EffectEgressFrameTooLargeError`; it is not downgraded to truncation.
+- `read_effect_egress()` accepts positive `max_total_bytes` and `max_records` budgets in addition to `max_frame_bytes`. The total-byte budget covers payload bytes admitted to parsing, including complete frames and a trailing unterminated line; the reader may use one bounded lookahead byte to distinguish exact EOF from overflow. The record budget counts only complete parsed records. Exceeding either budget raises `EffectEgressInputTooLargeError` and is not downgraded to truncation.
+- A newline-terminated malformed frame raises a generic `ValueError`. Callers that distinguish outcomes must catch `UnsupportedEffectEgressVersionError`, `EffectEgressFrameTooLargeError`, and `EffectEgressInputTooLargeError` before a generic `ValueError` handler because all three distinguished errors subclass `ValueError`; `EffectEgressIncompleteError` is a `RuntimeError`, so `require_complete_effect_egress(read_effect_egress(fh))` keeps invalid bytes distinct from a parsed short or gapped stream.
+- A line larger than the configured frame maximum, counting the terminating LF byte for complete frames, raises `EffectEgressFrameTooLargeError` when the reader reaches that frame bound before the total-byte budget; it is not downgraded to truncation.
 
-The checked-in `tests/security/fixtures/effect_egress_conformance_v2.json`
+The checked-in `tests/security/fixtures/effect_egress_conformance_v3.json`
 vectors cover empty input, compact and internally-spaced valid frames,
 well-formed multi-frame input, forward, duplicate, and backward sequence
 discontinuities, first-error-wins behavior after a later backward step, exact
 and one-over sequence bounds, exact and one-over record integer bounds, a
 trailing partial frame, exact-max and over-bound complete and unterminated
-lines, future-version classification including malformed near misses such as a
+lines, exact and one-over collector total-byte and complete-record budgets,
+future-version classification including malformed near misses such as a
 trailing newline escape, strict
 LF framing without BOM or outer whitespace, blank and malformed frames
 including a second-line failure, negative sequence rejection, each missing

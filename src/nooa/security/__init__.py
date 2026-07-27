@@ -5,6 +5,8 @@
 from nooa.security.effects import EffectRecord
 from nooa.security.egress import (
     DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES,
+    DEFAULT_EFFECT_EGRESS_MAX_RECORDS,
+    DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES,
     EFFECT_EGRESS_COMPLETENESS_SIGNALS,
     EFFECT_EGRESS_FRAME_KEYS,
     EFFECT_EGRESS_RECORD_EVENT_TYPE,
@@ -17,6 +19,7 @@ from nooa.security.egress import (
     EffectEgressCompletenessSignal,
     EffectEgressFrameTooLargeError,
     EffectEgressIncompleteError,
+    EffectEgressInputTooLargeError,
     EffectEgressReadResult,
     EffectEgressSinkFailedError,
     FdEffectSink,
@@ -34,6 +37,8 @@ from nooa.security.sinks import (
 
 __all__ = [
     "DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES",
+    "DEFAULT_EFFECT_EGRESS_MAX_RECORDS",
+    "DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES",
     "EFFECT_EGRESS_COMPLETENESS_SIGNALS",
     "EFFECT_EGRESS_FRAME_KEYS",
     "EFFECT_EGRESS_RECORD_EVENT_TYPE",
@@ -46,6 +51,7 @@ __all__ = [
     "EffectEgressCompletenessSignal",
     "EffectEgressFrameTooLargeError",
     "EffectEgressIncompleteError",
+    "EffectEgressInputTooLargeError",
     "EffectEgressReadResult",
     "EffectEgressSinkFailedError",
     "EffectObservation",

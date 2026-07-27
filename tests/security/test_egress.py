@@ -22,6 +22,8 @@ import nooa.security.egress as egress_module
 from nooa.runtime.event_manager import EventManager
 from nooa.security import (
     DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES,
+    DEFAULT_EFFECT_EGRESS_MAX_RECORDS,
+    DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES,
     EFFECT_EGRESS_COMPLETENESS_SIGNALS,
     EFFECT_EGRESS_FRAME_KEYS,
     EFFECT_EGRESS_RECORD_EVENT_TYPE,
@@ -34,6 +36,7 @@ from nooa.security import (
     EffectEgressCompletenessSignal,
     EffectEgressFrameTooLargeError,
     EffectEgressIncompleteError,
+    EffectEgressInputTooLargeError,
     EffectEgressReadResult,
     EffectEgressSinkFailedError,
     EffectRecord,
@@ -45,8 +48,8 @@ from nooa.security import (
     require_complete_effect_egress,
 )
 
-CONFORMANCE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "effect_egress_conformance_v2.json"
-CONFORMANCE_FIXTURE_SCHEMA_VERSION = "nooa-effect-egress-conformance-v2"
+CONFORMANCE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "effect_egress_conformance_v3.json"
+CONFORMANCE_FIXTURE_SCHEMA_VERSION = "nooa-effect-egress-conformance-v3"
 
 
 def _frame_line(sequence: int, record: EffectRecord) -> bytes:
@@ -85,6 +88,8 @@ def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
     assert fixture["max_json_integer"] == MAX_EFFECT_EGRESS_JSON_INTEGER
     assert fixture["max_sequence"] == MAX_EFFECT_EGRESS_SEQUENCE
     assert fixture["default_max_frame_bytes"] == DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES
+    assert fixture["default_max_total_bytes"] == DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES
+    assert fixture["default_max_records"] == DEFAULT_EFFECT_EGRESS_MAX_RECORDS
     assert fixture["max_frame_bytes_includes_terminating_lf"] is True
     assert re.fullmatch(EFFECT_EGRESS_SCHEMA_VERSION_PATTERN, EFFECT_EGRESS_SCHEMA_VERSION)
     assert (
@@ -123,11 +128,18 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
     fixture = _load_conformance_fixture()
     payload = _vector_payload_bytes(vector)
     max_frame_bytes = vector.get("max_frame_bytes", DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES)
+    max_total_bytes = vector.get("max_total_bytes", DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES)
+    max_records = vector.get("max_records", DEFAULT_EFFECT_EGRESS_MAX_RECORDS)
     expected = vector["expect"]
     outcome = expected["outcome"]
 
     if outcome == "ok":
-        result = read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+        result = read_effect_egress(
+            io.BytesIO(payload),
+            max_frame_bytes=max_frame_bytes,
+            max_total_bytes=max_total_bytes,
+            max_records=max_records,
+        )
         first_sequence_error = expected["first_sequence_error"]
         assert [record.model_dump(mode="json") for record in result.records] == [
             fixture["records"][record_ref] for record_ref in expected["record_refs"]
@@ -140,13 +152,36 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
 
     if outcome == "frame_too_large_error":
         with pytest.raises(EffectEgressFrameTooLargeError) as exc_info:
-            read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+            read_effect_egress(
+                io.BytesIO(payload),
+                max_frame_bytes=max_frame_bytes,
+                max_total_bytes=max_total_bytes,
+                max_records=max_records,
+            )
+        assert exc_info.value.line_number == expected["line_number"]
+        return
+
+    if outcome == "input_too_large_error":
+        with pytest.raises(EffectEgressInputTooLargeError) as exc_info:
+            read_effect_egress(
+                io.BytesIO(payload),
+                max_frame_bytes=max_frame_bytes,
+                max_total_bytes=max_total_bytes,
+                max_records=max_records,
+            )
+        assert exc_info.value.limit_name == expected["limit_name"]
+        assert exc_info.value.limit_value == expected["limit_value"]
         assert exc_info.value.line_number == expected["line_number"]
         return
 
     if outcome == "unsupported_version_error":
         with pytest.raises(UnsupportedEffectEgressVersionError) as exc_info:
-            read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+            read_effect_egress(
+                io.BytesIO(payload),
+                max_frame_bytes=max_frame_bytes,
+                max_total_bytes=max_total_bytes,
+                max_records=max_records,
+            )
         assert exc_info.value.line_number == expected["line_number"]
         assert exc_info.value.schema_version == expected["schema_version"]
         return
@@ -156,7 +191,12 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
             ValueError,
             match=rf"^invalid effect egress frame at line {expected['line_number']}$",
         ):
-            read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+            read_effect_egress(
+                io.BytesIO(payload),
+                max_frame_bytes=max_frame_bytes,
+                max_total_bytes=max_total_bytes,
+                max_records=max_records,
+            )
         return
 
     raise AssertionError(f"unsupported conformance outcome: {outcome}")
@@ -500,6 +540,130 @@ def test_read_effect_egress_marks_trailing_partial_frame_truncated() -> None:
     assert result.truncated is True
 
 
+def test_read_effect_egress_accepts_exact_total_byte_budget() -> None:
+    payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a"))
+
+    result = read_effect_egress(io.BytesIO(payload), max_total_bytes=len(payload))
+
+    assert len(result.records) == 1
+    assert result.truncated is False
+
+
+def test_read_effect_egress_rejects_one_byte_over_total_budget() -> None:
+    payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a"))
+
+    with pytest.raises(EffectEgressInputTooLargeError) as exc_info:
+        read_effect_egress(io.BytesIO(payload), max_total_bytes=len(payload) - 1)
+
+    assert exc_info.value.limit_name == "max_total_bytes"
+    assert exc_info.value.limit_value == len(payload) - 1
+    assert exc_info.value.line_number == 1
+
+
+def test_read_effect_egress_accepts_exact_record_budget() -> None:
+    payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a"))
+
+    result = read_effect_egress(io.BytesIO(payload), max_records=1)
+
+    assert len(result.records) == 1
+    assert result.truncated is False
+
+
+def test_read_effect_egress_rejects_one_over_record_budget() -> None:
+    payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a")) + _frame_line(
+        1, EffectRecord(effect_type="net.request", target="service-b")
+    )
+
+    with pytest.raises(EffectEgressInputTooLargeError) as exc_info:
+        read_effect_egress(io.BytesIO(payload), max_records=1)
+
+    assert exc_info.value.limit_name == "max_records"
+    assert exc_info.value.limit_value == 1
+    assert exc_info.value.line_number == 2
+
+
+def test_read_effect_egress_keeps_truncated_tail_distinct_at_record_budget() -> None:
+    first = EffectRecord(effect_type="fs.write", target="/tmp/a")
+    second = EffectRecord(effect_type="net.request", target="service-b")
+    payload = _frame_line(0, first) + _frame_line(1, second)[:-10]
+
+    result = read_effect_egress(io.BytesIO(payload), max_records=1)
+
+    assert result.records == (first,)
+    assert result.truncated is True
+
+
+def test_read_effect_egress_keeps_malformed_frame_distinct_at_record_budget() -> None:
+    payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a")) + b"{bogus}\n"
+
+    with pytest.raises(ValueError, match=r"^invalid effect egress frame at line 2$"):
+        read_effect_egress(io.BytesIO(payload), max_records=1)
+
+
+def test_read_effect_egress_rejects_partial_tail_that_exceeds_total_budget() -> None:
+    first = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a"))
+    partial_tail = _frame_line(1, EffectRecord(effect_type="net.request", target="service-b"))[:-10]
+    payload = first + partial_tail
+
+    with pytest.raises(EffectEgressInputTooLargeError) as exc_info:
+        read_effect_egress(io.BytesIO(payload), max_total_bytes=len(payload) - 1)
+
+    assert exc_info.value.limit_name == "max_total_bytes"
+
+
+def test_read_effect_egress_keeps_frame_bound_distinct_from_total_bound() -> None:
+    payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a"))
+
+    with pytest.raises(EffectEgressFrameTooLargeError):
+        read_effect_egress(
+            io.BytesIO(payload),
+            max_frame_bytes=len(payload) - 1,
+            max_total_bytes=len(payload),
+        )
+
+
+def test_read_effect_egress_prefers_frame_bound_when_frame_and_total_cross_together() -> None:
+    with pytest.raises(EffectEgressFrameTooLargeError) as exc_info:
+        read_effect_egress(io.BytesIO(b"x" * 11), max_frame_bytes=10, max_total_bytes=10)
+
+    assert exc_info.value.line_number == 1
+
+
+@pytest.mark.parametrize(
+    ("kwarg_name", "value", "error_type", "match"),
+    [
+        pytest.param(
+            "max_total_bytes", True, TypeError, "max_total_bytes expected int", id="bytes-bool"
+        ),
+        pytest.param(
+            "max_total_bytes", 0, ValueError, "max_total_bytes must be positive", id="bytes-zero"
+        ),
+        pytest.param(
+            "max_total_bytes",
+            -1,
+            ValueError,
+            "max_total_bytes must be positive",
+            id="bytes-negative",
+        ),
+        pytest.param("max_records", True, TypeError, "max_records expected int", id="records-bool"),
+        pytest.param(
+            "max_records", 0, ValueError, "max_records must be positive", id="records-zero"
+        ),
+        pytest.param(
+            "max_records", -1, ValueError, "max_records must be positive", id="records-negative"
+        ),
+    ],
+)
+def test_read_effect_egress_rejects_invalid_collector_budget_values(
+    kwarg_name: str,
+    value: object,
+    error_type: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error_type, match=match):
+        read_effect_egress(io.BytesIO(b""), **{kwarg_name: value})  # type: ignore[arg-type]
+
+
 def test_read_effect_egress_reports_first_sequence_gap() -> None:
     first = EffectRecord(effect_type="fs.write", target="/tmp/a")
     third = EffectRecord(effect_type="net.request", target="service-c")
@@ -593,6 +757,10 @@ def test_effect_egress_incomplete_error_rejects_non_read_result() -> None:
         EffectEgressIncompleteError("not-a-read-result")  # type: ignore[arg-type]
 
 
+def test_effect_egress_input_too_large_error_is_a_value_error() -> None:
+    assert issubclass(EffectEgressInputTooLargeError, ValueError)
+
+
 def test_require_complete_effect_egress_composes_with_real_fd_stream(tmp_path: Path) -> None:
     first = EffectRecord(effect_type="fs.write", target="/tmp/a")
     second = EffectRecord(effect_type="net.request", target="service-b")
@@ -603,6 +771,23 @@ def test_require_complete_effect_egress_composes_with_real_fd_stream(tmp_path: P
         records = require_complete_effect_egress(read_effect_egress(fh))
 
     assert records == (first, second)
+
+
+def test_require_complete_effect_egress_propagates_input_budget_refusal(tmp_path: Path) -> None:
+    path = tmp_path / "effects.egress"
+    _write_fd_egress(
+        path,
+        [
+            EffectRecord(effect_type="fs.write", target="/tmp/a"),
+            EffectRecord(effect_type="net.request", target="service-b"),
+        ],
+    )
+
+    with path.open("rb") as fh:
+        with pytest.raises(EffectEgressInputTooLargeError) as exc_info:
+            require_complete_effect_egress(read_effect_egress(fh, max_records=1))
+
+    assert exc_info.value.limit_name == "max_records"
 
 
 def test_require_complete_effect_egress_composes_with_truncated_fd_stream(tmp_path: Path) -> None:

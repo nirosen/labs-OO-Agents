@@ -1,5 +1,5 @@
 {
-  "schema_version": "nooa-effect-egress-conformance-v2",
+  "schema_version": "nooa-effect-egress-conformance-v3",
   "wire_schema_version": "nooa-effect-egress-v1",
   "wire_schema_version_pattern": "nooa-effect-egress-v[1-9][0-9]*",
   "wire_schema_version_pattern_match_mode": "full",
@@ -31,6 +31,8 @@
   "max_json_integer": 9007199254740991,
   "max_sequence": 9007199254740991,
   "default_max_frame_bytes": 1048576,
+  "default_max_total_bytes": 268435456,
+  "default_max_records": 1048576,
   "max_frame_bytes_includes_terminating_lf": true,
   "records": {
     "record_a": {
@@ -238,6 +240,55 @@
       "expect": {
         "outcome": "frame_too_large_error",
         "line_number": 1
+      }
+    },
+    {
+      "name": "exact_max_total_bytes",
+      "max_total_bytes": 348,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": false
+      }
+    },
+    {
+      "name": "one_over_max_total_bytes",
+      "max_total_bytes": 347,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "input_too_large_error",
+        "limit_name": "max_total_bytes",
+        "limit_value": 347,
+        "line_number": 1
+      }
+    },
+    {
+      "name": "exact_max_records",
+      "max_records": 2,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a",
+          "record_b"
+        ],
+        "first_sequence_error": null,
+        "truncated": false
+      }
+    },
+    {
+      "name": "one_over_max_records",
+      "max_records": 1,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "input_too_large_error",
+        "limit_name": "max_records",
+        "limit_value": 1,
+        "line_number": 2
       }
     },
     {
