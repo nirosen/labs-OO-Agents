@@ -3,6 +3,7 @@
 """Security-oriented runtime primitives."""
 
 from nooa.security.effects import EffectRecord
+from nooa.security.findings import SecurityFinding
 from nooa.security.install import (
     AgentCallEffectObserver,
     EffectObservation,
@@ -26,6 +27,7 @@ __all__ = [
     "EffectRecordSinkBackend",
     "EffectSink",
     "JsonlEffectSink",
+    "SecurityFinding",
     "SecurityReceipt",
     "install_agent_call_effect_recorder",
     "install_effect_recorder",
