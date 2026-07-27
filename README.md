@@ -62,6 +62,31 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: Security Finding Contract
+
+> Branch: `codex/security-finding-contract`
+
+This branch adds a minimal transport schema for detector or scorer output. `SecurityFinding` gives applications a stable way to publish joinable findings without making NOOA own detector execution, evidence authentication, or policy semantics.
+
+```mermaid
+flowchart LR
+    A["detector or scorer boundary"] --> B["SecurityFinding"]
+    C["EffectRecord.id"] -. "opaque ref" .-> B
+    D["SecurityReceipt.receipt_id"] -. "opaque ref" .-> B
+    E["external evidence ID"] -. "opaque ref" .-> B
+    B --> F["application policy or review"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Frozen `SecurityFinding` transport schema with opaque `evidence_refs` |
+| Security claim | Applications can publish joinable finding records without NOOA standardizing detector or verdict semantics. |
+| Non-claim | The schema does not authenticate producers or evidence, dereference refs, assign severity/verdict, or enforce policy. |
+| Base | `main` |
+| Merge note | Parallel sibling slice; other security branches also add `src/nooa/security/__init__.py`. |
+| Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `tests/security/test_findings.py` |
+| Validation | `pytest tests/security/test_findings.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
