@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: Agent-Call Effects
+
+> Branch: `codex/agent-call-effect-recorder`
+
+This branch adds an agent-method sibling to the `execute_python` recorder. It lets applications observe async method boundaries that are not visible from code-cell execution alone, while keeping the policy decision in the application observer.
+
+```mermaid
+flowchart LR
+    A["async agent method"] --> B["agent_call middleware"]
+    B --> C["application observer"]
+    C --> D["EffectRecord"]
+    E["execute_python middleware"] -. "separate hook" .-> D
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `AgentCallEffectObserver` and `install_agent_call_effect_recorder()` |
+| Security claim | NOOA can record observed effects at async agent-method boundaries, including nested calls. |
+| Non-claim | The hook does not authorize results, cover sync wrappers, or infer generation/tool-call lineage at this outer boundary. |
+| Shared base | `codex/trusted-evidence-contract`; parallel sibling slice with a small shared export edit in `src/nooa/security/__init__.py` |
+| Review files | `src/nooa/security/install.py`, `src/nooa/security/__init__.py`, `tests/security/test_effects.py` |
+| Validation | `pytest tests/security/test_effects.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
