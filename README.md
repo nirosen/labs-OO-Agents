@@ -62,6 +62,30 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: Observed Effect Evidence
+
+> Branch: `codex/trusted-evidence-contract`
+
+This branch adds a minimal NOOA-native evidence contract for security-relevant runtime observations. `EffectRecord` can be emitted as hidden metadata from a framework choke point and exported into ATIF, but the ordinary in-process event store is still part of the victim process.
+
+```mermaid
+flowchart LR
+    A["execute_python middleware"] --> B["application observer"]
+    B --> C["EffectRecord"]
+    C --> D["EventManager"]
+    D --> E["ATIF extra.security_effects"]
+    F["victim process"] -. "owns normal event store" .-> D
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `EffectRecord`, `install_effect_recorder()`, and ATIF export under `extra.security_effects` |
+| Security claim | NOOA can carry structured, hidden observed-effect telemetry with runtime lineage fields. |
+| Non-claim | The event manager and ATIF export do not make evidence tamper-resistant inside the victim process. |
+| Base | `main` |
+| Review files | `src/nooa/security/effects.py`, `src/nooa/security/install.py`, `src/nooa/security/__init__.py`, `src/nooa/atif/exporter.py`, `tests/security/test_effects.py`, `tests/atif/test_security_effects.py` |
+| Validation | `pytest tests/security/test_effects.py tests/atif/test_security_effects.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
