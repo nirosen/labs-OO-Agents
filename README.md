@@ -62,6 +62,34 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: Degraded Sandbox Evidence
+
+> Branch: `codex/sandbox-degraded-effect-recorder`
+
+When an event manager is supplied, this branch records the case where `require=False` lets a sandbox start even though the host cannot enforce every requested guardrail. The emitted record describes construction-time host posture only; it does not claim that generated code used the missing capability. If explicit recording fails, construction fails instead of silently dropping the record.
+
+```mermaid
+flowchart LR
+    A["SandboxConfig and host capabilities"] --> B["check_enforceable"]
+    B --> C{"missing guards?"}
+    C -->|no| G["worker starts"]
+    C -->|yes| H{"require?"}
+    H -->|true| D["SandboxUnavailable"]
+    H -->|false| E["optional sandbox.degraded record"]
+    E --> F["prune unavailable guards"]
+    F --> G["worker starts"]
+    E -. "recording error propagates" .-> I["construction fails"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Optional `SandboxedExecutor` evidence wiring and one `sandbox.degraded` record per degraded construction when wired |
+| Security claim | NOOA can surface when a `require=False` sandbox starts with unenforceable requested guardrails. |
+| Non-claim | The record does not prove capability use, later executor posture, or whole-run containment. |
+| Shared base | `codex/trusted-evidence-contract`; parallel sibling slice without a security export edit |
+| Review files | `src/nooa/runtime/sandbox/executor.py`, `src/nooa/strategies/codeact.py`, `tests/security/test_sandbox_effects.py` |
+| Validation | `pytest tests/security/test_sandbox_effects.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
