@@ -4,6 +4,34 @@ This offline example shows how the security review slices compose around one ide
 
 For the consolidated export map, V1/V2 egress rules, minimal integration, and canonical trust-boundary statements, see [`SURFACE.md`](SURFACE.md).
 
+## Reading Order
+
+1. Start with [`SURFACE.md`](SURFACE.md) for the public `nooa.security` export map and the minimal single-process API path.
+2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
+3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
+
+## Minimal Out-of-Process Recipe Follow-On
+
+`codex/security-minimal-out-of-process-recipe` adds a small boundary-first example that sits between the single-process `SURFACE.md` snippet and the full detector harness. The supervisor gives one child only the V2 effect-pipe write end and one child only the effect-pipe read end; the detector child builds `DetectorInput` from public APIs and either emits one example finding or refuses an incomplete stream.
+
+```mermaid
+flowchart LR
+    S["supervisor"] --> V["victim<br/>effect-pipe write fd"]
+    S --> D["detector<br/>effect-pipe read fd"]
+    V --> P["V2 pipe"]
+    P --> D
+    D --> R["finding or refusal"]
+```
+
+Run the clean and incomplete paths:
+
+```bash
+uv run python -m examples.security_hardening.minimal_detector demo
+uv run python -m examples.security_hardening.minimal_detector demo --victim-fault exit_between_frames
+```
+
+This is a placement recipe, not a trust claim. Same-user subprocesses do not add authentication, sandboxing, attestation, or completeness proof, and the example scorer is intentionally smaller than the application-specific policies in the full harness.
+
 ## Transport Conformance Follow-On
 
 `codex/security-transport-conformance-vectors` adds checked JSON vectors for `SecurityReceipt`, `SecurityFinding`, and `DetectorInput` without changing `src/nooa/**`. The vectors pin the current `-v1` writer bytes for defaults, populated shapes, and representative payload encoding, then validate the same fixture bytes back through each public model.
@@ -31,7 +59,7 @@ flowchart LR
 
 These vectors are interoperability regression references, not an authenticity claim. A conforming writer can still forge records or omit effects before closing, and an external writer can remain acceptable to the reader without copying NOOA's exact JSON formatting.
 
-## Current Joint Branch
+## Security Review Joint Branch: End-to-End Detector Pipeline V2
 
 `codex/security-hardening-e2e-detector-pipeline-v2` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress for reader-visible refusal semantics, and exercises the same detector handoff across identity approval and data export victims.
 
@@ -133,108 +161,6 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario ex
 | `export_hardened_allowed` | Allowlist on | None | `unknown` | 0 |
 
 The branch demonstrates only that the current handoff stretched once beyond identity approval. It does not prove that two victims cover agent method shapes generally, make the allowlist a NOOA policy API, or change the same-user, same-host trust limits of the detector harness. The export scorer and identity scorer are intentionally separate application policies: the export scorer ignores grant effects, while the identity scorer either ignores or refuses export inputs rather than treating them as grants.
-
-## End-to-End Detector Pipeline Joint Branch
-
-`codex/security-hardening-e2e-detector-pipeline` is the integration branch for the smaller security slices below. It does not add another API layer. It packages the runnable path that a NOOA user would evaluate when hardening one agent method: observe an effect, apply an optional defender, collect bounded egress, obtain approval receipts from a separate issuer, assemble detector input outside the victim, and score or refuse.
-
-```mermaid
-flowchart LR
-    I["prompt injection<br/>or unsafe task context"] --> V["NOOA victim"]
-    V --> M["grant_access()"]
-    M --> D["defender middleware"]
-    D -- "deny" --> DX["denied effect"]
-    D -- "continue" --> B["identity backend"]
-    V -- "approval request" --> A["approval authority"]
-    A -- "run-scoped token" --> V
-    A -- "receipt document" --> RP["receipt pipe"]
-    DX --> ES["FdEffectSink"]
-    B --> ES
-    ES --> EP["effect pipe"]
-    EP --> T["detector subprocess"]
-    RP --> T
-    T --> C["read_effect_egress()"]
-    C --> DI["DetectorInput"]
-    DI --> P["identity scorer"]
-    P --> F["finding or refusal"]
-```
-
-The composed claim remains narrow: the example demonstrates where hardening controls and evidence handoffs can sit around a NOOA agent. It does not turn same-host subprocesses into a trusted boundary, prove effect completeness, authenticate receipts, or make deterministic run-scoped demo tokens into production credentials.
-
-```mermaid
-flowchart LR
-    I["prompt injection or unsafe task context"] --> V["NOOA victim agent"]
-    V --> M["grant_access()"]
-    M --> O["agent_call recorder<br/>outer wrapper"]
-    O --> D["example defender middleware"]
-    D -- "missing token" --> X["deny before backend"]
-    D -- "otherwise" --> B["identity backend<br/>authoritative"]
-    X --> E["EffectRecord<br/>decision_source=defender"]
-    B --> E2["EffectRecord<br/>decision_source=backend"]
-    E --> J["FdEffectSink<br/>blocking fd"]
-    E2 --> J
-    J --> C["read_effect_egress()<br/>records + diagnostics + budgets"]
-    C --> G["require_complete_effect_egress()<br/>fail closed on gap / truncation"]
-    C -.->|"gap or truncated tail"| IX["EffectEgressIncompleteError"]
-    C -.->|"over total bytes or records"| BX["EffectEgressInputTooLargeError"]
-    B --> R["SecurityReceipt collector<br/>run_id"]
-    G --> DI["DetectorInput<br/>signals + gate assertion"]
-    R --> DI
-    DI --> S["application scorer"]
-    S --> F["SecurityFinding<br/>run_id"]
-```
-
-The same attack-shaped request is replayed across vulnerable, defender-only,
-and backend-hardened configurations:
-
-| Scenario | Backend policy | Middleware | Result source | Backend call | Receipt | Finding |
-| --- | --- | --- | --- | --- | --- | --- |
-| `vulnerable_attack` | Approval not enforced | Off | Backend allowed | Yes | No | Yes |
-| `defender_only_attack` | Approval not enforced | Missing-token rule | Defender denied | No | No | No |
-| `hardened_attack` | Approval enforced | Off | Backend denied | Yes | No | No |
-| `hardened_authorized` | Approval enforced with valid token | Off | Backend allowed | Yes | Yes | No |
-
-The `Finding` column reports only what this narrow scorer emits for these scripted inputs. A zero count is not a general safety claim. `defender_only_attack` has no backend call because the middleware short-circuits the method. The test suite keeps that middleware installed and calls the permissive backend directly to pin the non-claim that any path outside the guarded method can still grant.
-
-Run it with:
-
-```bash
-uv run python examples/security_hardening/identity_approval.py
-```
-
-Expected table output (the script then prints per-scenario framed egress IDs):
-
-```text
-scenario             | decision | source   | backend | effects | receipts | findings
----------------------+----------+----------+---------+---------+----------+---------
-vulnerable_attack    | allowed  | backend  | 1       | 1       | 0        | 1
-defender_only_attack | denied   | defender | 0       | 1       | 0        | 0
-hardened_attack      | denied   | backend  | 1       | 1       | 0        | 0
-hardened_authorized  | allowed  | backend  | 1       | 1       | 1        | 0
-```
-
-This is a composition example, not a trust claim. The descriptor-backed sink, receipt collector, detector-input assembly, scorer, and defender middleware all run in one process for deterministic local execution. `run_scenario()` builds `DetectorInput` through `detector_input_from_egress(read_effect_egress(...))` rather than the victim's in-memory event store, and that helper's default path calls `require_complete_effect_egress()` so a sequence discontinuity or truncated trailing frame raises instead of constructing a scoreable bundle. The reader also refuses streams that exceed its collector-wide byte or record budgets before policy retains unbounded state. A clean result, including an empty stream, means only that the reader saw no known gap, truncation, or budget refusal. A same-process descriptor is still not trusted evidence. A production hardening path must hand `FdEffectSink` a separately controlled blocking descriptor, place the receipt source behind a separately trusted boundary, keep detector policy outside the victim process, and keep backend authorization authoritative. The direct-backend bypass probe stays in tests rather than the table because it intentionally leaves the observed agent method path and therefore does not create the `EffectRecord` input this narrow scorer requires.
-
-`DetectorInput` is the new neutral handoff seam on this branch. `detector_input_from_egress()` records the public `effect_egress_completeness_signals()` output, sets `effect_egress_completeness_gate_passed=True` only after the public completeness gate accepts the received bytes, and carries `receipt_source` plus `receipt_coverage` as caller assertions. The identity scorer accepts that bundle, refuses to evaluate a missing-receipt finding unless the completeness gate passed and receipt coverage is asserted complete, and cites `input_id` in each finding. It still owns its own same-run receipt filtering rule. The bundle does not authenticate effects, receipts, or itself; verify that receipts belong to its `run_id`; establish any receipt-to-effect relationship; or turn collection health into a verdict.
-
-The demo scopes only the detector-facing transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope. The egress stream's sequence and truncation status only describe bytes received by the collector; they do not authenticate the writer, prove that omitted effects never happened, or turn transport health into a detector verdict.
-
-The defender recipe is intentionally example-specific: it blocks only `grant_access()` requests without an approval token. It demonstrates existing `agent_call` middleware as a defense-in-depth seam; it does not become a generic NOOA policy API. The recorder is installed before the defender so the outer wrapper still records short-circuited denials; reversing that order would leave an inner recorder unable to observe the block. The demo keeps `grant_access()` async because the current `agent_call` recorder and defender observe async agent methods; a sync tool method would require a different observation seam.
-
-On this composed branch, the same event manager and egress stream can also carry guard-shaped observer records without confusing their label with the application grant effect:
-
-```mermaid
-flowchart LR
-    A["grant_access()"] --> AE["EffectRecord<br/>observer=agent_call_middleware"]
-    B["execute_python result.error<br/>mapped type"] --> FE["EffectRecord<br/>observer=framework_guard"]
-    AE --> C["same egress stream"]
-    FE --> C
-    C --> D["observer labels remain distinct"]
-```
-
-The built-in guard record classifies a mapped `ctx.result.error` type; it does not prove that the exception originated in framework code. Generated code that raises the same public exception class can mint an indistinguishable record. The record is not fed into the identity scorer in this example and does not become a vulnerability verdict.
-
-The fake LLM client only satisfies `Agent` construction; no generation method runs in this deterministic flow.
 
 ## Out-of-Process Collector Follow-On
 

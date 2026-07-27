@@ -132,6 +132,8 @@ assert detector_input.effect_egress_completeness_gate_passed is True
 assert len(findings) == 1
 ```
 
+The snippet above is the minimal API path inside one process. For a focused boundary path, run `python -m examples.security_hardening.minimal_detector demo`: that recipe moves the V2 writer and detector into separate child processes, gives each child only its effect-pipe endpoint, and keeps `DetectorInput` construction on the detector side. It remains a same-user placement example rather than an authentication, sandboxing, attestation, or completeness guarantee.
+
 ## Export Index
 
 This index is checked by `tests/security/test_surface_guide.py`. Grouping is editorial only; it does not restrict access or declare long-term API stability.

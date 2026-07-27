@@ -25,6 +25,7 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 | — | Approval authority receipts | [`security_hardening/approval_authority.py`](security_hardening/approval_authority.py) |
 | — | Second victim detector generality | [`security_hardening/data_export.py`](security_hardening/data_export.py) |
 | — | Checked security surface guide | [`security_hardening/SURFACE.md`](security_hardening/SURFACE.md) |
+| — | Focused out-of-process detector recipe | [`security_hardening/minimal_detector.py`](security_hardening/minimal_detector.py) |
 
 ---
 
@@ -62,7 +63,7 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario vu
 uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
 ```
 
-[`security_hardening/SURFACE.md`](security_hardening/SURFACE.md) consolidates the current `nooa.security` exports, egress versions, installation seams, and trust-boundary limits in one place. `tests/security/test_surface_guide.py` checks that every public export is indexed exactly once and that the documented minimal integration still executes. `tests/security/test_egress_producer_conformance.py` adds writer-direction V1/V2 reference vectors for the current `FdEffectSink` output and round-trips them through the shared reader. `tests/security/test_transport_conformance.py` pins byte-level JSON vectors for the remaining public security transport shapes.
+[`security_hardening/SURFACE.md`](security_hardening/SURFACE.md) consolidates the current `nooa.security` exports, egress versions, installation seams, and trust-boundary limits in one place. `tests/security/test_surface_guide.py` checks that every public export is indexed exactly once and that the documented minimal integration still executes. `tests/security/test_egress_producer_conformance.py` adds writer-direction V1/V2 reference vectors for the current `FdEffectSink` output and round-trips them through the shared reader. `tests/security/test_transport_conformance.py` pins byte-level JSON vectors for the remaining public security transport shapes. `examples.security_hardening.minimal_detector` is a focused two-process boundary recipe built from that public surface.
 
 ## Step 1: Your first generation method
 

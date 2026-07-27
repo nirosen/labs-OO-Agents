@@ -8,12 +8,29 @@ import ast
 from pathlib import Path
 from typing import NamedTuple, cast
 
+import pytest
+
 from examples.security_hardening.detector_harness import run_detected_scenario
 from examples.security_hardening.effect_collector import VictimFault
 
-README_PATH = Path(__file__).resolve().parents[2] / "README.md"
+ROOT_README_PATH = Path(__file__).resolve().parents[2] / "README.md"
+EXAMPLES_README_PATH = Path(__file__).resolve().parents[2] / "examples" / "README.md"
+HARDENING_README_PATH = EXAMPLES_README_PATH.parent / "security_hardening" / "README.md"
 MATRIX_START = "<!-- JOINT_SCENARIO_MATRIX_START -->"
 MATRIX_END = "<!-- JOINT_SCENARIO_MATRIX_END -->"
+SECURITY_ENTRYPOINTS = (
+    "identity_approval.py",
+    "effect_collector.py",
+    "detector_harness.py",
+    "approval_authority.py",
+    "data_export.py",
+    "minimal_detector.py",
+)
+SECURITY_SUPPORT_MODULES = (
+    "__init__.py",
+    "detector_policy.py",
+    "identity_contract.py",
+)
 
 
 class _MatrixRow(NamedTuple):
@@ -25,8 +42,8 @@ class _MatrixRow(NamedTuple):
     findings: int
 
 
-def _readme_text() -> str:
-    return README_PATH.read_text(encoding="utf-8")
+def _readme_text(path: Path = ROOT_README_PATH) -> str:
+    return path.read_text(encoding="utf-8")
 
 
 def _strip_code(cell: str) -> str:
@@ -59,13 +76,44 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
     return tuple(rows)
 
 
-def test_joint_readme_has_one_current_joint_section() -> None:
+@pytest.mark.parametrize("readme_path", (ROOT_README_PATH, HARDENING_README_PATH))
+def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None:
+    text = _readme_text(readme_path)
+
+    assert text.count("## Security Review Joint Branch:") == 1
+    assert "## End-to-End Detector Pipeline Joint Branch" not in text
+    assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
+
+
+def test_root_joint_readme_has_scenario_matrix() -> None:
     text = _readme_text()
 
     assert MATRIX_START in text
     assert MATRIX_END in text
-    assert text.count("## Security Review Joint Branch:") == 1
-    assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
+
+
+def test_examples_readme_indexes_security_entrypoints() -> None:
+    text = _readme_text(EXAMPLES_README_PATH)
+    contents_table = text.split("**Contents**", 1)[1].split("\n---", 1)[0]
+    entrypoints = set(SECURITY_ENTRYPOINTS)
+    support_modules = set(SECURITY_SUPPORT_MODULES)
+    security_modules = {path.name for path in HARDENING_README_PATH.parent.glob("*.py")}
+
+    for entrypoint in SECURITY_ENTRYPOINTS:
+        assert f"](security_hardening/{entrypoint})" in contents_table
+    assert entrypoints.isdisjoint(support_modules)
+    assert entrypoints | support_modules == security_modules
+
+
+def test_hardening_readme_orders_security_onramps() -> None:
+    text = _readme_text(HARDENING_README_PATH)
+    reading_order = text.split("## Reading Order", 1)[1].split("\n## ", 1)[0]
+    links = ("SURFACE.md", "minimal_detector.py", "detector_harness.py")
+
+    positions = [reading_order.index(f"]({link})") for link in links]
+    assert positions == sorted(positions)
+    for link in links:
+        assert (HARDENING_README_PATH.parent / link).exists()
 
 
 def test_joint_readme_matrix_reproduces_detector_paths() -> None:

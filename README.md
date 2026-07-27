@@ -62,6 +62,34 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Minimal Out-of-Process Recipe
+
+> Branch: `codex/security-minimal-out-of-process-recipe`
+
+This slice adds no `src/nooa` runtime behavior. It adds a focused two-process recipe between the single-process API snippet and the full detector harness: one victim child receives only the V2 effect-pipe write end, one detector child receives only the effect-pipe read end, and the detector builds `DetectorInput` from public APIs before running a tiny example scorer. The recipe keeps the boundary visible without importing the authority, profile, or fault-matrix machinery from the larger harness.
+
+```mermaid
+flowchart LR
+    S["supervisor"] -- "effect-pipe write fd" --> V["victim child"]
+    S -- "effect-pipe read fd" --> D["detector child"]
+    V --> E["FdEffectSink<br/>V2 records + stream_end"]
+    E --> P["pipe"]
+    P --> D
+    D --> I["DetectorInput"]
+    I --> F["example finding<br/>or refusal"]
+    V -. "exit before stream_end" .-> X["missing_stream_end"]
+    X -.-> D
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `examples/security_hardening/minimal_detector.py`, focused subprocess-boundary tests, a hardening-example reading order, and README invariants that keep the active joint section unique |
+| Security claim | Users now have a readable out-of-process recipe that demonstrates effect-pipe endpoint separation and preserves V2 `missing_stream_end` refusal outside the victim process. |
+| Non-claim | Two same-user processes are not a privilege boundary; the recipe does not authenticate records, prove completeness, provide sandboxing or attestation, or make its scorer a NOOA policy API. |
+| Base slice | `codex/security-transport-conformance-vectors` |
+| Review files | `examples/security_hardening/minimal_detector.py`, `tests/security/test_minimal_detector.py`, `tests/security/test_joint_readme.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_minimal_detector.py tests/security/test_joint_readme.py`; `pytest tests/security`; `git diff --quiet 12c1e3f -- src/nooa`; `pytest` |
+
 ## Security Review Follow-On: Transport Conformance Vectors
 
 > Branch: `codex/security-transport-conformance-vectors`
