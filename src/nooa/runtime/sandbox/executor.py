@@ -19,7 +19,7 @@ import os
 import signal
 import time
 from multiprocessing.connection import Connection
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nooa.events import ExecutionResult
 from nooa.runtime.sandbox.config import ResolvedSpec, SandboxConfig, resolve_spec
@@ -33,6 +33,9 @@ from nooa.runtime.sandbox.errors import (
 from nooa.runtime.sandbox.guards import Capabilities, probe_capabilities
 from nooa.runtime.sandbox.serialization import ResultDTO, dto_to_result, is_picklable
 from nooa.runtime.sandbox.worker import worker_main
+
+if TYPE_CHECKING:
+    from nooa.runtime.event_manager import EventManager
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,36 @@ def check_enforceable(config: SandboxConfig, caps: Capabilities | None = None) -
     return missing
 
 
+def _record_degraded_guardrails(
+    event_manager: EventManager | None,
+    *,
+    missing: list[str],
+    construction_generation_id: str,
+) -> None:
+    """Emit host-side evidence for a require=False sandbox construction.
+
+    The record states only that this host could not enforce the requested
+    guardrails at construction time. It does not say that a cell attempted to
+    use those capabilities, or that a later executor/backend has the same
+    posture. The framework-generated ``missing`` strings are safe to persist
+    verbatim.
+    """
+    if event_manager is None:
+        return
+
+    from nooa.security.effects import EffectRecord
+
+    event_manager.add(
+        EffectRecord(
+            effect_type="sandbox.degraded",
+            decision="observed",
+            observer="sandbox_executor",
+            generation_id=construction_generation_id,
+            attributes={"unenforceable": list(missing)},
+        )
+    )
+
+
 class SandboxedExecutor:
     """Run CodeAct cells in a guarded worker process with a hard timeout."""
 
@@ -72,7 +105,25 @@ class SandboxedExecutor:
         cell_timeout: float | None,
         framework_builtins: dict[str, Any] | None = None,
         restrictions: Any = None,
+        event_manager: EventManager | None = None,
+        construction_generation_id: str = "",
     ):
+        """Create a per-session sandbox executor.
+
+        Args:
+            event_manager: Optional manager that receives one hidden
+                ``sandbox.degraded`` :class:`nooa.security.EffectRecord` when
+                ``require=False`` allows construction to continue on a host
+                that cannot enforce requested guardrails. Omit it to preserve
+                the legacy no-record behavior for direct executor users.
+            construction_generation_id: Generation active at construction time,
+                copied only into the optional degraded record. It is not kept
+                for later worker lifecycle events.
+
+        Recording errors propagate when ``event_manager`` is supplied. This
+        keeps an explicitly requested evidence path from silently losing the
+        only record of a degraded construction.
+        """
         self._agent = agent
         self._config = config
         self._cell_timeout = cell_timeout
@@ -94,6 +145,14 @@ class SandboxedExecutor:
             # require=False: drop the guards this host can't enforce so the worker
             # actually runs (unguarded for those) instead of the worker's
             # install_guards raising and failing every cell.
+            # Non-Linux hosts intentionally emit this once per executor
+            # construction because check_enforceable() returns
+            # "sandbox requires Linux" for every require=False sandbox there.
+            _record_degraded_guardrails(
+                event_manager,
+                missing=missing,
+                construction_generation_id=construction_generation_id,
+            )
             self._spec = self._prune_unenforceable(self._spec, caps)
             logger.warning(
                 "sandbox running with UNENFORCED guardrails (require=False): %s",

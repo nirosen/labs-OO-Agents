@@ -688,6 +688,8 @@ Standard Python builtins and agent instance (`self`) are available."""
             cell_timeout=self.config.cell_timeout,
             framework_builtins=framework_builtins,
             restrictions=self.config.restrictions,
+            event_manager=runtime.event_manager,
+            construction_generation_id=runtime.get_generation_id() or "",
         )
 
     async def _close_sandbox(self, session: "CodeActSession") -> None:
