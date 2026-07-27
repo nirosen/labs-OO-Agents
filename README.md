@@ -62,6 +62,60 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Joint Branch: End-to-End Detector Pipeline
+
+> Branch: `codex/security-hardening-e2e-detector-pipeline`
+
+This branch is the presentation layer for the security path assembled across the smaller review slices. It adds no new API beyond those slices. The runnable example now has one complete defensive loop: a prompt-injection-shaped request reaches a NOOA victim, an application defender can deny before the backend, effect copies leave through bounded egress, a separate approval authority issues run-scoped tokens and receipt rows, an out-of-process detector assembles `DetectorInput`, and the application scorer emits findings or an explicit refusal.
+
+```mermaid
+flowchart LR
+    I["prompt injection<br/>or unsafe task context"] --> V["NOOA victim"]
+    V --> M["grant_access()"]
+    M --> D["defender middleware"]
+    D -- "deny" --> DX["denied effect"]
+    D -- "continue" --> B["identity backend"]
+    V -- "approval request" --> A["approval authority<br/>run-scoped token issuer"]
+    A -- "token response" --> V
+    A -- "AuthorityReceiptDocument" --> RP["receipt pipe"]
+    DX --> ES["FdEffectSink"]
+    B --> ES
+    ES --> EP["effect pipe"]
+    EP --> T["detector subprocess"]
+    RP --> T
+    T --> C["read_effect_egress()<br/>diagnostics + budgets"]
+    C --> DI["DetectorInput<br/>detector-side assembly"]
+    DI --> P["identity scorer"]
+    P --> F["SecurityFinding rows"]
+    P -. "gap / truncated tail / unknown coverage" .-> X["DetectorReport<br/>scored=False"]
+```
+
+| Scenario | Decision path | Authority tokens | Detector result |
+| --- | --- | --- | --- |
+| `vulnerable_attack` | Allowed | 0 | 1 finding |
+| `defender_only_attack` | Denied before backend | 0 | 0 findings |
+| `hardened_attack` | Denied by backend | 0 | 0 findings |
+| `hardened_authorized` | Allowed | 1 | 0 findings |
+| `vulnerable_attack --victim-fault partial_tail_crash` | Victim exits non-zero | 0 | Refused, not clean |
+
+| Review item | Detail |
+| --- | --- |
+| Included slices | `codex/security-hardening-e2e-defender-provenance-egress-contract-collector-completeness-gate-input-budget`, `codex/security-detector-input-contract`, `codex/security-trusted-detector-harness`, `codex/security-approval-authority-receipts` |
+| Security claim | Applications can compose a deterministic hardening loop around a NOOA agent: defense-in-depth before the backend, bounded collector-facing effect transport, explicit reader-visible completeness handling, a neutral detector handoff object, detector policy outside the victim process, and approval receipts derived from a separate issuing process action. |
+| Non-claim | This is still a same-user, same-host demo with no sandboxing, attestation, authentication, signing, or production IAM boundary. It does not prove omitted effects did not happen, prove an issued token was honored, make receipt coverage independently verifiable, turn guard labels into vulnerability verdicts, or make NOOA own application authorization policy. The run-scoped token derivation is a deterministic regression aid, not a secret-bearing protocol. |
+| Review files | `src/nooa/security/__init__.py`, `src/nooa/security/egress.py`, `src/nooa/security/evidence.py`, `examples/security_hardening/identity_approval.py`, `examples/security_hardening/effect_collector.py`, `examples/security_hardening/detector_harness.py`, `examples/security_hardening/approval_authority.py`, `examples/security_hardening/identity_contract.py`, `examples/security_hardening/README.md`, `tests/security/test_egress.py`, `tests/security/test_evidence.py`, `tests/security/test_hardening_example.py`, `tests/security/test_effect_collector.py`, `tests/security/test_detector_harness.py`, `tests/security/test_approval_authority.py` |
+| Validation | `pytest tests/security`; `pytest` |
+
+Run the full detector path with:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault partial_tail_crash
+```
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the progressive slice-by-slice rationale and trust-boundary notes.
+
 ## Security Review Follow-On: Approval Authority Receipts
 
 > Branch: `codex/security-approval-authority-receipts`

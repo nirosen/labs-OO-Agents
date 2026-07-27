@@ -2,6 +2,33 @@
 
 This offline example shows how the security review slices compose around one identity-changing agent method. It starts after untrusted content has influenced a victim agent to call `grant_access`, then separates observed effect telemetry, a deterministic application-owned defender recipe, backend receipt collection, a detector-facing `DetectorInput` handoff, and application-local finding generation. Each scenario assigns one `run_id` to its detector input, out-of-band receipts, and findings so this narrow scorer can ignore a stale receipt from another run.
 
+## End-to-End Detector Pipeline Joint Branch
+
+`codex/security-hardening-e2e-detector-pipeline` is the integration branch for the smaller security slices below. It does not add another API layer. It packages the runnable path that a NOOA user would evaluate when hardening one agent method: observe an effect, apply an optional defender, collect bounded egress, obtain approval receipts from a separate issuer, assemble detector input outside the victim, and score or refuse.
+
+```mermaid
+flowchart LR
+    I["prompt injection<br/>or unsafe task context"] --> V["NOOA victim"]
+    V --> M["grant_access()"]
+    M --> D["defender middleware"]
+    D -- "deny" --> DX["denied effect"]
+    D -- "continue" --> B["identity backend"]
+    V -- "approval request" --> A["approval authority"]
+    A -- "run-scoped token" --> V
+    A -- "receipt document" --> RP["receipt pipe"]
+    DX --> ES["FdEffectSink"]
+    B --> ES
+    ES --> EP["effect pipe"]
+    EP --> T["detector subprocess"]
+    RP --> T
+    T --> C["read_effect_egress()"]
+    C --> DI["DetectorInput"]
+    DI --> P["identity scorer"]
+    P --> F["finding or refusal"]
+```
+
+The composed claim remains narrow: the example demonstrates where hardening controls and evidence handoffs can sit around a NOOA agent. It does not turn same-host subprocesses into a trusted boundary, prove effect completeness, authenticate receipts, or make deterministic run-scoped demo tokens into production credentials.
+
 ```mermaid
 flowchart LR
     I["prompt injection or unsafe task context"] --> V["NOOA victim agent"]
