@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: CodeAct Trust Boundary
+
+> Branch: `codex/codeact-trust-boundary`
+
+This branch documents and regression-tests the current default: in-process CodeAct runs generated Python with a live `self` object. Visibility controls such as `hidden` reduce prompt and namespace discovery, but they do not create an authorization boundary.
+
+```mermaid
+flowchart LR
+    A["prompt rendering"] --> B["hidden reduces discovery"]
+    C["in-process CodeAct"] --> D["live self object"]
+    D --> E["known hidden field"]
+    B -. "not authorization" .-> E
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Security guidance in `SECURITY.md` and regression coverage for hidden-field reachability |
+| Security claim | Reviewers can see the current in-process trust boundary and test that `hidden` is discoverability-only. |
+| Non-claim | This branch does not add sandboxing, authorization, or a new enforcement mechanism. |
+| Base | `main` |
+| Review files | `SECURITY.md`, `tests/strategies/test_codeact_trust_boundary.py` |
+| Validation | `pytest tests/strategies/test_codeact_trust_boundary.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
