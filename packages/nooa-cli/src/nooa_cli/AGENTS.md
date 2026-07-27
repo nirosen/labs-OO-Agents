@@ -16,6 +16,25 @@ That's it. No registration, no config files, no editing other files.
 The CLI auto-discovers every `.py` file in `src/nooa_cli/commands/` at startup.
 Files starting with `_` are ignored (private helpers, templates).
 
+External packages can publish top-level commands without editing `nooa-cli`:
+
+```toml
+[project.entry-points."nooa.cli_commands"]
+audit = "acme_nooa.cli:audit"
+```
+
+The entry-point name becomes the command name (`nooa audit`). The loaded
+object must be a Click command or group. The `cli_` prefix distinguishes these
+shell commands from NOOA agent slash commands. Names must not collide with
+built-in commands, other installed packages, or the built-in `completion`
+command; conflicting external entries are skipped with a warning.
+
+External commands load only when invoked and do not receive NOOA's layered
+secrets preload by default. If an external command needs those values, call
+`nooa.secrets.load_secrets_into_env()` inside its handler. Top-level
+`nooa --help` shows a provider placeholder for external commands until the
+command itself is selected.
+
 ### The Contract
 
 Your command module must export **one thing**: a module-level variable named `command`
