@@ -2,6 +2,39 @@
 
 This offline example shows how the security review slices compose around one identity-changing agent method. It starts after untrusted content has influenced a victim agent to call `grant_access`, then separates observed effect telemetry, a deterministic application-owned defender recipe, backend receipt collection, a detector-facing `DetectorInput` handoff, and application-local finding generation. Each scenario assigns one `run_id` to its detector input, out-of-band receipts, and findings so this narrow scorer can ignore a stale receipt from another run.
 
+## V2 Effect Egress Stream-End Follow-On
+
+`codex/security-effect-egress-stream-end-v2` adds an opt-in V2 envelope to the shared egress reader and switches the subprocess collector and detector examples to it. V1 stays the default writer contract. In V2, normal victim completion calls `FdEffectSink.close()` and emits one stream-end frame with a writer-declared record count; EOF between complete frames now surfaces as `missing_stream_end` instead of looking like orderly completion.
+
+```mermaid
+flowchart LR
+    V["victim subprocess"] --> R["record frame"]
+    R --> P["effect pipe"]
+    V -- "close()" --> E["stream_end frame<br/>record_count=N"]
+    E --> P
+    V -. "exit_between_frames" .-> M["EOF without stream_end"]
+    P --> C["read_effect_egress()<br/>expected_schema_version=V2"]
+    C --> OK["stream_end_declared=True"]
+    C --> X["missing_stream_end<br/>detector refuses"]
+```
+
+Run the new between-frame failure against both subprocess surfaces:
+
+```bash
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault exit_between_frames
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault exit_between_frames
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack --victim-fault exit_between_frames
+```
+
+| Path | Victim fault | Stream end | Completeness signals | Result |
+| --- | --- | --- | --- | --- |
+| Collector | None | Declared | `()` | Facts preserved |
+| Collector | `partial_tail_crash` | Missing | `("truncated", "missing_stream_end")` | Facts preserved |
+| Collector | `exit_between_frames` | Missing | `("missing_stream_end",)` | Facts preserved |
+| Detector | `exit_between_frames` | Missing | `("missing_stream_end",)` | Refused, not scored |
+
+The terminator closes one narrow ambiguity only: it distinguishes a writer that declared completion from a writer that stopped before declaring completion. It does not authenticate the writer, prove that all effects were emitted before close, make a forged terminator trustworthy, or change the same-user same-host process limits of these examples.
+
 ## Second Victim Detector Generality Follow-On
 
 `codex/security-second-victim-detector-generality` adds a second example victim on top of the joint branch without changing `src/nooa/**`. `DataExportAgent.export_dataset()` emits `data.export` effects and uses a backend destination allowlist instead of approval tokens. Its scorer still requires complete effect egress, but it intentionally scores with `receipts=()` and `receipt_coverage="unknown"` because receipt sufficiency belongs to application policy, not the `DetectorInput` transport object.
@@ -176,15 +209,16 @@ That optional path adds one validation-denial record after the identity
 decision. It demonstrates label separation across the subprocess boundary; it
 does not turn either record into a detector verdict.
 
-The example also exposes one fault-injection mode that writes a partial trailing frame after a real agent effect and exits the victim non-zero, so the supervisor can return the collector's truncated-stream facts beside the victim failure:
+The example exposes two fault-injection modes after a real agent effect: one writes a partial trailing frame before exiting, and one exits between complete frames before the V2 terminator. The supervisor returns those stream facts beside the victim failure:
 
 ```bash
 uv run python -m examples.security_hardening.effect_collector demo --victim-fault partial_tail_crash
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault exit_between_frames
 ```
 
-This is a real but narrow boundary improvement: the victim subprocess cannot read back bytes after it writes them into the pipe, and the pipe is not a seekable output file it can truncate. `CollectorSummary` reports the records that arrived, the first sequence discontinuity, and whether the final frame was truncated. `truncated=False` means only that the received byte stream ended between frames; it does not mean the record set is authentic or complete.
+This is a real but narrow boundary improvement: the victim subprocess cannot read back bytes after it writes them into the pipe, and the pipe is not a seekable output file it can truncate. `CollectorSummary` reports the records that arrived, the first sequence discontinuity, whether the final frame was truncated, and the V2 stream-end declaration plus declared count. `truncated=False` alone means only that the received byte stream ended between frames. `stream_end_declared=True` means only that the writer emitted a valid-looking V2 terminator; neither fact means the record set is authentic or complete.
 
-The collector path carries effect records and victim status only. It does not move `DetectorInput`, receipts, findings, or the same-process demo's incomplete-stream scoring refusal into the subprocess boundary. The collector still accepts a valid-looking forged frame from any writer holding the write end, and an empty stream followed by a clean victim exit is still indistinguishable from a victim that intentionally omitted an effect and exited cleanly. Its shared reader byte and record budgets are local resource backstops, not authenticity guarantees. These are same-user, same-host processes with no privilege boundary between them; this branch demonstrates descriptor separation, not sandboxing, attestation, prevention, or a detector verdict. It keeps process lifecycle in the example instead of adding another core NOOA collector API.
+The collector path carries effect records and victim status only. It does not move `DetectorInput`, receipts, findings, or the same-process demo's incomplete-stream scoring refusal into the subprocess boundary. The collector still accepts a valid-looking forged frame or forged V2 terminator from any writer holding the write end, and a writer can still omit an effect before emitting a terminator. Its shared reader byte and record budgets are local resource backstops, not authenticity guarantees. These are same-user, same-host processes with no privilege boundary between them; this branch demonstrates descriptor separation and writer-declared completion, not sandboxing, attestation, prevention, or a detector verdict. It keeps process lifecycle in the example instead of adding another core NOOA collector API.
 
 ## Detector Subprocess Harness Follow-On
 
@@ -200,7 +234,7 @@ flowchart LR
     D --> DI["DetectorInput<br/>require_complete=False"]
     DI --> P["identity scorer"]
     P -- "scoreable" --> F["SecurityFinding rows"]
-    P -- "gap / truncation / unknown coverage" --> X["DetectorReport<br/>scored=False"]
+    P -- "gap / truncation / missing stream end / unknown coverage" --> X["DetectorReport<br/>scored=False"]
 ```
 
 Run a vulnerable replay that produces one out-of-process finding:
@@ -209,10 +243,11 @@ Run a vulnerable replay that produces one out-of-process finding:
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
 ```
 
-Run the same victim with a partial trailing frame to see the detector preserve a refusal instead of reporting a clean zero-finding result:
+Run the same victim with a partial trailing frame or with EOF between complete frames to see the detector preserve a refusal instead of reporting a clean zero-finding result:
 
 ```bash
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault partial_tail_crash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault exit_between_frames
 ```
 
 The authorized scenario uses one supervisor-issued receipt document so the detector can demonstrate the no-finding path:
@@ -221,7 +256,7 @@ The authorized scenario uses one supervisor-issued receipt document so the detec
 uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized
 ```
 
-This is a placement demo, not a trust claim. The detector is outside the victim process, but it still shares the same user and host; a compromised supervisor compromises both children. The receipt document exists so the example can exercise the receipt-aware path deterministically. It is not a backend audit export, and `receipt_coverage="asserted_complete"` remains a supervisor assertion that the detector does not verify. The receipt byte cap is a local resource backstop, not authenticity or authorization. Findings emitted outside the victim are not automatically more authentic than findings emitted inside it, and an empty clean effect stream remains indistinguishable from intentional omission. The harness assembles `DetectorInput` inside the detector; it does not define a byte-level `DetectorInput` wire protocol. `DetectorReceiptDocument`, `DetectorReport`, and `DetectedScenario` stay in the example rather than becoming NOOA core schemas.
+This is a placement demo, not a trust claim. The detector is outside the victim process, but it still shares the same user and host; a compromised supervisor compromises both children. The receipt document exists so the example can exercise the receipt-aware path deterministically. It is not a backend audit export, and `receipt_coverage="asserted_complete"` remains a supervisor assertion that the detector does not verify. The receipt byte cap is a local resource backstop, not authenticity or authorization. Findings emitted outside the victim are not automatically more authentic than findings emitted inside it, and a valid-looking V2 stream-end frame still does not prove that the writer emitted every effect before close. The harness assembles `DetectorInput` inside the detector; it does not define a byte-level `DetectorInput` wire protocol. `DetectorReceiptDocument`, `DetectorReport`, and `DetectedScenario` stay in the example rather than becoming NOOA core schemas.
 
 ## Approval Authority Receipt Follow-On
 
@@ -240,7 +275,7 @@ flowchart LR
     D --> DI["DetectorInput<br/>require_complete=False"]
     DI --> P["identity scorer"]
     P -- "scoreable" --> F["SecurityFinding rows"]
-    P -- "gap / truncation / unknown coverage" --> X["DetectorReport<br/>scored=False"]
+    P -- "gap / truncation / missing stream end / unknown coverage" --> X["DetectorReport<br/>scored=False"]
 ```
 
 Run the unapproved replay: the authority sees one request, issues zero tokens and zero receipts, and the detector emits one finding.
@@ -261,4 +296,4 @@ Run the authority failure path: the victim can still receive its response, but t
 uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault exit_before_receipt
 ```
 
-This remains a placement and causality demo, not a trust claim. The authority, victim, and detector are same-user, same-host processes with no authentication, signing, sandboxing, or privilege boundary. A receipt says only that the example authority issued a token; it does not prove the backend honored it, prove the effect occurred, or make the detector's finding authentic. `receipt_coverage="asserted_complete"` now means that the authority claims it enumerated every token it issued for this run, and `issued_token_count` is a self-reported consistency check from the same process that wrote the receipts; neither is independently verified. The fixed allowlist and deterministic run-scoped token derivation are demo policy and regression aids, not an IAM model or secret-bearing protocol. The detector still cannot distinguish a malicious clean effect omission from valid completion, and the harness still does not define a byte-level `DetectorInput` wire protocol.
+This remains a placement and causality demo, not a trust claim. The authority, victim, and detector are same-user, same-host processes with no authentication, signing, sandboxing, or privilege boundary. A receipt says only that the example authority issued a token; it does not prove the backend honored it, prove the effect occurred, or make the detector's finding authentic. `receipt_coverage="asserted_complete"` now means that the authority claims it enumerated every token it issued for this run, and `issued_token_count` is a self-reported consistency check from the same process that wrote the receipts; neither is independently verified. The fixed allowlist and deterministic run-scoped token derivation are demo policy and regression aids, not an IAM model or secret-bearing protocol. The detector can now reject EOF without a V2 terminator, but it still cannot prove that a writer did not omit an effect before emitting a valid-looking terminator, and the harness still does not define a byte-level `DetectorInput` wire protocol.

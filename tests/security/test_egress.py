@@ -31,6 +31,11 @@ from nooa.security import (
     EFFECT_EGRESS_SCHEMA_VERSION,
     EFFECT_EGRESS_SCHEMA_VERSION_PATTERN,
     EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE,
+    EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    EFFECT_EGRESS_STREAM_END_EVENT_TYPE,
+    EFFECT_EGRESS_STREAM_END_FRAME_KEYS,
+    EFFECT_EGRESS_STREAM_END_KEYS,
+    EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS,
     MAX_EFFECT_EGRESS_JSON_INTEGER,
     MAX_EFFECT_EGRESS_SEQUENCE,
     EffectEgressCompletenessSignal,
@@ -38,6 +43,7 @@ from nooa.security import (
     EffectEgressIncompleteError,
     EffectEgressInputTooLargeError,
     EffectEgressReadResult,
+    EffectEgressSinkClosedError,
     EffectEgressSinkFailedError,
     EffectRecord,
     FdEffectSink,
@@ -51,6 +57,10 @@ from nooa.security import (
 
 CONFORMANCE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "effect_egress_conformance_v3.json"
 CONFORMANCE_FIXTURE_SCHEMA_VERSION = "nooa-effect-egress-conformance-v3"
+STREAM_END_CONFORMANCE_FIXTURE_PATH = (
+    Path(__file__).parent / "fixtures" / "effect_egress_stream_end_conformance_v1.json"
+)
+STREAM_END_CONFORMANCE_FIXTURE_SCHEMA_VERSION = "nooa-effect-egress-stream-end-conformance-v1"
 
 
 def _frame_line(sequence: int, record: EffectRecord) -> bytes:
@@ -67,8 +77,43 @@ def _frame_line(sequence: int, record: EffectRecord) -> bytes:
     )
 
 
+def _v2_frame_line(sequence: int, record: EffectRecord) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION_V2,
+                "sequence": sequence,
+                "record": record.model_dump(mode="json"),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _stream_end_line(sequence: int, record_count: int) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION_V2,
+                "sequence": sequence,
+                "stream_end": {
+                    "event_type": EFFECT_EGRESS_STREAM_END_EVENT_TYPE,
+                    "record_count": record_count,
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
 def _load_conformance_fixture() -> dict[str, Any]:
     return json.loads(CONFORMANCE_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def _load_stream_end_conformance_fixture() -> dict[str, Any]:
+    return json.loads(STREAM_END_CONFORMANCE_FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
@@ -76,6 +121,10 @@ def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
 
     assert fixture["schema_version"] == CONFORMANCE_FIXTURE_SCHEMA_VERSION
     assert fixture["wire_schema_version"] == EFFECT_EGRESS_SCHEMA_VERSION
+    assert EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS == (
+        EFFECT_EGRESS_SCHEMA_VERSION,
+        EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    )
     assert fixture["wire_schema_version_pattern"] == EFFECT_EGRESS_SCHEMA_VERSION_PATTERN
     assert (
         fixture["wire_schema_version_pattern_match_mode"]
@@ -85,7 +134,7 @@ def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
     assert frozenset(fixture["frame_keys"]) == EFFECT_EGRESS_FRAME_KEYS
     assert fixture["record_event_type"] == EFFECT_EGRESS_RECORD_EVENT_TYPE
     assert frozenset(fixture["record_keys"]) == EFFECT_EGRESS_RECORD_KEYS
-    assert tuple(fixture["completeness_signals"]) == EFFECT_EGRESS_COMPLETENESS_SIGNALS
+    assert tuple(fixture["completeness_signals"]) == EFFECT_EGRESS_COMPLETENESS_SIGNALS[:2]
     assert fixture["max_json_integer"] == MAX_EFFECT_EGRESS_JSON_INTEGER
     assert fixture["max_sequence"] == MAX_EFFECT_EGRESS_SEQUENCE
     assert fixture["default_max_frame_bytes"] == DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES
@@ -110,8 +159,80 @@ def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
 def test_effect_egress_completeness_signals_cover_read_result_diagnostics() -> None:
     assert {field.name for field in fields(EffectEgressReadResult)} == {
         "records",
-        *EFFECT_EGRESS_COMPLETENESS_SIGNALS,
+        "first_sequence_error",
+        "truncated",
+        "schema_version",
+        "stream_end_declared",
+        "declared_record_count",
     }
+
+
+def test_effect_egress_read_result_preserves_v1_positional_fields() -> None:
+    result = EffectEgressReadResult((), (0, 1), True)
+
+    assert result.records == ()
+    assert result.first_sequence_error == (0, 1)
+    assert result.truncated is True
+    assert result.schema_version is None
+    assert result.stream_end_declared is False
+    assert result.declared_record_count is None
+
+
+def test_stream_end_public_contract_matches_conformance_fixture() -> None:
+    fixture = _load_stream_end_conformance_fixture()
+
+    assert fixture["schema_version"] == STREAM_END_CONFORMANCE_FIXTURE_SCHEMA_VERSION
+    assert fixture["wire_schema_version"] == EFFECT_EGRESS_SCHEMA_VERSION_V2
+    assert frozenset(fixture["record_frame_keys"]) == EFFECT_EGRESS_FRAME_KEYS
+    assert frozenset(fixture["stream_end_frame_keys"]) == EFFECT_EGRESS_STREAM_END_FRAME_KEYS
+    assert fixture["stream_end_event_type"] == EFFECT_EGRESS_STREAM_END_EVENT_TYPE
+    assert frozenset(fixture["stream_end_keys"]) == EFFECT_EGRESS_STREAM_END_KEYS
+    assert tuple(fixture["completeness_signals"]) == EFFECT_EGRESS_COMPLETENESS_SIGNALS
+    vector_names = [vector["name"] for vector in fixture["vectors"]]
+    assert len(vector_names) == len(set(vector_names))
+
+
+@pytest.mark.parametrize(
+    "vector",
+    _load_stream_end_conformance_fixture()["vectors"],
+    ids=lambda vector: str(vector["name"]),
+)
+def test_read_effect_egress_matches_stream_end_conformance_vectors(vector: dict[str, Any]) -> None:
+    fixture = _load_stream_end_conformance_fixture()
+    payload = _vector_payload_bytes(vector)
+    expected = vector["expect"]
+    outcome = expected["outcome"]
+    kwargs: dict[str, Any] = {}
+    if "expected_schema_version" in vector:
+        kwargs["expected_schema_version"] = vector["expected_schema_version"]
+
+    if outcome == "ok":
+        result = read_effect_egress(io.BytesIO(payload), **kwargs)
+        first_sequence_error = expected["first_sequence_error"]
+        assert [record.model_dump(mode="json") for record in result.records] == [
+            fixture["records"][record_ref] for record_ref in expected["record_refs"]
+        ]
+        assert result.schema_version == EFFECT_EGRESS_SCHEMA_VERSION_V2
+        assert result.first_sequence_error == (
+            tuple(first_sequence_error) if first_sequence_error is not None else None
+        )
+        assert result.truncated is expected["truncated"]
+        assert result.stream_end_declared is expected["stream_end_declared"]
+        assert result.declared_record_count == expected["declared_record_count"]
+        assert effect_egress_completeness_signals(result) == tuple(
+            expected["completeness_signals"]
+        )
+        return
+
+    if outcome == "invalid_frame_error":
+        with pytest.raises(
+            ValueError,
+            match=rf"^invalid effect egress frame at line {expected['line_number']}$",
+        ):
+            read_effect_egress(io.BytesIO(payload), **kwargs)
+        return
+
+    raise AssertionError(f"unsupported stream-end conformance outcome: {outcome}")
 
 
 def _vector_payload_bytes(vector: dict[str, Any]) -> bytes:
@@ -140,6 +261,7 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
             max_frame_bytes=max_frame_bytes,
             max_total_bytes=max_total_bytes,
             max_records=max_records,
+            supported_schema_versions=(EFFECT_EGRESS_SCHEMA_VERSION,),
         )
         first_sequence_error = expected["first_sequence_error"]
         assert [record.model_dump(mode="json") for record in result.records] == [
@@ -158,6 +280,7 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
                 max_frame_bytes=max_frame_bytes,
                 max_total_bytes=max_total_bytes,
                 max_records=max_records,
+                supported_schema_versions=(EFFECT_EGRESS_SCHEMA_VERSION,),
             )
         assert exc_info.value.line_number == expected["line_number"]
         return
@@ -169,6 +292,7 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
                 max_frame_bytes=max_frame_bytes,
                 max_total_bytes=max_total_bytes,
                 max_records=max_records,
+                supported_schema_versions=(EFFECT_EGRESS_SCHEMA_VERSION,),
             )
         assert exc_info.value.limit_name == expected["limit_name"]
         assert exc_info.value.limit_value == expected["limit_value"]
@@ -182,6 +306,7 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
                 max_frame_bytes=max_frame_bytes,
                 max_total_bytes=max_total_bytes,
                 max_records=max_records,
+                supported_schema_versions=(EFFECT_EGRESS_SCHEMA_VERSION,),
             )
         assert exc_info.value.line_number == expected["line_number"]
         assert exc_info.value.schema_version == expected["schema_version"]
@@ -197,6 +322,7 @@ def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) 
                 max_frame_bytes=max_frame_bytes,
                 max_total_bytes=max_total_bytes,
                 max_records=max_records,
+                supported_schema_versions=(EFFECT_EGRESS_SCHEMA_VERSION,),
             )
         return
 
@@ -236,8 +362,96 @@ def test_fd_effect_sink_round_trips_records_with_monotonic_sequence(tmp_path: Pa
     assert all(frame["schema_version"] == EFFECT_EGRESS_SCHEMA_VERSION for frame in frames)
     assert [frame["sequence"] for frame in frames] == [0, 1]
     assert [record.effect_type for record in result.records] == ["fs.write", "net.request"]
+    assert result.schema_version == EFFECT_EGRESS_SCHEMA_VERSION
     assert result.first_sequence_error is None
     assert result.truncated is False
+    assert result.stream_end_declared is False
+    assert result.declared_record_count is None
+
+
+def test_v2_fd_effect_sink_round_trips_stream_end_without_closing_descriptor(tmp_path: Path) -> None:
+    path = tmp_path / "effects-v2.egress"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        sink(EffectRecord(effect_type="fs.write", target="/tmp/a"))
+        sink.close()
+        os.fstat(fd)
+        os.write(fd, b"")
+    finally:
+        os.close(fd)
+
+    payload = path.read_bytes()
+    frames = [json.loads(line) for line in payload.splitlines()]
+    result = read_effect_egress(
+        io.BytesIO(payload),
+        expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    )
+
+    assert frames[0]["schema_version"] == EFFECT_EGRESS_SCHEMA_VERSION_V2
+    assert frozenset(frames[0]) == EFFECT_EGRESS_FRAME_KEYS
+    assert frozenset(frames[1]) == EFFECT_EGRESS_STREAM_END_FRAME_KEYS
+    assert frozenset(frames[1]["stream_end"]) == EFFECT_EGRESS_STREAM_END_KEYS
+    assert frames[1]["stream_end"]["event_type"] == EFFECT_EGRESS_STREAM_END_EVENT_TYPE
+    assert frames[1]["stream_end"]["record_count"] == 1
+    assert [frame["sequence"] for frame in frames] == [0, 1]
+    assert len(result.records) == 1
+    assert result.schema_version == EFFECT_EGRESS_SCHEMA_VERSION_V2
+    assert result.stream_end_declared is True
+    assert result.declared_record_count == 1
+    assert effect_egress_completeness_signals(result) == ()
+
+
+def test_v2_empty_stream_requires_terminator_when_version_is_expected() -> None:
+    missing = read_effect_egress(
+        io.BytesIO(b""),
+        expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    )
+    complete = read_effect_egress(
+        io.BytesIO(_stream_end_line(0, 0)),
+        expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    )
+
+    assert effect_egress_completeness_signals(missing) == ("missing_stream_end",)
+    assert complete.records == ()
+    assert complete.stream_end_declared is True
+    assert complete.declared_record_count == 0
+    assert effect_egress_completeness_signals(complete) == ()
+
+
+def test_v2_missing_stream_end_and_record_count_mismatch_are_distinct_signals() -> None:
+    first = EffectRecord(effect_type="fs.write", target="/tmp/a")
+    missing = read_effect_egress(io.BytesIO(_v2_frame_line(0, first)))
+    mismatch = read_effect_egress(
+        io.BytesIO(_v2_frame_line(0, first) + _stream_end_line(1, 0))
+    )
+
+    assert effect_egress_completeness_signals(missing) == ("missing_stream_end",)
+    assert missing.truncated is False
+    assert effect_egress_completeness_signals(mismatch) == ("record_count_mismatch",)
+    assert mismatch.stream_end_declared is True
+    assert mismatch.declared_record_count == 0
+
+
+def test_v2_rejects_frame_after_stream_end() -> None:
+    payload = _stream_end_line(0, 0) + _v2_frame_line(
+        1, EffectRecord(effect_type="fs.write", target="/tmp/a")
+    )
+
+    with pytest.raises(ValueError, match=r"^invalid effect egress frame at line 2$"):
+        read_effect_egress(io.BytesIO(payload))
+
+
+def test_v2_sink_refuses_write_after_orderly_close(tmp_path: Path) -> None:
+    fd = os.open(tmp_path / "effects-v2.egress", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        sink.close()
+        sink.close()
+        with pytest.raises(EffectEgressSinkClosedError, match="closed"):
+            sink(EffectRecord(effect_type="fs.write", target="/tmp/a"))
+    finally:
+        os.close(fd)
 
 
 def test_fd_effect_sink_rejects_non_effect_records(tmp_path: Path) -> None:
@@ -570,6 +784,19 @@ def test_read_effect_egress_accepts_exact_record_budget() -> None:
     assert result.truncated is False
 
 
+def test_read_effect_egress_accepts_v2_stream_end_at_exact_record_budget() -> None:
+    payload = _v2_frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a")) + (
+        _stream_end_line(1, 1)
+    )
+
+    result = read_effect_egress(io.BytesIO(payload), max_records=1)
+
+    assert len(result.records) == 1
+    assert result.stream_end_declared is True
+    assert result.declared_record_count == 1
+    assert effect_egress_completeness_signals(result) == ()
+
+
 def test_read_effect_egress_rejects_one_over_record_budget() -> None:
     payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a")) + _frame_line(
         1, EffectRecord(effect_type="net.request", target="service-b")
@@ -719,6 +946,24 @@ def test_empty_stream_passes_and_is_not_proof_that_no_effects_occurred() -> None
             ("first_sequence_error", "truncated"),
             id="both",
         ),
+        pytest.param(
+            EffectEgressReadResult(
+                records=(),
+                schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+            ),
+            ("missing_stream_end",),
+            id="missing-stream-end",
+        ),
+        pytest.param(
+            EffectEgressReadResult(
+                records=(EffectRecord(effect_type="fs.write"),),
+                schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+                stream_end_declared=True,
+                declared_record_count=0,
+            ),
+            ("record_count_mismatch",),
+            id="record-count-mismatch",
+        ),
     ],
 )
 def test_effect_egress_completeness_signals_returns_canonical_reader_diagnostics(
@@ -750,6 +995,24 @@ def test_effect_egress_completeness_signals_returns_canonical_reader_diagnostics
             ("first_sequence_error", "truncated"),
             id="both",
         ),
+        pytest.param(
+            EffectEgressReadResult(
+                records=(),
+                schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+            ),
+            ("missing_stream_end",),
+            id="missing-stream-end",
+        ),
+        pytest.param(
+            EffectEgressReadResult(
+                records=(EffectRecord(effect_type="fs.write"),),
+                schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+                stream_end_declared=True,
+                declared_record_count=0,
+            ),
+            ("record_count_mismatch",),
+            id="record-count-mismatch",
+        ),
     ],
 )
 def test_require_complete_effect_egress_raises_structured_error(
@@ -764,6 +1027,8 @@ def test_require_complete_effect_egress_raises_structured_error(
     assert set(error.reasons).issubset(EFFECT_EGRESS_COMPLETENESS_SIGNALS)
     assert error.first_sequence_error == egress.first_sequence_error
     assert error.truncated is egress.truncated
+    assert error.stream_end_declared is egress.stream_end_declared
+    assert error.declared_record_count == egress.declared_record_count
     assert not isinstance(error, ValueError)
 
 
@@ -790,7 +1055,7 @@ def test_effect_egress_completeness_signals_rejects_non_read_result() -> None:
 
 
 def test_effect_egress_incomplete_error_rejects_clean_result() -> None:
-    with pytest.raises(ValueError, match="requires first_sequence_error or truncated"):
+    with pytest.raises(ValueError, match="requires at least one completeness signal"):
         EffectEgressIncompleteError(EffectEgressReadResult(records=()))
 
 
@@ -945,11 +1210,34 @@ def test_read_effect_egress_rejects_malformed_complete_frame(
         read_effect_egress(io.BytesIO(payload))
 
 
-def test_read_effect_egress_rejects_unsupported_schema_version() -> None:
+def test_v1_only_reader_rejects_v2_schema_version_as_unsupported() -> None:
     payload = (
         json.dumps(
             {
-                "schema_version": "nooa-effect-egress-v2",
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION_V2,
+                "sequence": 0,
+                "record": EffectRecord(effect_type="fs.write").model_dump(mode="json"),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+    with pytest.raises(
+        UnsupportedEffectEgressVersionError,
+        match=r"^unsupported effect egress schema_version at line 1",
+    ):
+        read_effect_egress(
+            io.BytesIO(payload),
+            supported_schema_versions=(EFFECT_EGRESS_SCHEMA_VERSION,),
+        )
+
+
+def test_read_effect_egress_rejects_future_schema_version() -> None:
+    payload = (
+        json.dumps(
+            {
+                "schema_version": "nooa-effect-egress-v3",
                 "sequence": 0,
                 "record": EffectRecord(effect_type="fs.write").model_dump(mode="json"),
             },

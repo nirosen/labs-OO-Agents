@@ -62,6 +62,50 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: V2 Effect Egress Stream End
+
+> Branch: `codex/security-effect-egress-stream-end-v2`
+
+This slice adds an opt-in `nooa-effect-egress-v2` envelope beside the existing V1 default. A V2 `FdEffectSink.close()` writes one explicit stream-end frame with the next sequence number and a writer-declared record count; `read_effect_egress()` preserves that fact as `stream_end_declared` and `declared_record_count`. The subprocess examples opt into V2 so a victim that exits between complete frames is no longer reported like an orderly writer close.
+
+```mermaid
+flowchart LR
+    V["victim subprocess"] --> R0["record frame<br/>sequence=0"]
+    R0 --> P["effect pipe"]
+    V -- "normal close()" --> E["stream_end frame<br/>sequence=1<br/>record_count=1"]
+    E --> P
+    V -. "exit_between_frames" .-> X["EOF without stream_end"]
+    P --> C["read_effect_egress()<br/>V2-aware reader"]
+    C --> OK["stream_end_declared=True<br/>signals=()"]
+    C --> MISS["missing_stream_end<br/>detector refuses"]
+```
+
+| Scenario | Received records | Stream end | Completeness signals | Detector result |
+| --- | --- | --- | --- | --- |
+| Normal V2 victim run | 1 | Declared | `()` | Scoreable |
+| `--victim-fault partial_tail_crash` | 1 | Missing | `("truncated", "missing_stream_end")` | Refused |
+| `--victim-fault exit_between_frames` | 1 | Missing | `("missing_stream_end",)` | Refused |
+| Legacy V1 stream | Any | Not applicable | Existing V1 signals only | Backward compatible |
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public V2 schema constants, one writer-declared stream-end frame, version-aware read results, `missing_stream_end` and `record_count_mismatch` diagnostics, V2 conformance vectors, and V2 opt-in for the collector/detector examples |
+| Security claim | A collector that explicitly expects V2 can distinguish orderly writer-declared completion from EOF between complete frames, and can refuse a record-count mismatch without breaking V1 readers or V1 default writers. |
+| Non-claim | A valid-looking stream-end frame is not authentication, attestation, or proof that every effect was emitted. A compromised writer can still forge records, forge a terminator, omit effects before closing, or share the same-user same-host process boundary. |
+| Base slice | `codex/security-second-victim-detector-generality` |
+| Review files | `src/nooa/security/egress.py`, `src/nooa/security/__init__.py`, `tests/security/test_egress.py`, `tests/security/fixtures/effect_egress_stream_end_conformance_v1.json`, `examples/security_hardening/effect_collector.py`, `examples/security_hardening/detector_harness.py`, `examples/security_hardening/README.md`, `examples/README.md`, `tests/security/test_effect_collector.py`, `tests/security/test_detector_harness.py`, `tests/security/test_data_export_example.py` |
+| Validation | `pytest tests/security`; `pytest` |
+
+Run the V2 subprocess paths:
+
+```bash
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault exit_between_frames
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault exit_between_frames
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack --victim-fault exit_between_frames
+```
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the V2 framing diagram, exact refusal behavior, and trust-boundary limits.
+
 ## Security Review Follow-On: Second Victim Detector Generality
 
 > Branch: `codex/security-second-victim-detector-generality`
@@ -340,20 +384,25 @@ flowchart LR
 
 See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the collector command, subprocess trust-boundary notes, and the base hardening flow.
 
-## Effect Egress V1 Wire Contract
+## Effect Egress Wire Contract
 
 An independent collector may rely on these public exports:
 
 | Export | Value |
 | --- | --- |
 | `EFFECT_EGRESS_SCHEMA_VERSION` | `"nooa-effect-egress-v1"` |
+| `EFFECT_EGRESS_SCHEMA_VERSION_V2` | `"nooa-effect-egress-v2"` |
+| `EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS` | `("nooa-effect-egress-v1", "nooa-effect-egress-v2")` |
 | `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN` | `nooa-effect-egress-v[1-9][0-9]*` |
 | `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE` | `"full"` |
 | `EFFECT_EGRESS_FRAME_KEYS` | `{"schema_version", "sequence", "record"}` |
+| `EFFECT_EGRESS_STREAM_END_FRAME_KEYS` | `{"schema_version", "sequence", "stream_end"}` |
 | `EFFECT_EGRESS_RECORD_EVENT_TYPE` | `"EffectRecord"` |
+| `EFFECT_EGRESS_STREAM_END_EVENT_TYPE` | `"EffectEgressStreamEnd"` |
 | `EFFECT_EGRESS_RECORD_KEYS` | `{"event_type", "id", "metadata", "status", "tag", "timestamp", "effect_type", "target", "decision", "observer", "generation_id", "tool_call_id", "attributes"}` |
-| `EffectEgressCompletenessSignal` | `Literal["first_sequence_error", "truncated"]` |
-| `EFFECT_EGRESS_COMPLETENESS_SIGNALS` | `("first_sequence_error", "truncated")` |
+| `EFFECT_EGRESS_STREAM_END_KEYS` | `{"event_type", "record_count"}` |
+| `EffectEgressCompletenessSignal` | `Literal["first_sequence_error", "truncated", "missing_stream_end", "record_count_mismatch"]` |
+| `EFFECT_EGRESS_COMPLETENESS_SIGNALS` | `("first_sequence_error", "truncated", "missing_stream_end", "record_count_mismatch")` |
 | `MAX_EFFECT_EGRESS_JSON_INTEGER` | `9007199254740991` |
 | `MAX_EFFECT_EGRESS_SEQUENCE` | `9007199254740991` |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | `1048576` |
@@ -362,27 +411,32 @@ An independent collector may rely on these public exports:
 
 A collector that wants a fail-closed handoff can pass the
 `EffectEgressReadResult` from `read_effect_egress()` to
-`require_complete_effect_egress()`. The helper returns that result's exact
+`require_complete_effect_egress()`. For V1, the helper returns that result's exact
 `records` tuple when `first_sequence_error is None` and the result does not
-report truncation. Otherwise it raises `EffectEgressIncompleteError`, whose `reasons`,
-`first_sequence_error`, and `truncated` fields preserve the reader-visible
-degradation without inventing a detector verdict.
+report truncation. For V2, it additionally requires one stream-end frame and a
+declared record count that matches the retained complete records. Otherwise it
+raises `EffectEgressIncompleteError`, whose `reasons`, `first_sequence_error`,
+`truncated`, `stream_end_declared`, and `declared_record_count` fields preserve
+the reader-visible degradation without inventing a detector verdict.
 
 `effect_egress_completeness_signals(egress)` exposes the same canonical
 reader-visible diagnostics without forcing the fail-closed decision. It
-returns only `first_sequence_error` and `truncated` facts already present on
-the read result; an empty tuple still does not prove omitted effects did not
-occur or that received bytes are authentic.
+returns only facts already present on the read result. `missing_stream_end` is
+version-conditional and applies only when the result is explicitly V2; an
+empty tuple still does not prove omitted effects did not occur or that received
+bytes are authentic.
 
 The conformance fixture's own `schema_version` is
 `"nooa-effect-egress-conformance-v3"` because it now publishes the collector
 budget defaults and their refusal vectors. Its `wire_schema_version` remains
-`"nooa-effect-egress-v1"`; the wire envelope itself is unchanged.
+`"nooa-effect-egress-v1"` and continues to pin V1 reader compatibility. The
+separate `tests/security/fixtures/effect_egress_stream_end_conformance_v1.json`
+fixture pins only the V2 stream-end addition.
 
-The V1 transport is LF-delimited UTF-8 JSON. Each complete frame ends in one LF
+Both transports are LF-delimited UTF-8 JSON. Each complete frame ends in one LF
 byte, has no BOM or leading/trailing whitespace outside the JSON object, and
-contains exactly the three keys above. CRLF termination is invalid; internal
-JSON whitespace is allowed. Duplicate object keys, non-standard numeric
+contains exactly the keys for its frame kind above. CRLF termination is invalid;
+internal JSON whitespace is allowed. Duplicate object keys, non-standard numeric
 constants such as `NaN` or `Infinity`, integer literals outside
 `-MAX_EFFECT_EGRESS_JSON_INTEGER..MAX_EFFECT_EGRESS_JSON_INTEGER`, numeric
 literals that overflow to a non-finite value, and lone-surrogate string escapes
@@ -392,16 +446,26 @@ are invalid.
 {"schema_version":"nooa-effect-egress-v1","sequence":0,"record":{"event_type":"EffectRecord","id":"00000000-0000-0000-0000-000000000001","metadata":{},"status":"active","tag":null,"timestamp":"2026-07-27T00:00:00","effect_type":"fs.write","target":"/tmp/a","decision":"observed","observer":"","generation_id":"","tool_call_id":"","attributes":{}}}
 ```
 
+V1 remains the default writer envelope for compatibility. A caller opts into
+V2 with `FdEffectSink(fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)` and
+must call `sink.close()` to emit the writer-declared terminator:
+
+```json
+{"schema_version":"nooa-effect-egress-v2","sequence":1,"stream_end":{"event_type":"EffectEgressStreamEnd","record_count":1}}
+```
+
 The contract is intentionally narrow:
 
-- `schema_version` must equal `EFFECT_EGRESS_SCHEMA_VERSION`; a future token whose entire value matches `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN` under `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` raises `UnsupportedEffectEgressVersionError`. Use a whole-string API such as Python `re.fullmatch()` or its equivalent; do not emulate it with prefix/substring matching or `^...$`, which can treat a trailing newline specially. The pattern accepts `v1`, `v2`, and `v10`, but not `v0`, `v01`, case variants, or tokens with trailing whitespace or newline.
-- Every integer in the V1 JSON payload must stay within `-MAX_EFFECT_EGRESS_JSON_INTEGER..MAX_EFFECT_EGRESS_JSON_INTEGER`, which keeps values exact in JSON implementations that use IEEE-754 numbers.
+- `schema_version` must be in `EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS`; a future token whose entire value matches `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN` under `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` raises `UnsupportedEffectEgressVersionError`. Use a whole-string API such as Python `re.fullmatch()` or its equivalent; do not emulate it with prefix/substring matching or `^...$`, which can treat a trailing newline specially. The pattern accepts `v1`, `v2`, and `v10`, but not `v0`, `v01`, case variants, or tokens with trailing whitespace or newline.
+- Every integer in the JSON payload must stay within `-MAX_EFFECT_EGRESS_JSON_INTEGER..MAX_EFFECT_EGRESS_JSON_INTEGER`, which keeps values exact in JSON implementations that use IEEE-754 numbers.
 - `sequence` is a strict integer in the inclusive range `0..MAX_EFFECT_EGRESS_SEQUENCE`, where `MAX_EFFECT_EGRESS_SEQUENCE == MAX_EFFECT_EGRESS_JSON_INTEGER`. The collector records the first `(expected, observed)` discontinuity but still returns the complete frames it could parse.
-- `record` must contain exactly `EFFECT_EGRESS_RECORD_KEYS`, carry `event_type == EFFECT_EGRESS_RECORD_EVENT_TYPE`, and validate as an `EffectRecord`. V1 treats the full writer-emitted `EffectRecord` payload shape as part of this compatibility contract; omitted defaulted fields such as `id` or `timestamp` are invalid rather than minted at read time. Changing accepted record fields requires a V2 envelope or an explicitly versioned record payload.
-- `FdEffectSink` rejects `EffectRecord` instances whose serialized payload would add V1-incompatible fields, change the V1 event type, contain V1-invalid scalar values such as out-of-range integers, non-finite floats, or lone surrogates, or require cyclic or non-JSON-native `metadata` values to be rewritten during envelope serialization. `JsonlEffectSink` is a separate raw-record sink and should not be treated as a V1 envelope compatibility oracle.
+- `record` must contain exactly `EFFECT_EGRESS_RECORD_KEYS`, carry `event_type == EFFECT_EGRESS_RECORD_EVENT_TYPE`, and validate as an `EffectRecord`. V1 and V2 record frames intentionally share the full writer-emitted `EffectRecord` payload shape; omitted defaulted fields such as `id` or `timestamp` are invalid rather than minted at read time. Changing accepted record fields requires a future envelope or an explicitly versioned record payload.
+- A V2 `stream_end` frame must contain exactly `EFFECT_EGRESS_STREAM_END_KEYS`, carry `event_type == EFFECT_EGRESS_STREAM_END_EVENT_TYPE`, and declare the number of record frames the writer says it emitted before closing. It consumes the next sequence number. Any later frame is invalid.
+- `FdEffectSink` rejects `EffectRecord` instances whose serialized payload would add envelope-incompatible fields, change the record event type, contain invalid scalar values such as out-of-range integers, non-finite floats, or lone surrogates, or require cyclic or non-JSON-native `metadata` values to be rewritten during envelope serialization. `JsonlEffectSink` is a separate raw-record sink and should not be treated as an effect-egress envelope compatibility oracle.
 - `read_effect_egress()` starts sequence validation at `0`, so attaching to a stream after its first frame intentionally reports an initial discontinuity and `require_complete_effect_egress()` refuses that parsed result by design.
 - A trailing unterminated line is reported as `truncated=True` and is not parsed as a record.
-- `require_complete_effect_egress()` is a convenience gate over those two reader diagnostics only. A clean result, including an empty stream, is not proof that no effect was omitted or that the records are authentic.
+- `read_effect_egress(..., expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)` is needed only when an otherwise empty stream must be classified as missing a V2 terminator; without that caller context an empty stream remains version-unknown.
+- `require_complete_effect_egress()` is a convenience gate over the public reader diagnostics only. A clean V2 result means only that the writer declared an end frame and its count matched the complete records retained by this reader; it is not proof that no effect was omitted or that the records are authentic.
 - `read_effect_egress()` accepts positive `max_total_bytes` and `max_records` budgets in addition to `max_frame_bytes`. The total-byte budget covers payload bytes admitted to parsing, including complete frames and a trailing unterminated line; the reader may use one bounded lookahead byte to distinguish exact EOF from overflow. The record budget counts only complete parsed records. Exceeding either budget raises `EffectEgressInputTooLargeError` and is not downgraded to truncation.
 - A newline-terminated malformed frame raises a generic `ValueError`. Callers that distinguish outcomes must catch `UnsupportedEffectEgressVersionError`, `EffectEgressFrameTooLargeError`, and `EffectEgressInputTooLargeError` before a generic `ValueError` handler because all three distinguished errors subclass `ValueError`; `EffectEgressIncompleteError` is a `RuntimeError`, so `require_complete_effect_egress(read_effect_egress(fh))` keeps invalid bytes distinct from a parsed short or gapped stream.
 - A line larger than the configured frame maximum, counting the terminating LF byte for complete frames, raises `EffectEgressFrameTooLargeError` when the reader reaches that frame bound before the total-byte budget; it is not downgraded to truncation.
@@ -423,7 +487,10 @@ non-standard numeric constants, out-of-range integer literals, numeric
 overflow literals, lone-surrogate escapes, and one invalid UTF-8 line encoded
 as `payload_base64`.
 They are V1 reader compatibility fixtures for independent collectors, not
-evidence-authenticity fixtures.
+evidence-authenticity fixtures. The V2 stream-end fixture additionally covers
+an empty terminated stream, missing terminators, a truncated terminator,
+record-count mismatch, and a hard error for frames after stream end; it also is
+not an authenticity fixture.
 
 ## Installation
 

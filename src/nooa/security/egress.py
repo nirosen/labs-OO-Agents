@@ -10,6 +10,7 @@ import math
 import os
 import re
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import BinaryIO, Literal, Never
 
@@ -18,13 +19,23 @@ from pydantic_core import PydanticSerializationError
 
 from nooa.security.effects import EffectRecord
 
+EffectEgressSchemaVersion = Literal["nooa-effect-egress-v1", "nooa-effect-egress-v2"]
 EFFECT_EGRESS_SCHEMA_VERSION: Literal["nooa-effect-egress-v1"] = "nooa-effect-egress-v1"
+EFFECT_EGRESS_SCHEMA_VERSION_V2: Literal["nooa-effect-egress-v2"] = "nooa-effect-egress-v2"
+EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS: tuple[EffectEgressSchemaVersion, ...] = (
+    EFFECT_EGRESS_SCHEMA_VERSION,
+    EFFECT_EGRESS_SCHEMA_VERSION_V2,
+)
 # Apply this pattern to the whole token. Prefix or substring matching changes
 # unsupported-version classification into a compatibility bug.
 EFFECT_EGRESS_SCHEMA_VERSION_PATTERN: str = r"nooa-effect-egress-v[1-9][0-9]*"
 EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE: Literal["full"] = "full"
 EFFECT_EGRESS_FRAME_KEYS: frozenset[str] = frozenset({"schema_version", "sequence", "record"})
+EFFECT_EGRESS_STREAM_END_FRAME_KEYS: frozenset[str] = frozenset(
+    {"schema_version", "sequence", "stream_end"}
+)
 EFFECT_EGRESS_RECORD_EVENT_TYPE: Literal["EffectRecord"] = "EffectRecord"
+EFFECT_EGRESS_STREAM_END_EVENT_TYPE: Literal["EffectEgressStreamEnd"] = "EffectEgressStreamEnd"
 EFFECT_EGRESS_RECORD_KEYS: frozenset[str] = frozenset(
     {
         "event_type",
@@ -42,11 +53,19 @@ EFFECT_EGRESS_RECORD_KEYS: frozenset[str] = frozenset(
         "attributes",
     }
 )
-EffectEgressCompletenessSignal = Literal["first_sequence_error", "truncated"]
+EFFECT_EGRESS_STREAM_END_KEYS: frozenset[str] = frozenset({"event_type", "record_count"})
+EffectEgressCompletenessSignal = Literal[
+    "first_sequence_error",
+    "truncated",
+    "missing_stream_end",
+    "record_count_mismatch",
+]
 # Tuple order is public because EffectEgressIncompleteError.reasons preserves it.
 EFFECT_EGRESS_COMPLETENESS_SIGNALS: tuple[EffectEgressCompletenessSignal, ...] = (
     "first_sequence_error",
     "truncated",
+    "missing_stream_end",
+    "record_count_mismatch",
 )
 MAX_EFFECT_EGRESS_JSON_INTEGER: int = (1 << 53) - 1
 MAX_EFFECT_EGRESS_SEQUENCE: int = MAX_EFFECT_EGRESS_JSON_INTEGER
@@ -99,14 +118,37 @@ class EffectEgressSinkFailedError(RuntimeError):
     """Raised when a sink is reused after an uncertain descriptor failure."""
 
 
+class EffectEgressSinkClosedError(RuntimeError):
+    """Raised when a sink is reused after orderly stream-end emission."""
+
+
 class _EffectEgressFrame(BaseModel):
-    """One collector-facing frame written by :class:`FdEffectSink`."""
+    """One collector-facing record frame written by :class:`FdEffectSink`."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["nooa-effect-egress-v1"]
+    schema_version: EffectEgressSchemaVersion
     sequence: int = Field(ge=0, le=MAX_EFFECT_EGRESS_SEQUENCE, strict=True)
     record: EffectRecord
+
+
+class _EffectEgressStreamEnd(BaseModel):
+    """One V2 writer-declared stream-end payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: Literal["EffectEgressStreamEnd"] = EFFECT_EGRESS_STREAM_END_EVENT_TYPE
+    record_count: int = Field(ge=0, le=MAX_EFFECT_EGRESS_JSON_INTEGER, strict=True)
+
+
+class _EffectEgressStreamEndFrame(BaseModel):
+    """One V2 stream-end frame written by :class:`FdEffectSink.close`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["nooa-effect-egress-v2"] = EFFECT_EGRESS_SCHEMA_VERSION_V2
+    sequence: int = Field(ge=0, le=MAX_EFFECT_EGRESS_SEQUENCE, strict=True)
+    stream_end: _EffectEgressStreamEnd
 
 
 @dataclass(frozen=True)
@@ -121,6 +163,9 @@ class EffectEgressReadResult:
     records: tuple[EffectRecord, ...]
     first_sequence_error: tuple[int, int] | None = None
     truncated: bool = False
+    schema_version: EffectEgressSchemaVersion | None = None
+    stream_end_declared: bool = False
+    declared_record_count: int | None = None
 
 
 class EffectEgressIncompleteError(RuntimeError):
@@ -140,15 +185,19 @@ class EffectEgressIncompleteError(RuntimeError):
         reasons = effect_egress_completeness_signals(egress)
         if not reasons:
             raise ValueError(
-                "EffectEgressIncompleteError requires first_sequence_error or truncated"
+                "EffectEgressIncompleteError requires at least one completeness signal"
             )
         self.first_sequence_error = egress.first_sequence_error
         self.truncated = egress.truncated
+        self.stream_end_declared = egress.stream_end_declared
+        self.declared_record_count = egress.declared_record_count
         self.reasons = reasons
         super().__init__(
             "effect egress stream is incomplete: "
             f"first_sequence_error={egress.first_sequence_error!r}, "
-            f"truncated={egress.truncated!r}"
+            f"truncated={egress.truncated!r}, "
+            f"stream_end_declared={egress.stream_end_declared!r}, "
+            f"declared_record_count={egress.declared_record_count!r}"
         )
 
 
@@ -159,22 +208,28 @@ class FdEffectSink:
     Applications can therefore hand it a descriptor already connected to a
     supervisor-owned pipe, socket, or file and keep path selection outside this
     helper. Each sink instance emits a zero-based monotonic sequence number in
-    the frame around each record.
+    the frame around each record. V1 is the default for compatibility. A V2
+    sink can emit one explicit stream-end frame through :meth:`close`; that
+    frame consumes the next sequence number and carries a writer-declared
+    record count.
 
     The descriptor is borrowed, not owned: this class does not close it. A file
     descriptor is also not an integrity boundary by itself. Code that can
     access, close, seek, truncate, or write to the same descriptor can still
     tamper with the stream or forge valid-looking frames. Multiple writers can
     also interleave or restart sequences. Sequence continuity only detects loss
-    or reordering in a cooperative single-writer stream, and cannot distinguish
-    a clean agent exit from a writer that simply stopped emitting.
+    or reordering in a cooperative single-writer stream. A V2 stream-end frame
+    distinguishes declared completion from a writer that simply stopped
+    emitting, but it still does not prove that the writer emitted every effect
+    before declaring completion.
 
     An over-bound record is refused before any bytes are written and does not
     consume a sequence number. The caller sees
     :class:`EffectEgressFrameTooLargeError`; the collector does not see a gap
     for a frame that was never emitted.
 
-    Records that cannot be represented as the exact V1 payload shape, including
+    V2 record frames intentionally reuse the exact V1 record payload shape.
+    Records that cannot be represented in that shared payload shape, including
     subclass-only fields, event-type drift, out-of-range integers, non-finite
     floats, lone surrogates, cyclic values, or non-JSON-native metadata values
     that would be rewritten during serialization, are refused with
@@ -188,6 +243,8 @@ class FdEffectSink:
 
     Args:
         fd: Open descriptor supplied by the caller.
+        schema_version: V1 for legacy record-only streams or V2 for explicit
+            stream-end support.
         fsync: If True, call :func:`os.fsync` after each frame.
         max_frame_bytes: Maximum encoded bytes per frame, including the
             trailing newline. The same bound should be used by the collector.
@@ -197,6 +254,7 @@ class FdEffectSink:
         self,
         fd: int,
         *,
+        schema_version: EffectEgressSchemaVersion = EFFECT_EGRESS_SCHEMA_VERSION,
         fsync: bool = False,
         max_frame_bytes: int = DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES,
     ) -> None:
@@ -209,10 +267,13 @@ class FdEffectSink:
         if fd_flags & os.O_NONBLOCK:
             raise ValueError("FdEffectSink requires a blocking file descriptor")
         self._fd = fd
+        self._schema_version = _validate_schema_version(schema_version)
         self._fsync = fsync
         self._max_frame_bytes = _validate_max_frame_bytes(max_frame_bytes)
         self._sequence = 0
+        self._record_count = 0
         self._failed = False
+        self._closed = False
         self._lock = threading.Lock()
 
     def __call__(self, record: EffectRecord) -> None:
@@ -220,26 +281,57 @@ class FdEffectSink:
         record = _coerce_v1_effect_record(record)
 
         with self._lock:
+            if self._closed:
+                raise EffectEgressSinkClosedError("FdEffectSink is closed")
             if self._failed:
                 raise EffectEgressSinkFailedError(
                     "FdEffectSink is unusable after a descriptor failure"
                 )
             frame = _EffectEgressFrame(
-                schema_version=EFFECT_EGRESS_SCHEMA_VERSION,
+                schema_version=self._schema_version,
                 sequence=self._sequence,
                 record=record,
             )
-            payload = (frame.model_dump_json() + "\n").encode("utf-8")
-            if len(payload) > self._max_frame_bytes:
-                raise EffectEgressFrameTooLargeError(self._max_frame_bytes)
-            try:
-                _write_all(self._fd, payload)
-                if self._fsync:
-                    os.fsync(self._fd)
-            except OSError:
-                self._failed = True
-                raise
+            self._write_frame(frame)
             self._sequence += 1
+            self._record_count += 1
+
+    def close(self) -> None:
+        """Emit one V2 stream-end frame without closing the borrowed descriptor.
+
+        Calling ``close()`` twice is idempotent. V1 sinks have no stream-end
+        frame; for them this method only marks the sink closed so later writes
+        are refused consistently.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            if self._failed:
+                raise EffectEgressSinkFailedError(
+                    "FdEffectSink is unusable after a descriptor failure"
+                )
+            if self._schema_version == EFFECT_EGRESS_SCHEMA_VERSION_V2:
+                self._write_frame(
+                    _EffectEgressStreamEndFrame(
+                        sequence=self._sequence,
+                        stream_end=_EffectEgressStreamEnd(record_count=self._record_count),
+                    )
+                )
+                self._sequence += 1
+            self._closed = True
+
+    def _write_frame(self, frame: BaseModel) -> None:
+        """Write one validated frame and poison the sink on descriptor failure."""
+        payload = (frame.model_dump_json() + "\n").encode("utf-8")
+        if len(payload) > self._max_frame_bytes:
+            raise EffectEgressFrameTooLargeError(self._max_frame_bytes)
+        try:
+            _write_all(self._fd, payload)
+            if self._fsync:
+                os.fsync(self._fd)
+        except OSError:
+            self._failed = True
+            raise
 
 
 def _write_all(fd: int, payload: bytes) -> None:
@@ -253,7 +345,7 @@ def _write_all(fd: int, payload: bytes) -> None:
 
 
 def _coerce_v1_effect_record(record: EffectRecord) -> EffectRecord:
-    """Keep subclass-only fields from disappearing across the V1 envelope."""
+    """Keep subclass-only fields from disappearing across the shared record envelope."""
     if not isinstance(record, EffectRecord):
         raise TypeError(f"FdEffectSink expected EffectRecord, got {type(record).__name__}")
     try:
@@ -277,6 +369,10 @@ def read_effect_egress(
     max_frame_bytes: int = DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES,
     max_total_bytes: int = DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES,
     max_records: int = DEFAULT_EFFECT_EGRESS_MAX_RECORDS,
+    supported_schema_versions: Sequence[EffectEgressSchemaVersion] = (
+        EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS
+    ),
+    expected_schema_version: EffectEgressSchemaVersion | None = None,
 ) -> EffectEgressReadResult:
     """Read complete frames from a binary collector stream.
 
@@ -295,15 +391,31 @@ def read_effect_egress(
     reader may perform one bounded lookahead byte to distinguish exact EOF from
     overflow. Exceeding either collector-wide budget raises
     :class:`EffectEgressInputTooLargeError` rather than reporting truncation.
+
+    ``supported_schema_versions`` lets a caller model a V1-only collector even
+    when this implementation also understands V2; a well-formed frame from a
+    newer supported family then raises
+    :class:`UnsupportedEffectEgressVersionError`. ``expected_schema_version``
+    is optional context for an otherwise empty stream. It is required only when
+    a caller wants an empty V2 stream without a terminator to surface
+    ``missing_stream_end`` rather than remain version-unknown.
     """
 
     max_frame_bytes = _validate_max_frame_bytes(max_frame_bytes)
     max_total_bytes = _validate_max_total_bytes(max_total_bytes)
     max_records = _validate_max_records(max_records)
+    supported_schema_versions = _validate_supported_schema_versions(supported_schema_versions)
+    expected_schema_version = _validate_expected_schema_version(
+        expected_schema_version,
+        supported_schema_versions=supported_schema_versions,
+    )
     records: list[EffectRecord] = []
+    schema_version = expected_schema_version
     expected_sequence = 0
     first_sequence_error: tuple[int, int] | None = None
     truncated = False
+    stream_end_declared = False
+    declared_record_count: int | None = None
     line_number = 0
     total_bytes_read = 0
     while True:
@@ -334,11 +446,28 @@ def read_effect_egress(
                 line_number=line_number,
             )
         total_bytes_read += len(line)
+        if stream_end_declared:
+            raise ValueError(f"invalid effect egress frame at line {line_number}")
         if not line.endswith(b"\n"):
             truncated = True
             break
 
-        frame = _parse_frame(line, line_number)
+        frame = _parse_frame(
+            line,
+            line_number,
+            supported_schema_versions=supported_schema_versions,
+        )
+        if schema_version is None:
+            schema_version = frame.schema_version
+        elif frame.schema_version != schema_version:
+            raise ValueError(f"invalid effect egress frame at line {line_number}")
+        if first_sequence_error is None and frame.sequence != expected_sequence:
+            first_sequence_error = (expected_sequence, frame.sequence)
+        expected_sequence = frame.sequence + 1
+        if isinstance(frame, _EffectEgressStreamEndFrame):
+            stream_end_declared = True
+            declared_record_count = frame.stream_end.record_count
+            continue
 
         if len(records) == max_records:
             raise EffectEgressInputTooLargeError(
@@ -346,15 +475,15 @@ def read_effect_egress(
                 max_records,
                 line_number=line_number,
             )
-        if first_sequence_error is None and frame.sequence != expected_sequence:
-            first_sequence_error = (expected_sequence, frame.sequence)
         records.append(frame.record)
-        expected_sequence = frame.sequence + 1
 
     return EffectEgressReadResult(
         records=tuple(records),
+        schema_version=schema_version,
         first_sequence_error=first_sequence_error,
         truncated=truncated,
+        stream_end_declared=stream_end_declared,
+        declared_record_count=declared_record_count,
     )
 
 
@@ -363,12 +492,14 @@ def require_complete_effect_egress(
 ) -> tuple[EffectRecord, ...]:
     """Return records only when received bytes show no known degradation.
 
-    A clean result, including an empty stream, means only that the reader did
-    not observe a sequence discontinuity or a trailing partial frame. It does
-    not prove that a writer emitted every effect or that the bytes are genuine.
-    Because :func:`read_effect_egress` starts sequence validation at zero,
-    attaching to a mid-stream writer produces ``first_sequence_error`` and is
-    rejected by this helper.
+    A clean V1 result, including an empty stream, means only that the reader did
+    not observe a sequence discontinuity or a trailing partial frame. A clean
+    V2 result additionally means that the writer emitted one stream-end frame
+    whose declared record count matched the records the reader retained. None
+    of those facts prove that a writer emitted every effect or that the bytes
+    are genuine. Because :func:`read_effect_egress` starts sequence validation
+    at zero, attaching to a mid-stream writer produces ``first_sequence_error``
+    and is rejected by this helper.
 
     This helper is the second half of a fail-closed collector read:
     :func:`read_effect_egress` raises :class:`ValueError`, including its
@@ -381,8 +512,8 @@ def require_complete_effect_egress(
 
     Raises:
         TypeError: If ``egress`` is not an :class:`EffectEgressReadResult`.
-        EffectEgressIncompleteError: If the reader reported a sequence
-            discontinuity or a trailing partial frame.
+        EffectEgressIncompleteError: If the reader reported any public
+            completeness signal.
     """
 
     if not isinstance(egress, EffectEgressReadResult):
@@ -401,8 +532,10 @@ def effect_egress_completeness_signals(
     """Return known reader diagnostics in canonical public order.
 
     The returned tuple describes only degradation visible in one
-    :class:`EffectEgressReadResult`. An empty tuple does not prove that a
-    writer emitted every effect or that the bytes are authentic.
+    :class:`EffectEgressReadResult`. ``missing_stream_end`` is version
+    conditional: it applies only when the result is explicitly V2. An empty
+    tuple does not prove that a writer emitted every effect or that the bytes
+    are authentic.
 
     Raises:
         TypeError: If ``egress`` is not an :class:`EffectEgressReadResult`.
@@ -417,10 +550,23 @@ def effect_egress_completeness_signals(
         reasons.append("first_sequence_error")
     if egress.truncated:
         reasons.append("truncated")
+    if egress.schema_version == EFFECT_EGRESS_SCHEMA_VERSION_V2 and not egress.stream_end_declared:
+        reasons.append("missing_stream_end")
+    if (
+        egress.stream_end_declared
+        and egress.declared_record_count is not None
+        and egress.declared_record_count != len(egress.records)
+    ):
+        reasons.append("record_count_mismatch")
     return tuple(reasons)
 
 
-def _parse_frame(line: bytes, line_number: int) -> _EffectEgressFrame:
+def _parse_frame(
+    line: bytes,
+    line_number: int,
+    *,
+    supported_schema_versions: tuple[EffectEgressSchemaVersion, ...],
+) -> _EffectEgressFrame | _EffectEgressStreamEndFrame:
     """Parse one complete frame and keep unsupported versions distinguishable."""
     body = line[:-1]
     try:
@@ -440,11 +586,29 @@ def _parse_frame(line: bytes, line_number: int) -> _EffectEgressFrame:
     if isinstance(payload, dict) and "schema_version" in payload:
         schema_version = payload["schema_version"]
         if (
-            schema_version != EFFECT_EGRESS_SCHEMA_VERSION
+            schema_version not in supported_schema_versions
             and isinstance(schema_version, str)
             and _EFFECT_EGRESS_SCHEMA_VERSION_RE.fullmatch(schema_version)
         ):
             raise UnsupportedEffectEgressVersionError(line_number, schema_version)
+        if schema_version == EFFECT_EGRESS_SCHEMA_VERSION_V2 and frozenset(payload) == (
+            EFFECT_EGRESS_STREAM_END_FRAME_KEYS
+        ):
+            stream_end_payload = payload.get("stream_end")
+            if (
+                isinstance(stream_end_payload, dict)
+                and frozenset(stream_end_payload) != EFFECT_EGRESS_STREAM_END_KEYS
+            ):
+                raise ValueError(f"invalid effect egress frame at line {line_number}")
+            if (
+                isinstance(stream_end_payload, dict)
+                and stream_end_payload.get("event_type") != EFFECT_EGRESS_STREAM_END_EVENT_TYPE
+            ):
+                raise ValueError(f"invalid effect egress frame at line {line_number}")
+            try:
+                return _EffectEgressStreamEndFrame.model_validate(payload)
+            except ValidationError as exc:
+                raise ValueError(f"invalid effect egress frame at line {line_number}") from exc
         record_payload = payload.get("record")
         if (
             isinstance(record_payload, dict)
@@ -498,7 +662,7 @@ def _parse_safe_json_int(token: str) -> int:
 
 
 def _validate_json_value_graph(payload: object, *, require_json_native: bool = False) -> None:
-    """Reject cycles and scalar values that make V1 JSON non-portable."""
+    """Reject cycles and scalar values that make effect-egress JSON non-portable."""
     pending: list[tuple[object, bool]] = [(payload, False)]
     active_container_ids: set[int] = set()
     validated_container_ids: set[int] = set()
@@ -548,6 +712,43 @@ def _validate_json_value_graph(payload: object, *, require_json_native: bool = F
             continue
         if require_json_native:
             raise ValueError(f"value is not JSON-native: {type(value).__name__}")
+
+
+def _validate_schema_version(schema_version: str) -> EffectEgressSchemaVersion:
+    """Validate one schema version implemented by this writer."""
+    if schema_version not in EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(f"unsupported effect egress schema_version: {schema_version!r}")
+    return schema_version
+
+
+def _validate_supported_schema_versions(
+    supported_schema_versions: Sequence[EffectEgressSchemaVersion],
+) -> tuple[EffectEgressSchemaVersion, ...]:
+    """Validate an ordered non-empty set of schema versions accepted by a reader."""
+    if isinstance(supported_schema_versions, str):
+        raise TypeError("supported_schema_versions expected a sequence, got str")
+    versions = tuple(supported_schema_versions)
+    if not versions:
+        raise ValueError("supported_schema_versions must not be empty")
+    if len(set(versions)) != len(versions):
+        raise ValueError("supported_schema_versions must not contain duplicates")
+    for version in versions:
+        if version not in EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(f"unsupported configured effect egress schema_version: {version!r}")
+    return versions
+
+
+def _validate_expected_schema_version(
+    expected_schema_version: EffectEgressSchemaVersion | None,
+    *,
+    supported_schema_versions: tuple[EffectEgressSchemaVersion, ...],
+) -> EffectEgressSchemaVersion | None:
+    """Validate optional empty-stream version context supplied by a caller."""
+    if expected_schema_version is None:
+        return None
+    if expected_schema_version not in supported_schema_versions:
+        raise ValueError("expected_schema_version must be included in supported_schema_versions")
+    return expected_schema_version
 
 
 def _validate_max_frame_bytes(max_frame_bytes: int) -> int:

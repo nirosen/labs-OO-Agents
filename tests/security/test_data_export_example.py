@@ -152,7 +152,10 @@ def test_detected_export_partial_tail_crash_preserves_export_scorer_refusal() ->
     assert result.authority_returncode is None
     assert result.victim_returncode == 3
     assert result.detector.scored is False
-    assert result.detector.effect_egress_completeness_signals == ("truncated",)
+    assert result.detector.effect_egress_completeness_signals == (
+        "truncated",
+        "missing_stream_end",
+    )
     assert result.detector.findings == ()
     assert result.detector.refusal_reason is not None
     assert "data export scorer" in result.detector.refusal_reason
@@ -164,3 +167,19 @@ def test_export_profile_rejects_authority_fault_configuration() -> None:
             "export_vulnerable_attack",
             authority_fault="exit_before_receipt",
         )
+
+
+def test_detected_export_exit_between_frames_refuses_missing_stream_end() -> None:
+    result = run_detected_scenario(
+        "export_vulnerable_attack",
+        victim_fault="exit_between_frames",
+    )
+
+    assert result.victim is None
+    assert result.victim_returncode == 5
+    assert result.detector.scored is False
+    assert result.detector.effect_egress_completeness_signals == ("missing_stream_end",)
+    assert result.detector.effect_egress_completeness_gate_passed is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "data export scorer" in result.detector.refusal_reason

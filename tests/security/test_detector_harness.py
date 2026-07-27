@@ -240,7 +240,10 @@ def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:
     assert result.authority_returncode == 0
     assert result.detector_returncode == 0
     assert result.detector.scored is False
-    assert result.detector.effect_egress_completeness_signals == ("truncated",)
+    assert result.detector.effect_egress_completeness_signals == (
+        "truncated",
+        "missing_stream_end",
+    )
     assert result.detector.effect_egress_completeness_gate_passed is False
     assert result.detector.findings == ()
     assert result.detector.refusal_reason is not None
@@ -250,6 +253,22 @@ def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:
 def test_detected_scenario_fails_closed_on_oversized_receipt_document() -> None:
     with pytest.raises(RuntimeError, match="detector subprocess failed"):
         run_detected_scenario("hardened_authorized", max_receipt_bytes=1)
+
+
+def test_detected_exit_between_frames_refuses_missing_stream_end() -> None:
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        victim_fault="exit_between_frames",
+    )
+
+    assert result.victim is None
+    assert result.victim_returncode == 5
+    assert result.detector.scored is False
+    assert result.detector.effect_egress_completeness_signals == ("missing_stream_end",)
+    assert result.detector.effect_egress_completeness_gate_passed is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "effect_egress_completeness_gate_passed=True" in result.detector.refusal_reason
 
 
 def test_detected_scenario_fails_closed_when_authority_exits_before_receipt_document() -> None:

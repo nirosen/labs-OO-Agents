@@ -11,9 +11,11 @@ receipt-free destination policy. Both profiles construct one
 running their application-local scorer.
 
 The split shows where a separately controlled detector and optional approval
-issuer can run. It does not authenticate pipe contents, make same-user
-subprocesses a trust boundary, provide sandboxing or attestation, prove that an
-issued token was honored, or turn detector findings into enforcement.
+issuer can run. This branch expects V2 effect egress so EOF before
+writer-declared completion becomes a detector refusal. It does not authenticate
+pipe contents or terminators, make same-user subprocesses a trust boundary,
+provide sandboxing or attestation, prove that an issued token was honored, or
+turn detector findings into enforcement.
 
     uv run python -m examples.security_hardening.detector_harness demo
 """
@@ -78,6 +80,7 @@ from examples.security_hardening.identity_approval import (
 )
 from nooa.security import (
     EFFECT_EGRESS_COMPLETENESS_SIGNALS,
+    EFFECT_EGRESS_SCHEMA_VERSION_V2,
     DetectorInput,
     EffectEgressCompletenessSignal,
     FdEffectSink,
@@ -335,7 +338,10 @@ def score_fd(
         receipt_coverage = receipt_document.receipt_coverage
         issued_token_count = receipt_document.issued_token_count
     with os.fdopen(effect_fd, "rb", closefd=True) as effect_fh:
-        egress = read_effect_egress(effect_fh)
+        egress = read_effect_egress(
+            effect_fh,
+            expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+        )
     detector_input = detector_input_from_egress(
         egress,
         input_id=input_id,
@@ -409,7 +415,8 @@ async def run_victim_with_authority_to_fd(
 
     with ExitStack() as cleanup:
         cleanup.callback(os.close, effect_fd)
-        cleanup.callback(install_effect_sink(agent.event_manager, FdEffectSink(effect_fd)))
+        sink = FdEffectSink(effect_fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        cleanup.callback(install_effect_sink(agent.event_manager, sink))
         cleanup.callback(
             install_agent_call_effect_recorder(
                 agent.event_manager,
@@ -424,8 +431,11 @@ async def run_victim_with_authority_to_fd(
         if emit_guard_effect:
             await agent.runtime.execute_code("eval('1 + 1')")
         if fault == "partial_tail_crash":
-            _write_all(effect_fd, b'{"schema_version":"nooa-effect-egress-v1"')
+            _write_all(effect_fd, b'{"schema_version":"nooa-effect-egress-v2"')
             raise SystemExit(3)
+        if fault == "exit_between_frames":
+            raise SystemExit(5)
+        sink.close()
 
     return VictimSummary(
         scenario=scenario,
@@ -483,7 +493,8 @@ async def run_data_export_victim_to_fd(
 
     with ExitStack() as cleanup:
         cleanup.callback(os.close, effect_fd)
-        cleanup.callback(install_effect_sink(agent.event_manager, FdEffectSink(effect_fd)))
+        sink = FdEffectSink(effect_fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        cleanup.callback(install_effect_sink(agent.event_manager, sink))
         cleanup.callback(
             install_agent_call_effect_recorder(
                 agent.event_manager,
@@ -496,8 +507,11 @@ async def run_data_export_victim_to_fd(
         if emit_guard_effect:
             await agent.runtime.execute_code("eval('1 + 1')")
         if fault == "partial_tail_crash":
-            _write_all(effect_fd, b'{"schema_version":"nooa-effect-egress-v1"')
+            _write_all(effect_fd, b'{"schema_version":"nooa-effect-egress-v2"')
             raise SystemExit(3)
+        if fault == "exit_between_frames":
+            raise SystemExit(5)
+        sink.close()
 
     return VictimSummary(
         scenario=scenario,
@@ -967,7 +981,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     victim_parser.add_argument("--approval-response-write-device", type=int)
     victim_parser.add_argument("--approval-response-write-inode", type=int)
     victim_parser.add_argument("--approval-response-write-access-mode", type=int)
-    victim_parser.add_argument("--fault", choices=("none", "partial_tail_crash"), default="none")
+    victim_parser.add_argument(
+        "--fault",
+        choices=("none", "partial_tail_crash", "exit_between_frames"),
+        default="none",
+    )
     victim_parser.add_argument("--emit-guard-effect", action="store_true")
 
     demo_parser = subparsers.add_parser(
@@ -975,7 +993,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Run the supervisor/victim/authority/detector demo.",
     )
     demo_parser.add_argument("--scenario", default="vulnerable_attack")
-    demo_parser.add_argument("--victim-fault", choices=("none", "partial_tail_crash"), default="none")
+    demo_parser.add_argument(
+        "--victim-fault",
+        choices=("none", "partial_tail_crash", "exit_between_frames"),
+        default="none",
+    )
     demo_parser.add_argument("--authority-fault", choices=("none", "exit_before_receipt"), default="none")
     demo_parser.add_argument("--emit-guard-effect", action="store_true")
     demo_parser.add_argument(

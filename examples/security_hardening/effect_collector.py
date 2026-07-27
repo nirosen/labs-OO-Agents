@@ -9,9 +9,11 @@ victim subprocess with only the write end. The collector uses
 from the victim's process exit status.
 
 The split makes bytes already emitted unavailable for readback or truncation by
-the victim process. It does not authenticate record contents, prevent a
-compromised victim from emitting forged records or stopping cleanly, provide
-sandboxing or attestation, or turn stream facts into a detector verdict.
+the victim process. This branch opts into the V2 stream-end frame so EOF before
+writer-declared completion becomes visible as ``missing_stream_end``. It does
+not authenticate record contents, prevent a compromised victim from emitting
+forged records or a forged terminator, provide sandboxing or attestation, or
+turn stream facts into a detector verdict.
 
     uv run python -m examples.security_hardening.effect_collector demo
 """
@@ -42,7 +44,9 @@ from examples.security_hardening.identity_approval import (
     observe_identity_grant,
 )
 from nooa.security import (
+    EFFECT_EGRESS_SCHEMA_VERSION_V2,
     EffectEgressReadResult,
+    EffectEgressSchemaVersion,
     EffectRecord,
     FdEffectSink,
     framework_guard_observer,
@@ -52,16 +56,16 @@ from nooa.security import (
     read_effect_egress,
 )
 
-_COLLECTOR_SCHEMA_VERSION: Literal["nooa-effect-collector-example-v1"] = (
-    "nooa-effect-collector-example-v1"
+_COLLECTOR_SCHEMA_VERSION: Literal["nooa-effect-collector-example-v2"] = (
+    "nooa-effect-collector-example-v2"
 )
 _VICTIM_SCHEMA_VERSION: Literal["nooa-effect-collector-victim-example-v1"] = (
     "nooa-effect-collector-victim-example-v1"
 )
-_DEMO_SCHEMA_VERSION: Literal["nooa-effect-collector-demo-v1"] = "nooa-effect-collector-demo-v1"
-_VICTIM_FAULTS = ("none", "partial_tail_crash")
+_DEMO_SCHEMA_VERSION: Literal["nooa-effect-collector-demo-v2"] = "nooa-effect-collector-demo-v2"
+_VICTIM_FAULTS = ("none", "partial_tail_crash", "exit_between_frames")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-VictimFault = Literal["none", "partial_tail_crash"]
+VictimFault = Literal["none", "partial_tail_crash", "exit_between_frames"]
 _FdIdentity = tuple[int, int, int]
 
 
@@ -70,11 +74,14 @@ class CollectorSummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["nooa-effect-collector-example-v1"] = _COLLECTOR_SCHEMA_VERSION
+    schema_version: Literal["nooa-effect-collector-example-v2"] = _COLLECTOR_SCHEMA_VERSION
     records: tuple[EffectRecord, ...] = ()
     record_count: int = Field(ge=0)
+    effect_egress_schema_version: EffectEgressSchemaVersion | None = None
     first_sequence_error: tuple[int, int] | None = None
     truncated: bool
+    stream_end_declared: bool = False
+    declared_record_count: int | None = None
 
     @model_validator(mode="after")
     def _validate_summary(self) -> Self:
@@ -88,8 +95,11 @@ class CollectorSummary(BaseModel):
         return cls(
             records=egress.records,
             record_count=len(egress.records),
+            effect_egress_schema_version=egress.schema_version,
             first_sequence_error=egress.first_sequence_error,
             truncated=egress.truncated,
+            stream_end_declared=egress.stream_end_declared,
+            declared_record_count=egress.declared_record_count,
         )
 
 
@@ -119,7 +129,7 @@ class CollectedScenario(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["nooa-effect-collector-demo-v1"] = _DEMO_SCHEMA_VERSION
+    schema_version: Literal["nooa-effect-collector-demo-v2"] = _DEMO_SCHEMA_VERSION
     victim: VictimSummary | None = None
     collector: CollectorSummary
     victim_returncode: int
@@ -134,7 +144,12 @@ class CollectedScenario(BaseModel):
 def collect_fd(fd: int) -> CollectorSummary:
     """Read a borrowed descriptor to EOF and summarize the received frames."""
     with os.fdopen(fd, "rb", closefd=True) as fh:
-        return CollectorSummary.from_egress(read_effect_egress(fh))
+        return CollectorSummary.from_egress(
+            read_effect_egress(
+                fh,
+                expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+            )
+        )
 
 
 async def run_victim_to_fd(
@@ -181,7 +196,8 @@ async def run_victim_to_fd(
 
     with ExitStack() as cleanup:
         cleanup.callback(os.close, fd)
-        cleanup.callback(install_effect_sink(agent.event_manager, FdEffectSink(fd)))
+        sink = FdEffectSink(fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        cleanup.callback(install_effect_sink(agent.event_manager, sink))
         cleanup.callback(
             install_agent_call_effect_recorder(
                 agent.event_manager,
@@ -196,8 +212,11 @@ async def run_victim_to_fd(
         if emit_guard_effect:
             await agent.runtime.execute_code("eval('1 + 1')")
         if fault == "partial_tail_crash":
-            _write_all(fd, b'{"schema_version":"nooa-effect-egress-v1"')
+            _write_all(fd, b'{"schema_version":"nooa-effect-egress-v2"')
             raise SystemExit(3)
+        if fault == "exit_between_frames":
+            raise SystemExit(5)
+        sink.close()
 
     return VictimSummary(
         scenario=scenario,
@@ -384,7 +403,7 @@ def _approval_response_write_identity_from_args(args: argparse.Namespace) -> _Fd
 
 def _validate_victim_fault(fault: str) -> VictimFault:
     """Validate one example-local victim fault mode."""
-    if fault == "none" or fault == "partial_tail_crash":
+    if fault in _VICTIM_FAULTS:
         return cast(VictimFault, fault)
     raise ValueError(f"unknown identity collector victim fault: {fault}")
 

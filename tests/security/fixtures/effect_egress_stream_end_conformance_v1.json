@@ -1,0 +1,149 @@
+{
+  "schema_version": "nooa-effect-egress-stream-end-conformance-v1",
+  "wire_schema_version": "nooa-effect-egress-v2",
+  "record_frame_keys": [
+    "record",
+    "schema_version",
+    "sequence"
+  ],
+  "stream_end_frame_keys": [
+    "schema_version",
+    "sequence",
+    "stream_end"
+  ],
+  "stream_end_event_type": "EffectEgressStreamEnd",
+  "stream_end_keys": [
+    "event_type",
+    "record_count"
+  ],
+  "completeness_signals": [
+    "first_sequence_error",
+    "truncated",
+    "missing_stream_end",
+    "record_count_mismatch"
+  ],
+  "records": {
+    "record_a": {
+      "event_type": "EffectRecord",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "metadata": {},
+      "status": "active",
+      "tag": null,
+      "timestamp": "2026-07-27T00:00:00",
+      "effect_type": "fs.write",
+      "target": "/tmp/a",
+      "decision": "observed",
+      "observer": "",
+      "generation_id": "",
+      "tool_call_id": "",
+      "attributes": {}
+    }
+  },
+  "vectors": [
+    {
+      "name": "empty_stream_missing_stream_end",
+      "payload_utf8": "",
+      "expected_schema_version": "nooa-effect-egress-v2",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [],
+        "first_sequence_error": null,
+        "truncated": false,
+        "stream_end_declared": false,
+        "declared_record_count": null,
+        "completeness_signals": [
+          "missing_stream_end"
+        ]
+      }
+    },
+    {
+      "name": "empty_stream_with_stream_end",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\",\"record_count\":0}}\n",
+      "expected_schema_version": "nooa-effect-egress-v2",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [],
+        "first_sequence_error": null,
+        "truncated": false,
+        "stream_end_declared": true,
+        "declared_record_count": 0,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "one_record_missing_stream_end",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": false,
+        "stream_end_declared": false,
+        "declared_record_count": null,
+        "completeness_signals": [
+          "missing_stream_end"
+        ]
+      }
+    },
+    {
+      "name": "one_record_with_stream_end",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":1,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\",\"record_count\":1}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": false,
+        "stream_end_declared": true,
+        "declared_record_count": 1,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "record_count_mismatch",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":1,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\",\"record_count\":0}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": false,
+        "stream_end_declared": true,
+        "declared_record_count": 0,
+        "completeness_signals": [
+          "record_count_mismatch"
+        ]
+      }
+    },
+    {
+      "name": "truncated_stream_end",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":1,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\"",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": true,
+        "stream_end_declared": false,
+        "declared_record_count": null,
+        "completeness_signals": [
+          "truncated",
+          "missing_stream_end"
+        ]
+      }
+    },
+    {
+      "name": "frame_after_stream_end",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\",\"record_count\":0}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 2
+      }
+    }
+  ]
+}

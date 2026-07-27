@@ -18,16 +18,37 @@ from examples.security_hardening.effect_collector import (
     run_collected_scenario,
 )
 from examples.security_hardening.identity_approval import EFFECT_TYPE
-from nooa.security import EFFECT_EGRESS_SCHEMA_VERSION, EffectRecord
+from nooa.security import (
+    EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    EFFECT_EGRESS_STREAM_END_EVENT_TYPE,
+    EffectRecord,
+)
 
 
 def _frame_line(sequence: int, record: EffectRecord) -> bytes:
     return (
         json.dumps(
             {
-                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION,
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION_V2,
                 "sequence": sequence,
                 "record": record.model_dump(mode="json"),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _stream_end_line(sequence: int, record_count: int) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION_V2,
+                "sequence": sequence,
+                "stream_end": {
+                    "event_type": EFFECT_EGRESS_STREAM_END_EVENT_TYPE,
+                    "record_count": record_count,
+                },
             },
             separators=(",", ":"),
         ).encode("utf-8")
@@ -65,8 +86,11 @@ def test_collected_scenario_round_trips_identity_effect_through_subprocesses() -
     assert result.victim.decision_source == "backend"
     assert result.victim.backend_event_count == 1
     assert result.collector.record_count == 1
+    assert result.collector.effect_egress_schema_version == EFFECT_EGRESS_SCHEMA_VERSION_V2
     assert result.collector.first_sequence_error is None
     assert result.collector.truncated is False
+    assert result.collector.stream_end_declared is True
+    assert result.collector.declared_record_count == 1
     assert result.collector.records[0].effect_type == EFFECT_TYPE
     assert result.collector.records[0].decision == "allowed"
 
@@ -118,6 +142,8 @@ def test_collected_scenario_keeps_guard_and_agent_call_labels_distinct() -> None
     assert result.collector.record_count == 2
     assert result.collector.first_sequence_error is None
     assert result.collector.truncated is False
+    assert result.collector.stream_end_declared is True
+    assert result.collector.declared_record_count == 2
     assert {
         (record.effect_type, record.observer, record.decision)
         for record in result.collector.records
@@ -175,11 +201,15 @@ def test_collector_reports_sequence_gap_from_received_bytes() -> None:
     first = EffectRecord(effect_type="fs.write", target="/tmp/a")
     third = EffectRecord(effect_type="net.request", target="service-c")
 
-    summary = _collect_payload(_frame_line(0, first) + _frame_line(2, third))
+    summary = _collect_payload(
+        _frame_line(0, first) + _frame_line(2, third) + _stream_end_line(3, 2)
+    )
 
     assert summary.records == (first, third)
     assert summary.first_sequence_error == (1, 2)
     assert summary.truncated is False
+    assert summary.stream_end_declared is True
+    assert summary.declared_record_count == 2
 
 
 def test_collector_reports_empty_writer_stream_without_truncation() -> None:
@@ -189,6 +219,9 @@ def test_collector_reports_empty_writer_stream_without_truncation() -> None:
     assert summary.record_count == 0
     assert summary.first_sequence_error is None
     assert summary.truncated is False
+    assert summary.effect_egress_schema_version == EFFECT_EGRESS_SCHEMA_VERSION_V2
+    assert summary.stream_end_declared is False
+    assert summary.declared_record_count is None
 
 
 def test_collected_scenario_keeps_stream_facts_when_victim_crashes() -> None:
@@ -204,6 +237,21 @@ def test_collected_scenario_keeps_stream_facts_when_victim_crashes() -> None:
     assert result.collector.records[0].decision == "allowed"
     assert result.collector.first_sequence_error is None
     assert result.collector.truncated is True
+    assert result.collector.stream_end_declared is False
+
+
+def test_collected_scenario_reports_missing_stream_end_when_victim_exits_between_frames() -> None:
+    result = run_collected_scenario(
+        "vulnerable_attack",
+        victim_fault="exit_between_frames",
+    )
+
+    assert result.victim is None
+    assert result.victim_returncode == 5
+    assert result.collector.record_count == 1
+    assert result.collector.truncated is False
+    assert result.collector.stream_end_declared is False
+    assert result.collector.declared_record_count is None
 
 
 def test_collector_accepts_forged_frame_from_writer() -> None:
@@ -214,8 +262,9 @@ def test_collector_accepts_forged_frame_from_writer() -> None:
         observer="forged_writer",
     )
 
-    summary = _collect_payload(_frame_line(0, forged))
+    summary = _collect_payload(_frame_line(0, forged) + _stream_end_line(1, 1))
 
     assert summary.records == (forged,)
     assert summary.first_sequence_error is None
     assert summary.truncated is False
+    assert summary.stream_end_declared is True
