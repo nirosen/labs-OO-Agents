@@ -62,6 +62,56 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Second Victim Detector Generality
+
+> Branch: `codex/security-second-victim-detector-generality`
+
+This slice adds a second example victim without changing `src/nooa/**`: a `DataExportAgent` records `data.export` effects, a backend can enforce a destination allowlist, and an export scorer flags allowed exports outside that allowlist. The point is not to broaden the threat claim. It is to test whether the existing `DetectorInput` handoff and detector subprocess are actually neutral enough for a policy that does not use approval receipts at all.
+
+```mermaid
+flowchart LR
+    I1["prompt injection<br/>grant request"] --> V1["IdentityApprovalAgent"]
+    I2["prompt injection<br/>export request"] --> V2["DataExportAgent"]
+    V1 --> E1["identity EffectRecord"]
+    V2 --> E2["data.export EffectRecord"]
+    A["approval authority<br/>identity profile only"] --> R["receipt pipe"]
+    E1 --> H["shared detector_harness.score_fd()"]
+    E2 --> H
+    R --> H
+    H --> DI["detector_input_from_egress()"]
+    DI --> S1["identity scorer<br/>requires asserted receipt coverage"]
+    DI --> S2["export scorer<br/>ignores receipt coverage"]
+    S1 --> F["finding or refusal"]
+    S2 --> F
+```
+
+| Scenario | Profile | Authority | Receipt coverage | Detector result |
+| --- | --- | --- | --- | --- |
+| `vulnerable_attack` | Identity approval | Yes | `asserted_complete` | 1 finding |
+| `export_vulnerable_attack` | Data export | No | `unknown` | 1 finding |
+| `export_hardened_attack` | Data export | No | `unknown` | 0 findings |
+| `export_hardened_allowed` | Data export | No | `unknown` | 0 findings |
+| `export_vulnerable_attack --victim-fault partial_tail_crash` | Data export | No | `unknown` | Refused, not clean |
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-only `data_export.py`, shared example-local `detector_policy.py`, a small detector-profile registry in `detector_harness.py`, profile-tagged detector reports, export scenarios, and tests that pin receipt-free scoring plus cross-scorer non-matches |
+| Security claim | The current detector handoff stretches to a second, non-identity policy: both victims use the same `score_fd()` and `detector_input_from_egress()` path, while the export scorer can score a complete input with `receipts=()` and `receipt_coverage="unknown"`. |
+| Non-claim | Two example victims do not establish general coverage of agent method shapes. The destination allowlist is example policy; NOOA still does not own export authorization, detector sufficiency, or verdicts. The second victim inherits the same unauthenticated, same-user, same-host transport and adds no sandboxing, attestation, authentication, or completeness proof. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline` |
+| Review files | `examples/security_hardening/data_export.py`, `examples/security_hardening/detector_policy.py`, `examples/security_hardening/detector_harness.py`, `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `examples/README.md`, `tests/security/test_data_export_example.py`, `tests/security/test_detector_harness.py` |
+| Validation | `pytest tests/security`; `git diff --quiet a7b11e7 -- src/nooa`; `pytest` |
+
+Run the second victim through the same detector harness:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_hardened_attack
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack --victim-fault partial_tail_crash
+```
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the profile split, receipt-free scoring path, and explicit non-claims.
+
 ## Security Review Joint Branch: End-to-End Detector Pipeline
 
 > Branch: `codex/security-hardening-e2e-detector-pipeline`

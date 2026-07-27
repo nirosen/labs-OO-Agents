@@ -23,6 +23,7 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 | — | Out-of-process effect collector | [`security_hardening/effect_collector.py`](security_hardening/effect_collector.py) |
 | — | Out-of-process detector harness | [`security_hardening/detector_harness.py`](security_hardening/detector_harness.py) |
 | — | Approval authority receipts | [`security_hardening/approval_authority.py`](security_hardening/approval_authority.py) |
+| — | Second victim detector generality | [`security_hardening/data_export.py`](security_hardening/data_export.py) |
 
 ---
 
@@ -49,6 +50,12 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario vu
 ```
 
 [`security_hardening/approval_authority.py`](security_hardening/approval_authority.py) contains only the example-local authority protocol and fixed demo policy. It demonstrates issuance separation, not an authenticated IAM service, sandbox, or attested receipt source.
+
+[`security_hardening/data_export.py`](security_hardening/data_export.py) adds a second victim profile for the same detector harness. It records `data.export` effects, applies an example-only backend destination allowlist, and uses a scorer that requires complete egress but does not require receipts or asserted receipt coverage. That makes the existing detector handoff exercise one non-identity policy without claiming a new core assessment contract.
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
+```
 
 ## Step 1: Your first generation method
 

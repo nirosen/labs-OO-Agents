@@ -46,47 +46,64 @@ def _scoreable_input(**updates: object) -> DetectorInput:
     return DetectorInput.model_validate(fields)
 
 
+def _report_fields(**updates: object) -> dict[str, object]:
+    fields: dict[str, object] = {
+        "victim_profile": "identity_approval",
+        "scorer_name": "identity-approval-scorer",
+        "detector_input_id": "detector-input-1",
+    }
+    fields.update(updates)
+    return fields
+
+
 def test_detector_report_is_strict_and_self_consistent() -> None:
     report = DetectorReport(
-        detector_input_id="detector-input-1",
+        **_report_fields(),
         run_id="run-1",
         scored=True,
     )
 
-    assert report.schema_version == "nooa-detector-harness-example-v2"
+    assert report.schema_version == "nooa-detector-harness-example-v3"
+    assert report.victim_profile == "identity_approval"
+    assert report.scorer_name == "identity-approval-scorer"
     assert report.findings == ()
     assert report.refusal_reason is None
 
     with pytest.raises(ValidationError):
-        DetectorReport(detector_input_id="detector-input-1", scored=True, typo="not-allowed")
+        DetectorReport(**_report_fields(typo="not-allowed"), scored=True)
     with pytest.raises(ValidationError, match="cannot carry refusal_reason"):
         DetectorReport(
-            detector_input_id="detector-input-1",
+            **_report_fields(),
             scored=True,
             refusal_reason="not allowed",
         )
     with pytest.raises(ValidationError, match="cannot be true"):
         DetectorReport(
-            detector_input_id="detector-input-1",
+            **_report_fields(),
             effect_egress_completeness_signals=("truncated",),
             effect_egress_completeness_gate_passed=True,
             scored=True,
         )
     with pytest.raises(ValidationError, match="canonical unique order"):
         DetectorReport(
-            detector_input_id="detector-input-1",
+            **_report_fields(),
             effect_egress_completeness_signals=("truncated", "first_sequence_error"),
             scored=True,
         )
     with pytest.raises(ValidationError, match="issued_token_count must match receipt_count"):
         DetectorReport(
-            detector_input_id="detector-input-1",
+            **_report_fields(),
             receipt_count=1,
             issued_token_count=0,
             scored=True,
         )
     with pytest.raises(ValidationError, match="requires refusal_reason"):
-        DetectorReport(detector_input_id="detector-input-1", scored=False)
+        DetectorReport(**_report_fields(), scored=False)
+    with pytest.raises(ValidationError, match="scorer_name must match victim_profile"):
+        DetectorReport(
+            **_report_fields(scorer_name="data-export-scorer"),
+            scored=True,
+        )
 
 
 def test_score_detector_input_emits_identity_finding() -> None:
@@ -96,12 +113,14 @@ def test_score_detector_input_emits_identity_finding() -> None:
 
     assert report.detector_input_id == detector_input.input_id
     assert report.run_id == detector_input.run_id
+    assert report.victim_profile == "identity_approval"
+    assert report.scorer_name == "identity-approval-scorer"
     assert report.scored is True
     assert report.effect_egress_completeness_gate_passed is True
     assert report.receipt_source == "approval-authority"
     assert report.receipt_coverage == "asserted_complete"
     assert report.receipt_count == 0
-    assert report.issued_token_count == 0
+    assert report.issued_token_count is None
     assert report.findings[0].evidence_refs == (
         detector_input.input_id,
         detector_input.effects[0].id,
@@ -164,6 +183,7 @@ def test_read_receipt_document_rejects_invalid_budget(max_receipt_bytes: object)
 def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_finding() -> None:
     result = run_detected_scenario("vulnerable_attack")
 
+    assert result.victim_profile == "identity_approval"
     assert result.victim is not None
     assert result.authority is not None
     assert result.victim_returncode == 0
@@ -179,6 +199,8 @@ def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_
     assert result.authority.receipt_count == 0
     assert result.authority.receipt_ids == ()
     assert result.detector.detector_input_id == "detector-input-vulnerable_attack"
+    assert result.detector.victim_profile == "identity_approval"
+    assert result.detector.scorer_name == "identity-approval-scorer"
     assert result.detector.scored is True
     assert result.detector.effect_egress_completeness_signals == ()
     assert result.detector.effect_egress_completeness_gate_passed is True
@@ -238,7 +260,8 @@ def test_detected_scenario_fails_closed_when_authority_exits_before_receipt_docu
 def test_detected_scenario_rejects_nonzero_detector_returncode() -> None:
     with pytest.raises(ValidationError, match="successful detector subprocess"):
         DetectedScenario(
-            detector=DetectorReport(detector_input_id="detector-input-1", scored=True),
+            victim_profile="identity_approval",
+            detector=DetectorReport(**_report_fields(), scored=True),
             victim_returncode=3,
             authority=AuthoritySummary(
                 request_count=0,
@@ -253,9 +276,31 @@ def test_detected_scenario_rejects_nonzero_detector_returncode() -> None:
 def test_detected_scenario_rejects_nonzero_authority_returncode() -> None:
     with pytest.raises(ValidationError, match="successful authority subprocess"):
         DetectedScenario(
-            detector=DetectorReport(detector_input_id="detector-input-1", scored=True),
+            victim_profile="identity_approval",
+            detector=DetectorReport(**_report_fields(), scored=True),
             victim_returncode=3,
             authority_returncode=1,
+            detector_returncode=0,
+        )
+
+
+def test_detected_scenario_rejects_authority_state_for_receipt_free_profile() -> None:
+    with pytest.raises(ValidationError, match="receipt-free profile cannot carry authority"):
+        DetectedScenario(
+            victim_profile="data_export",
+            detector=DetectorReport(
+                victim_profile="data_export",
+                scorer_name="data-export-scorer",
+                detector_input_id="detector-input-export",
+                scored=True,
+            ),
+            victim_returncode=3,
+            authority=AuthoritySummary(
+                request_count=0,
+                issued_token_count=0,
+                receipt_count=0,
+            ),
+            authority_returncode=0,
             detector_returncode=0,
         )
 

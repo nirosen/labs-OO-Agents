@@ -31,6 +31,7 @@ from examples.security_hardening.approval_authority import (
     approval_token_for_request,
     approval_tokens_by_request_id,
 )
+from examples.security_hardening.detector_policy import UnscoreableDetectorInputError
 from examples.security_hardening.identity_contract import EFFECT_TYPE, FINDING_TYPE, RECEIPT_TYPE
 from nooa import Agent, hidden
 from nooa.runtime.middleware import MIDDLEWARE_AGENT_CALL, AgentCallContext, AgentCallNext
@@ -53,10 +54,6 @@ if TYPE_CHECKING:
 
 DEFENDER_REASON = "defender requires an approval token for untrusted grant requests"
 _OFFLINE_LLM = FakeLLMClient()
-
-
-class UnscoreableDetectorInputError(ValueError):
-    """Raised when this example's detector policy refuses one input bundle."""
 
 
 @dataclass(frozen=True)

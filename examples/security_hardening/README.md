@@ -2,6 +2,41 @@
 
 This offline example shows how the security review slices compose around one identity-changing agent method. It starts after untrusted content has influenced a victim agent to call `grant_access`, then separates observed effect telemetry, a deterministic application-owned defender recipe, backend receipt collection, a detector-facing `DetectorInput` handoff, and application-local finding generation. Each scenario assigns one `run_id` to its detector input, out-of-band receipts, and findings so this narrow scorer can ignore a stale receipt from another run.
 
+## Second Victim Detector Generality Follow-On
+
+`codex/security-second-victim-detector-generality` adds a second example victim on top of the joint branch without changing `src/nooa/**`. `DataExportAgent.export_dataset()` emits `data.export` effects and uses a backend destination allowlist instead of approval tokens. Its scorer still requires complete effect egress, but it intentionally scores with `receipts=()` and `receipt_coverage="unknown"` because receipt sufficiency belongs to application policy, not the `DetectorInput` transport object.
+
+```mermaid
+flowchart LR
+    I1["grant request"] --> V1["IdentityApprovalAgent"]
+    I2["export request"] --> V2["DataExportAgent"]
+    V1 --> EP["effect pipe"]
+    V2 --> EP
+    A["approval authority<br/>identity only"] --> RP["receipt pipe"]
+    EP --> D["shared detector subprocess"]
+    RP --> D
+    D --> SF["score_fd()"]
+    SF --> DI["detector_input_from_egress()"]
+    DI --> IS["identity scorer<br/>receipt coverage required"]
+    DI --> ES["export scorer<br/>receipt coverage ignored"]
+```
+
+Run the receipt-free export attack and hardened replay:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_hardened_attack
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_hardened_allowed
+```
+
+| Scenario | Backend policy | Authority | Receipt coverage | Finding |
+| --- | --- | --- | --- | --- |
+| `export_vulnerable_attack` | Allowlist off | None | `unknown` | 1 |
+| `export_hardened_attack` | Allowlist on | None | `unknown` | 0 |
+| `export_hardened_allowed` | Allowlist on | None | `unknown` | 0 |
+
+The branch demonstrates only that the current handoff stretched once beyond identity approval. It does not prove that two victims cover agent method shapes generally, make the allowlist a NOOA policy API, or change the same-user, same-host trust limits of the detector harness. The export scorer and identity scorer are intentionally separate application policies: the export scorer ignores grant effects, while the identity scorer either ignores or refuses export inputs rather than treating them as grants.
+
 ## End-to-End Detector Pipeline Joint Branch
 
 `codex/security-hardening-e2e-detector-pipeline` is the integration branch for the smaller security slices below. It does not add another API layer. It packages the runnable path that a NOOA user would evaluate when hardening one agent method: observe an effect, apply an optional defender, collect bounded egress, obtain approval receipts from a separate issuer, assemble detector input outside the victim, and score or refuse.
