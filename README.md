@@ -166,8 +166,8 @@ An independent collector may rely on these public exports:
 A collector that wants a fail-closed handoff can pass the
 `EffectEgressReadResult` from `read_effect_egress()` to
 `require_complete_effect_egress()`. The helper returns that result's exact
-`records` tuple when `first_sequence_error is None` and `truncated is False`.
-Otherwise it raises `EffectEgressIncompleteError`, whose `reasons`,
+`records` tuple when `first_sequence_error is None` and the result does not
+report truncation. Otherwise it raises `EffectEgressIncompleteError`, whose `reasons`,
 `first_sequence_error`, and `truncated` fields preserve the reader-visible
 degradation without inventing a detector verdict.
 
