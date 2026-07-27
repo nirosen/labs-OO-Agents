@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import os
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
 
+from examples.security_hardening import identity_approval
 from examples.security_hardening.identity_approval import (
     AUTHORIZED_REQUEST,
     DEFENDER_REASON,
@@ -25,6 +27,7 @@ from examples.security_hardening.identity_approval import (
 )
 from nooa.errors import RestrictedCodeError
 from nooa.security import (
+    EffectEgressReadResult,
     EffectRecord,
     FdEffectSink,
     SecurityReceipt,
@@ -130,6 +133,37 @@ async def test_defender_only_blocks_attack_before_vulnerable_backend(tmp_path: P
     assert result.egress.records == result.effects
     assert result.egress.first_sequence_error is None
     assert result.egress.truncated is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "egress",
+    [
+        EffectEgressReadResult(records=(), truncated=True),
+        EffectEgressReadResult(
+            records=(EffectRecord(effect_type=EFFECT_TYPE, target="contractor@prod-db"),),
+            first_sequence_error=(0, 1),
+        ),
+    ],
+    ids=["truncated", "sequence-gap"],
+)
+async def test_run_scenario_refuses_to_score_incomplete_egress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    egress: EffectEgressReadResult,
+) -> None:
+    def read_degraded_egress(_: Path) -> EffectEgressReadResult:
+        return egress
+
+    monkeypatch.setattr(identity_approval, "_read_effect_egress", read_degraded_egress)
+
+    with pytest.raises(RuntimeError, match="refuses to score incomplete effect egress"):
+        await run_scenario(
+            "vulnerable_attack",
+            PROMPT_INJECTION_REQUEST,
+            enforce_approval=False,
+            output_dir=tmp_path,
+        )
 
 
 @pytest.mark.asyncio
@@ -337,25 +371,24 @@ async def test_egress_keeps_defender_and_framework_observer_labels_distinct(
     agent = IdentityApprovalAgent(IdentityBackend(enforce_approval=False))
     egress_path = tmp_path / "combined.effects.egress"
     sink_fd = os.open(egress_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    uninstall_sink = install_effect_sink(agent.event_manager, FdEffectSink(sink_fd))
-    uninstall_agent_call = install_agent_call_effect_recorder(
-        agent.event_manager,
-        observe_identity_grant,
-    )
-    uninstall_defender = install_identity_grant_defender(agent.event_manager)
-    uninstall_guard = install_effect_recorder(
-        agent.event_manager,
-        framework_guard_observer,
-    )
-    try:
+    with ExitStack() as cleanup:
+        cleanup.callback(os.close, sink_fd)
+        cleanup.callback(install_effect_sink(agent.event_manager, FdEffectSink(sink_fd)))
+        cleanup.callback(
+            install_agent_call_effect_recorder(
+                agent.event_manager,
+                observe_identity_grant,
+            )
+        )
+        cleanup.callback(install_identity_grant_defender(agent.event_manager))
+        cleanup.callback(
+            install_effect_recorder(
+                agent.event_manager,
+                framework_guard_observer,
+            )
+        )
         decision = await agent.handle_request(PROMPT_INJECTION_REQUEST)
         validation_result = await agent.runtime.execute_code("eval('1 + 1')")
-    finally:
-        uninstall_guard()
-        uninstall_defender()
-        uninstall_agent_call()
-        uninstall_sink()
-        os.close(sink_fd)
 
     assert decision.granted is False
     assert decision.source == "defender"

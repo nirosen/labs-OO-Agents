@@ -66,7 +66,7 @@ This design supports familiar Python testing, tracing, refactoring, and version-
 
 > Branch: `codex/security-hardening-e2e-defender-provenance-egress`
 
-This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, the built-in `framework_guard_observer`, and bounded descriptor-backed effect egress. The same attack-shaped request still has vulnerable, defender-only, and backend-hardened comparison points. The scorer now consumes collector-facing `read_effect_egress()` records instead of the local event store, while backend receipts and findings remain outside core NOOA.
+This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, the built-in `framework_guard_observer`, and bounded descriptor-backed effect egress. The same attack-shaped request still has vulnerable, defender-only, and backend-hardened comparison points. The scorer now consumes collector-facing `read_effect_egress()` records instead of the local event store and refuses to score a gapped or truncated stream, while backend receipts and findings remain outside core NOOA.
 
 ```mermaid
 flowchart LR
@@ -96,7 +96,7 @@ flowchart LR
 | Review item | Detail |
 | --- | --- |
 | Adds | End-to-end identity-approval example, an example-only deterministic `agent_call` defender recipe, `framework_guard_observer()`, bounded `FdEffectSink` transport, collector-side `read_effect_egress()`, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
-| Security claim | Applications can add a deterministic preflight denial, emit bounded framed effect copies through a chosen blocking descriptor, detect a first sequence discontinuity or trailing partial frame in received bytes, and keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
+| Security claim | Applications can add a deterministic preflight denial, emit bounded framed effect copies through a chosen blocking descriptor, refuse to score when received bytes show a first sequence discontinuity or trailing partial frame, and keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
 | Non-claim | The demo does not simulate an LLM attack, make same-process descriptors/receipts trusted, make the defender a trusted boundary or backend authorization replacement, generalize beyond this scripted missing-token rule, authenticate the origin of a guard-shaped exception or record, turn guard telemetry into a vulnerability detector, prove unrecorded effects did not happen, or make NOOA enforce authorization policy. |
 | Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer`, `codex/security-hardening-defender-recipe`, `codex/security-effect-egress` |
 | Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/egress.py`, `src/nooa/security/observers.py`, `tests/security/test_egress.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |

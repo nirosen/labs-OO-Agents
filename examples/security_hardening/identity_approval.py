@@ -321,6 +321,18 @@ def _read_effect_egress(path: Path) -> EffectEgressReadResult:
         return read_effect_egress(fh)
 
 
+def _require_complete_effect_egress(
+    egress: EffectEgressReadResult,
+) -> tuple[EffectRecord, ...]:
+    """Refuse to score when collector-facing effect evidence is incomplete."""
+    if egress.first_sequence_error is None and not egress.truncated:
+        return egress.records
+    raise RuntimeError(
+        "identity approval demo refuses to score incomplete effect egress: "
+        f"first_sequence_error={egress.first_sequence_error}, truncated={egress.truncated}"
+    )
+
+
 async def run_scenario(
     name: str,
     request: AccessRequest,
@@ -350,7 +362,7 @@ async def run_scenario(
 
     backend_events = backend.audit_log()
     egress = _read_effect_egress(sink_path)
-    effects = egress.records
+    effects = _require_complete_effect_egress(egress)
     receipts = collect_approval_receipts(backend, run_id=run_id)
     findings = detect_grants_without_approval(effects, receipts, run_id=run_id)
     return ScenarioResult(
