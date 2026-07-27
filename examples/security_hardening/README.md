@@ -4,6 +4,20 @@ This offline example shows how the security review slices compose around one ide
 
 For the consolidated export map, V1/V2 egress rules, minimal integration, and canonical trust-boundary statements, see [`SURFACE.md`](SURFACE.md).
 
+## Producer Egress Conformance Follow-On
+
+`codex/security-effect-egress-producer-conformance` adds checked writer-direction vectors for the existing `FdEffectSink` V1 and V2 output without changing `src/nooa/**`. The vectors pin the bytes that this implementation emits today, including V2 stream-end counts, and the focused tests feed those same bytes back through `read_effect_egress()` so the producer and reader examples cannot drift independently.
+
+```mermaid
+flowchart LR
+    I["fixed EffectRecord inputs"] --> W["FdEffectSink<br/>V1 / V2"]
+    W --> G["producer vector bytes"]
+    G --> R["read_effect_egress()"]
+    R --> O["same records<br/>same V2 end facts"]
+```
+
+These vectors are interoperability regression references, not an authenticity claim. A conforming writer can still forge records or omit effects before closing, and an external writer can remain acceptable to the reader without copying NOOA's exact JSON formatting.
+
 ## Current Joint Branch
 
 `codex/security-hardening-e2e-detector-pipeline-v2` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress for reader-visible refusal semantics, and exercises the same detector handoff across identity approval and data export victims.

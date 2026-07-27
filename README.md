@@ -62,6 +62,32 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Producer Egress Conformance Vectors
+
+> Branch: `codex/security-effect-egress-producer-conformance`
+
+This slice adds no `src/nooa` runtime behavior. It adds writer-direction reference vectors for the existing `FdEffectSink` V1 and V2 output, then checks that the current sink emits those bytes exactly and that the same vectors still round-trip through `read_effect_egress()`. The reader fixtures already told an independent collector what bytes it must accept; this slice gives reviewers a checked reference for what NOOA's own producer emits today without claiming that equivalent external JSON writers must use identical formatting.
+
+```mermaid
+flowchart LR
+    R["fixed EffectRecord inputs"] --> S["FdEffectSink<br/>V1 / V2"]
+    S --> V["producer vectors<br/>checked bytes"]
+    V --> B["LF JSON frame shape<br/>key order + compact encoding"]
+    V --> C["read_effect_egress()"]
+    C --> RT["round-trip record check"]
+    S --> E["V2 close()<br/>stream_end count"]
+    E --> V
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `tests/security/fixtures/effect_egress_producer_conformance_v1.json`, exact-byte producer checks, reader round-trip checks, and a surface-guide note for the reference vectors |
+| Security claim | Reviewers can now detect accidental drift in the current `FdEffectSink` V1/V2 frame encoding and keep its checked producer examples aligned with the existing reader contract. |
+| Non-claim | Exact producer vectors do not authenticate frames, prove completeness, make a producer trusted, or require independent writers to copy NOOA's JSON formatting when they already satisfy the accepted wire contract. They are regression references for this implementation, not evidence-authenticity fixtures. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v2` |
+| Review files | `tests/security/fixtures/effect_egress_producer_conformance_v1.json`, `tests/security/test_egress_producer_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_egress_producer_conformance.py`; `pytest tests/security`; `git diff --quiet 11ae1eb -- src/nooa`; `pytest` |
+
 ## Security Review Joint Branch: End-to-End Detector Pipeline V2
 
 > Branch: `codex/security-hardening-e2e-detector-pipeline-v2`

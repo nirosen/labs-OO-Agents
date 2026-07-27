@@ -1,0 +1,152 @@
+{
+  "schema_version": "nooa-effect-egress-producer-conformance-v1",
+  "wire_schema_versions": [
+    "nooa-effect-egress-v1",
+    "nooa-effect-egress-v2"
+  ],
+  "record_frame_keys": [
+    "schema_version",
+    "sequence",
+    "record"
+  ],
+  "stream_end_frame_keys": [
+    "schema_version",
+    "sequence",
+    "stream_end"
+  ],
+  "record_event_type": "EffectRecord",
+  "record_keys": [
+    "event_type",
+    "id",
+    "metadata",
+    "status",
+    "tag",
+    "timestamp",
+    "effect_type",
+    "target",
+    "decision",
+    "observer",
+    "generation_id",
+    "tool_call_id",
+    "attributes"
+  ],
+  "stream_end_event_type": "EffectEgressStreamEnd",
+  "stream_end_keys": [
+    "event_type",
+    "record_count"
+  ],
+  "records": {
+    "record_a": {
+      "event_type": "EffectRecord",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "metadata": {},
+      "status": "active",
+      "tag": null,
+      "timestamp": "2026-07-27T00:00:00",
+      "effect_type": "fs.write",
+      "target": "/tmp/a",
+      "decision": "observed",
+      "observer": "",
+      "generation_id": "",
+      "tool_call_id": "",
+      "attributes": {}
+    },
+    "record_b": {
+      "event_type": "EffectRecord",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "metadata": {},
+      "status": "active",
+      "tag": null,
+      "timestamp": "2026-07-27T00:00:01",
+      "effect_type": "net.request",
+      "target": "service-b",
+      "decision": "observed",
+      "observer": "",
+      "generation_id": "",
+      "tool_call_id": "",
+      "attributes": {}
+    },
+    "record_payload_encoding": {
+      "event_type": "EffectRecord",
+      "id": "00000000-0000-0000-0000-000000000005",
+      "metadata": {
+        "source": {
+          "kind": "fixture",
+          "rank": 1
+        }
+      },
+      "status": "active",
+      "tag": null,
+      "timestamp": "2026-07-27T00:00:04",
+      "effect_type": "fs.write",
+      "target": "/tmp/caf\u00e9-\u6f22",
+      "decision": "observed",
+      "observer": "",
+      "generation_id": "",
+      "tool_call_id": "",
+      "attributes": {
+        "ratio": 0.1,
+        "big": 9007199254740991,
+        "nested": {
+          "label": "caf\u00e9-\u6f22"
+        }
+      }
+    }
+  },
+  "vectors": [
+    {
+      "name": "v1_single_record",
+      "schema_version": "nooa-effect-egress-v1",
+      "record_refs": [
+        "record_a"
+      ],
+      "close": false,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n"
+    },
+    {
+      "name": "v1_two_records",
+      "schema_version": "nooa-effect-egress-v1",
+      "record_refs": [
+        "record_a",
+        "record_b"
+      ],
+      "close": false,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n"
+    },
+    {
+      "name": "v1_payload_encoding",
+      "schema_version": "nooa-effect-egress-v1",
+      "record_refs": [
+        "record_payload_encoding"
+      ],
+      "close": false,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000005\",\"metadata\":{\"source\":{\"kind\":\"fixture\",\"rank\":1}},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:04\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/caf\u00e9-\u6f22\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}}\n"
+    },
+    {
+      "name": "v2_empty_stream_end",
+      "schema_version": "nooa-effect-egress-v2",
+      "record_refs": [],
+      "close": true,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\",\"record_count\":0}}\n"
+    },
+    {
+      "name": "v2_single_record_stream_end",
+      "schema_version": "nooa-effect-egress-v2",
+      "record_refs": [
+        "record_a"
+      ],
+      "close": true,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":1,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\",\"record_count\":1}}\n"
+    },
+    {
+      "name": "v2_two_records_stream_end",
+      "schema_version": "nooa-effect-egress-v2",
+      "record_refs": [
+        "record_a",
+        "record_b"
+      ],
+      "close": true,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":2,\"stream_end\":{\"event_type\":\"EffectEgressStreamEnd\",\"record_count\":2}}\n"
+    }
+  ]
+}

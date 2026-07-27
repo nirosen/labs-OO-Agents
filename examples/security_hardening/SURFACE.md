@@ -38,6 +38,8 @@ All four types are portable shapes. Frozen field bindings do not make nested val
 
 V2 closes one narrow ambiguity: a collector that explicitly expects V2 can distinguish writer-declared completion from EOF between complete frames. It does not authenticate the writer or prove that every effect was emitted before close.
 
+The checked producer reference vectors in `tests/security/fixtures/effect_egress_producer_conformance_v1.json` pin the bytes that this implementation's `FdEffectSink` emits today for representative V1 and V2 paths, then round-trip those bytes through `read_effect_egress()`. They are regression references for NOOA's producer output, not a requirement that independent writers use identical JSON formatting and not evidence that a producer is honest.
+
 The reader exposes three local resource budgets:
 
 | Budget | Meaning |
