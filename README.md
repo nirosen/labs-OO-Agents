@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: External CLI Commands
+
+> Branch: `codex/cli-command-entrypoints`
+
+This branch gives external packages a stable `nooa.cli_commands` entry-point surface without forcing their imports into every `nooa` invocation. The lazy proxy keeps `nooa --help` cheap, protects built-in command names, and leaves secret loading opt-in for third-party commands.
+
+```mermaid
+flowchart LR
+    A["installed plugin package"] --> B["nooa.cli_commands entry point"]
+    B --> C["lazy proxy in nooa help"]
+    C -->|invoke| D["load Click command"]
+    B -. "cannot shadow" .-> E["built-in and completion names"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Lazy external command discovery, collision protection, and opt-in secret preload behavior |
+| Security claim | Installing a plugin cannot silently shadow a built-in top-level command, and broken plugins fail on invocation rather than CLI startup. |
+| Non-claim | Invoking an installed plugin still executes that package's code; this is extensibility, not a sandbox. |
+| Base | `main` |
+| Review files | `packages/nooa-cli/src/nooa_cli/commands/__init__.py`, `packages/nooa-cli/src/nooa_cli/__init__.py`, `packages/nooa-cli/src/nooa_cli/AGENTS.md`, `packages/nooa-cli/tests/test_command_discovery.py` |
+| Validation | `pytest packages/nooa-cli/tests/test_command_discovery.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
