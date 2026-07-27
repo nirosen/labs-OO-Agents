@@ -19,8 +19,19 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 | 10 | Skills | [`10_skills.py`](quickstart/10_skills.py) |
 | 11 | MCP tools | [`11_mcp.py`](quickstart/11_mcp.py) |
 | — | Sandbox, memory, multimodal, NeMo Flow | see the [Advanced](#advanced-topics) section |
+| — | Security hardening flow | [`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) |
 
 ---
+
+## Security Hardening Flow
+
+[`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) is an offline composition example for effect telemetry, JSONL evidence mirroring, backend receipts, and application-local findings around an identity-changing agent method.
+
+```bash
+uv run python examples/security_hardening/identity_approval.py
+```
+
+It compares a vulnerable grant, a denied hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit.
 
 ## Step 1: Your first generation method
 
