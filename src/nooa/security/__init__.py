@@ -11,6 +11,7 @@ from nooa.security.install import (
     install_agent_call_effect_recorder,
     install_effect_recorder,
 )
+from nooa.security.observers import framework_guard_observer
 from nooa.security.receipts import SecurityReceipt
 from nooa.security.sinks import (
     EffectRecordSinkBackend,
@@ -29,6 +30,7 @@ __all__ = [
     "JsonlEffectSink",
     "SecurityFinding",
     "SecurityReceipt",
+    "framework_guard_observer",
     "install_agent_call_effect_recorder",
     "install_effect_recorder",
     "install_effect_sink",

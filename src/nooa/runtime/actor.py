@@ -59,6 +59,7 @@ from nooa.runtime.harness_metrics import (
     start_harness_metrics,
 )
 from nooa.runtime.hooks import call_after_hook, call_before_hook
+from nooa.runtime.sandbox.errors import CellTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -1505,7 +1506,10 @@ class ActorRuntime:
             # still wrap the cell on the parent. The worker owns the namespace,
             # stdout capture and wrapper, so we skip the in-process exec below.
             if sandbox_executor is not None:
-                result = await sandbox_executor.run_cell(code, execution_count=execution_count)
+                result = cast(
+                    ExecutionResult,
+                    await sandbox_executor.run_cell(code, execution_count=execution_count),
+                )
                 return result
 
             # Set up stdout/stderr capture BEFORE ast.parse/compile so that
@@ -1666,13 +1670,21 @@ class ActorRuntime:
                     coro = exec_globals["__repl_wrapper__"]()
                     with agent_async_safety_context():
                         if timeout is not None:
+                            # Keep wait_for's child-task semantics while using
+                            # expired() to distinguish framework deadlines from
+                            # user code that raises TimeoutError itself.
+                            task = asyncio.ensure_future(coro)
+                            timeout_ctx = asyncio.timeout(timeout)
                             try:
-                                result_value = await asyncio.wait_for(coro, timeout=timeout)
+                                async with timeout_ctx:
+                                    result_value = await task
                             except TimeoutError:
-                                raise TimeoutError(
-                                    f"Code execution timed out after {timeout} seconds. "
-                                    "Check for infinite loops or blocking operations."
-                                ) from None
+                                if timeout_ctx.expired():
+                                    raise CellTimeoutError(
+                                        f"Code execution timed out after {timeout} seconds. "
+                                        "Check for infinite loops or blocking operations."
+                                    ) from None
+                                raise
                         else:
                             result_value = await coro
 
@@ -1749,13 +1761,21 @@ class ActorRuntime:
                             coro = exec_globals["__wrapper__"]()
                             with agent_async_safety_context():
                                 if timeout is not None:
+                                    # Keep wait_for's child-task semantics while using
+                                    # expired() to distinguish framework deadlines from
+                                    # user code that raises TimeoutError itself.
+                                    task = asyncio.ensure_future(coro)
+                                    timeout_ctx = asyncio.timeout(timeout)
                                     try:
-                                        await asyncio.wait_for(coro, timeout=timeout)
+                                        async with timeout_ctx:
+                                            await task
                                     except TimeoutError:
-                                        raise TimeoutError(
-                                            f"Code execution timed out after {timeout} seconds. "
-                                            "Check for infinite loops or blocking operations."
-                                        ) from None
+                                        if timeout_ctx.expired():
+                                            raise CellTimeoutError(
+                                                f"Code execution timed out after {timeout} seconds. "
+                                                "Check for infinite loops or blocking operations."
+                                            ) from None
+                                        raise
                                 else:
                                     await coro
                         else:

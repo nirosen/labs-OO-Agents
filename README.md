@@ -62,34 +62,38 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Hardening Flow
+## Security Review Slice: Hardening Flow + Guard Provenance
 
-> Branch: `codex/security-hardening-e2e`
+> Branch: `codex/security-hardening-e2e-provenance`
 
-This branch composes the review slices into one identity-approval hardening flow. The demo starts at the post-prompt-injection effect boundary: a victim agent calls `grant_access`, NOOA records the method effect, a JSONL sink mirrors the record, a backend collector emits a run-scoped receipt, and an application-local scorer produces a run-scoped finding when an allowed grant lacks corroboration.
+This optional joint branch composes the identity-approval hardening demo with the built-in `framework_guard_observer`. The demo still keeps backend receipts and findings outside core NOOA; the added proof is narrower: application-owned method effects and framework-owned guard outcomes can coexist in one event stream without collapsing provenance.
 
 ```mermaid
 flowchart LR
     I["prompt injection or unsafe context"] --> V["NOOA victim agent"]
     V --> M["grant_access()"]
-    M --> O["agent_call observer"]
-    O --> E["EffectRecord"]
-    E --> J["JsonlEffectSink"]
+    M --> AO["agent_call observer"]
+    AO --> AE["EffectRecord<br/>observer=agent_call_middleware"]
+    AE --> J["JsonlEffectSink"]
     M --> B["identity backend"]
     B --> R["SecurityReceipt collector<br/>run_id"]
-    E --> S["application scorer"]
+    AE --> S["application scorer"]
     R --> S
     S --> F["SecurityFinding<br/>run_id"]
+    V -. "generated code rejected" .-> X["execute_python"]
+    X --> GO["framework_guard_observer"]
+    GO --> GE["EffectRecord<br/>observer=framework_guard"]
+    GE --> P["guard evidence<br/>not scorer input"]
 ```
 
 | Review item | Detail |
 | --- | --- |
-| Adds | End-to-end identity-approval example and composition tests over `EffectRecord`, agent-call recording, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
-| Security claim | Applications can compose NOOA effect telemetry with separately collected receipts and policy-specific findings, while keeping out-of-band artifacts scoped to one application-assigned run, without putting detector semantics into core NOOA. |
-| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, or make NOOA enforce authorization policy. |
-| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract` |
-| Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `tests/security/test_hardening_example.py` |
-| Validation | `pytest tests/security/test_hardening_example.py tests/security` |
+| Adds | End-to-end identity-approval example plus a composition test over application `EffectRecord` telemetry, `framework_guard_observer()`, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
+| Security claim | Applications can keep application-owned effects and framework-owned guard outcomes distinguishable by `observer` while composing separately collected receipts and policy-specific findings. |
+| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, turn guard telemetry into a vulnerability detector, or make NOOA enforce authorization policy. |
+| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer` |
+| Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/observers.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
+| Validation | `pytest tests/security` |
 
 See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the vulnerable and hardened comparison.
 

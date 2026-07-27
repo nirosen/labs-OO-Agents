@@ -13,10 +13,20 @@ from examples.security_hardening.identity_approval import (
     EFFECT_TYPE,
     FINDING_TYPE,
     PROMPT_INJECTION_REQUEST,
+    IdentityApprovalAgent,
+    IdentityBackend,
     detect_grants_without_approval,
+    observe_identity_grant,
     run_scenario,
 )
-from nooa.security import EffectRecord, SecurityReceipt
+from nooa.errors import RestrictedCodeError
+from nooa.security import (
+    EffectRecord,
+    SecurityReceipt,
+    framework_guard_observer,
+    install_agent_call_effect_recorder,
+    install_effect_recorder,
+)
 
 
 @pytest.mark.asyncio
@@ -130,3 +140,33 @@ def test_other_run_receipt_does_not_suppress_current_run_finding() -> None:
     assert len(findings) == 1
     assert findings[0].run_id == "identity-approval-demo/current-run"
     assert findings[0].evidence_refs == (effect.id,)
+
+
+@pytest.mark.asyncio
+async def test_application_and_framework_effects_keep_distinct_observers() -> None:
+    agent = IdentityApprovalAgent(IdentityBackend(enforce_approval=False))
+    uninstall_agent_call = install_agent_call_effect_recorder(
+        agent.event_manager,
+        observe_identity_grant,
+    )
+    uninstall_guard = install_effect_recorder(
+        agent.event_manager,
+        framework_guard_observer,
+    )
+    try:
+        await agent.handle_request(PROMPT_INJECTION_REQUEST)
+        validation_result = await agent.runtime.execute_code("eval('1 + 1')")
+    finally:
+        uninstall_guard()
+        uninstall_agent_call()
+
+    assert isinstance(validation_result.error, RestrictedCodeError)
+    records = [
+        event
+        for event in agent.event_manager.filter(type="EffectRecord")
+        if isinstance(event, EffectRecord)
+    ]
+    assert {(record.effect_type, record.observer, record.decision) for record in records} == {
+        (EFFECT_TYPE, "agent_call_middleware", "allowed"),
+        ("code.validation", "framework_guard", "denied"),
+    }

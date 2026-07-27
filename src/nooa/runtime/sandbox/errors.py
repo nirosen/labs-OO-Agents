@@ -19,8 +19,8 @@ class SandboxUnavailable(SandboxError):
     """
 
 
-class CellTimeoutError(SandboxError):
-    """A cell exceeded its wall-clock deadline and the worker was killed."""
+class CellTimeoutError(SandboxError, TimeoutError):
+    """A cell exceeded a runtime wall-clock or CPU-time deadline."""
 
 
 class CellMemoryError(SandboxError):

@@ -46,6 +46,19 @@ This is a composition example, not a trust claim. The JSONL sink, receipt collec
 
 The demo scopes only the out-of-band transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope.
 
+On `codex/security-hardening-e2e-provenance`, the same event manager can also carry framework-owned guard evidence without confusing it with the application grant effect:
+
+```mermaid
+flowchart LR
+    A["grant_access()"] --> AE["EffectRecord<br/>observer=agent_call_middleware"]
+    B["execute_python validation denial"] --> FE["EffectRecord<br/>observer=framework_guard"]
+    AE --> C["same event stream"]
+    FE --> C
+    C --> D["observer keeps provenance distinct"]
+```
+
+The built-in guard record is evidence of a framework outcome only. It is not fed into the identity scorer in this example and does not become a vulnerability verdict.
+
 The demo keeps `grant_access()` async because the current `agent_call` recorder observes async agent methods; a sync tool method would require a different observation seam.
 
 The fake LLM client only satisfies `Agent` construction; no generation method runs in this deterministic flow.
