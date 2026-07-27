@@ -25,13 +25,13 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 
 ## Security Hardening Flow
 
-[`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) is an offline composition example for effect telemetry, JSONL evidence mirroring, backend receipts, and application-local findings around an identity-changing agent method.
+[`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) is an offline composition example for effect telemetry, an example-only deterministic `agent_call` defender recipe, JSONL evidence mirroring, backend receipts, and application-local findings around an identity-changing agent method.
 
 ```bash
 uv run python examples/security_hardening/identity_approval.py
 ```
 
-It compares a vulnerable grant, a denied hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit, including why receipts and findings carry an application-assigned `run_id` while `EffectRecord` keeps its existing runtime lineage fields.
+It compares a vulnerable grant, a defender-only denial, a denied backend-hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit, including why receipts and findings carry an application-assigned `run_id` while `EffectRecord` keeps its existing runtime lineage fields.
 
 ## Step 1: Your first generation method
 

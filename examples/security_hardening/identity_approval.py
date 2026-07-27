@@ -3,12 +3,14 @@
 """Offline identity-approval hardening flow.
 
 This example starts at the post-prompt-injection effect boundary: an agent
-method is asked to grant access, an observer records the effect, a backend
-collector emits receipts, and an application-local scorer produces findings.
+method is asked to grant access, an observer records the effect, an optional
+application-local defender can short-circuit the method, a backend collector
+emits receipts, and an application-local scorer produces findings.
 
-The receipt collector and scorer run in the same Python process for a compact,
-deterministic demo. In production they belong behind a separately trusted
-boundary; constructing them inside a victim process does not make them trusted.
+The defender, receipt collector, and scorer run in the same Python process for
+a compact, deterministic demo. In production the receipt collector and scorer
+belong behind a separately trusted boundary; constructing them inside a victim
+process does not make them trusted.
 
     uv run python examples/security_hardening/identity_approval.py
 """
@@ -17,14 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 from nooa import Agent, hidden
-from nooa.runtime.middleware import AgentCallContext
+from nooa.runtime.middleware import MIDDLEWARE_AGENT_CALL, AgentCallContext, AgentCallNext
 from nooa.security import (
     EffectRecord,
     JsonlEffectSink,
@@ -35,9 +37,13 @@ from nooa.security import (
 )
 from nooa.unifiedllm import FakeLLMClient
 
+if TYPE_CHECKING:
+    from nooa.runtime.event_manager import EventManager
+
 EFFECT_TYPE = "identity.grant_access"
 RECEIPT_TYPE = "identity.approval"
 FINDING_TYPE = "identity.grant_without_approval"
+DEFENDER_REASON = "defender requires an approval token for untrusted grant requests"
 _APPROVED_TOKENS = {"req-approved": "approval-token-42"}
 _OFFLINE_LLM = FakeLLMClient()
 
@@ -55,10 +61,11 @@ class AccessRequest:
 
 @dataclass(frozen=True)
 class AccessDecision:
-    """Backend decision returned to the agent."""
+    """Decision returned to the agent by the backend or example defender."""
 
     granted: bool
     reason: str
+    source: Literal["backend", "defender"] = "backend"
 
 
 @dataclass(frozen=True)
@@ -74,12 +81,13 @@ class BackendGrantEvent:
 
 @dataclass(frozen=True)
 class ScenarioResult:
-    """Artifacts produced by one vulnerable or hardened run."""
+    """Artifacts produced by one vulnerable, defender-only, or hardened run."""
 
     name: str
     run_id: str
     request: AccessRequest
     decision: AccessDecision
+    backend_events: tuple[BackendGrantEvent, ...]
     effects: tuple[EffectRecord, ...]
     receipts: tuple[SecurityReceipt, ...]
     findings: tuple[SecurityFinding, ...]
@@ -134,8 +142,8 @@ class IdentityBackend:
             )
         )
         if granted:
-            return AccessDecision(granted=True, reason="grant accepted")
-        return AccessDecision(granted=False, reason="approval token required")
+            return AccessDecision(granted=True, reason="grant accepted", source="backend")
+        return AccessDecision(granted=False, reason="approval token required", source="backend")
 
     def audit_log(self) -> tuple[BackendGrantEvent, ...]:
         """Return immutable backend audit facts for an external collector."""
@@ -191,8 +199,40 @@ def observe_identity_grant(ctx: AgentCallContext) -> EffectRecord | None:
             "resource": request.resource,
             "approval_token_present": request.approval_token is not None,
             "untrusted_content_present": bool(request.untrusted_content),
+            "decision_source": decision.source,
         },
     )
+
+
+def install_identity_grant_defender(event_manager: EventManager) -> Callable[[], None]:
+    """Install one application-specific, deterministic grant preflight rule.
+
+    This recipe blocks only the example's ``grant_access`` method when an
+    untrusted request has no approval token. It is defense-in-depth inside the
+    victim process, not backend authorization. A caller that bypasses this
+    method boundary or removes the middleware still reaches whatever policy the
+    backend enforces.
+    """
+
+    async def _defend(ctx: AgentCallContext, nxt: AgentCallNext) -> AgentCallContext:
+        if ctx.method_name != "grant_access":
+            return await nxt(ctx)
+
+        request = ctx.args[0] if ctx.args else ctx.kwargs.get("request")
+        if not isinstance(request, AccessRequest):
+            return await nxt(ctx)
+
+        if request.approval_token is None and bool(request.untrusted_content):
+            ctx.result = AccessDecision(
+                granted=False,
+                reason=DEFENDER_REASON,
+                source="defender",
+            )
+            return ctx
+
+        return await nxt(ctx)
+
+    return event_manager.intercept(MIDDLEWARE_AGENT_CALL, _defend)
 
 
 def collect_approval_receipts(
@@ -284,6 +324,7 @@ async def run_scenario(
     request: AccessRequest,
     *,
     enforce_approval: bool,
+    defender_enabled: bool = False,
     output_dir: Path,
 ) -> ScenarioResult:
     """Run one identity-approval scenario and return all security artifacts."""
@@ -296,12 +337,20 @@ async def run_scenario(
         agent.event_manager,
         observe_identity_grant,
     )
+    uninstall_defender = (
+        install_identity_grant_defender(agent.event_manager)
+        if defender_enabled
+        else None
+    )
     try:
         decision = await agent.handle_request(request)
     finally:
+        if uninstall_defender is not None:
+            uninstall_defender()
         uninstall_recorder()
         uninstall_sink()
 
+    backend_events = backend.audit_log()
     effects = tuple(
         event
         for event in agent.event_manager.filter(type="EffectRecord")
@@ -314,6 +363,7 @@ async def run_scenario(
         run_id=run_id,
         request=request,
         decision=decision,
+        backend_events=backend_events,
         effects=effects,
         receipts=receipts,
         findings=findings,
@@ -322,12 +372,19 @@ async def run_scenario(
 
 
 async def run_demo(output_dir: Path) -> tuple[ScenarioResult, ...]:
-    """Run the vulnerable and hardened comparisons used by the README."""
+    """Run the vulnerable, defender-only, and hardened comparisons."""
     return (
         await run_scenario(
             "vulnerable_attack",
             PROMPT_INJECTION_REQUEST,
             enforce_approval=False,
+            output_dir=output_dir,
+        ),
+        await run_scenario(
+            "defender_only_attack",
+            PROMPT_INJECTION_REQUEST,
+            enforce_approval=False,
+            defender_enabled=True,
             output_dir=output_dir,
         ),
         await run_scenario(
@@ -347,11 +404,13 @@ async def run_demo(output_dir: Path) -> tuple[ScenarioResult, ...]:
 
 def format_results(results: Sequence[ScenarioResult]) -> str:
     """Render a compact comparison table for the terminal."""
-    rows = [("scenario", "decision", "effects", "receipts", "findings")]
+    rows = [("scenario", "decision", "source", "backend", "effects", "receipts", "findings")]
     rows.extend(
         (
             result.name,
             "allowed" if result.decision.granted else "denied",
+            result.decision.source,
+            str(len(result.backend_events)),
             str(len(result.effects)),
             str(len(result.receipts)),
             str(len(result.findings)),

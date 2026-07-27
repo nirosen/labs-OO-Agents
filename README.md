@@ -62,20 +62,24 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Hardening Flow
+## Security Review Slice: Hardening Flow + Defender Recipe
 
-> Branch: `codex/security-hardening-e2e`
+> Branch: `codex/security-hardening-defender-recipe`
 
-This branch composes the review slices into one identity-approval hardening flow. The demo starts at the post-prompt-injection effect boundary: a victim agent calls `grant_access`, NOOA records the method effect, a JSONL sink mirrors the record, a backend collector emits a run-scoped receipt, and an application-local scorer produces a run-scoped finding when an allowed grant lacks corroboration.
+This optional branch adds one deterministic, application-owned `agent_call` defender recipe to the identity-approval hardening flow. The same attack-shaped request now has three comparison points: an unenforced backend that grants, a middleware-only denial that short-circuits before that backend, and an authoritative backend denial. NOOA still records the method effect, a JSONL sink mirrors it, a backend collector emits run-scoped receipts, and an application-local scorer produces run-scoped findings when an allowed grant lacks corroboration.
 
 ```mermaid
 flowchart LR
     I["prompt injection or unsafe context"] --> V["NOOA victim agent"]
     V --> M["grant_access()"]
-    M --> O["agent_call observer"]
-    O --> E["EffectRecord"]
+    M --> O["agent_call recorder<br/>outer wrapper"]
+    O --> D["example defender middleware<br/>missing token rule"]
+    D -- "deny before backend" --> X["AccessDecision<br/>source=defender"]
+    D -- "pass through" --> B["identity backend<br/>authoritative"]
+    B --> Y["AccessDecision<br/>source=backend"]
+    X --> E["EffectRecord<br/>decision_source"]
+    Y --> E
     E --> J["JsonlEffectSink"]
-    M --> B["identity backend"]
     B --> R["SecurityReceipt collector<br/>run_id"]
     E --> S["application scorer"]
     R --> S
@@ -84,9 +88,9 @@ flowchart LR
 
 | Review item | Detail |
 | --- | --- |
-| Adds | End-to-end identity-approval example and composition tests over `EffectRecord`, agent-call recording, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
-| Security claim | Applications can compose NOOA effect telemetry with separately collected receipts and policy-specific findings, while keeping out-of-band artifacts scoped to one application-assigned run, without putting detector semantics into core NOOA. |
-| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, or make NOOA enforce authorization policy. |
+| Adds | End-to-end identity-approval example plus an example-only deterministic `agent_call` defender recipe over `EffectRecord`, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
+| Security claim | Applications can use existing NOOA middleware to add a deterministic preflight denial and keep effect, receipt, and finding evidence coherent across vulnerable, defender-only, and backend-hardened replays. |
+| Non-claim | The defender recipe is not a trusted boundary, does not replace backend authorization, does not generalize beyond this scripted rule, and a path outside the guarded method can still reach a permissive backend. |
 | Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract` |
 | Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `tests/security/test_hardening_example.py` |
 | Validation | `pytest tests/security/test_hardening_example.py tests/security` |
