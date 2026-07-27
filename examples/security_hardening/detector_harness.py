@@ -57,19 +57,21 @@ from examples.security_hardening.data_export import (
 )
 from examples.security_hardening.detector_policy import UnscoreableDetectorInputError
 from examples.security_hardening.effect_collector import (
+    _VICTIM_FAULTS,
     VictimFault,
     VictimSummary,
     _approval_request_read_identity_from_args,
     _approval_response_write_identity_from_args,
     _collector_read_identity_from_args,
+    _FaultInjectingV2Sink,
     _fd_identity,
+    _finish_victim_effect_stream,
     _has_fd_identity,
     _receipt_read_identity_from_args,
     _receipt_write_identity_from_args,
     _scenario_config,
     _terminate_process,
     _validate_victim_fault,
-    _write_all,
 )
 from examples.security_hardening.identity_approval import (
     IdentityApprovalAgent,
@@ -83,7 +85,6 @@ from nooa.security import (
     EFFECT_EGRESS_SCHEMA_VERSION_V2,
     DetectorInput,
     EffectEgressCompletenessSignal,
-    FdEffectSink,
     ReceiptCoverage,
     SecurityFinding,
     detector_input_from_egress,
@@ -415,7 +416,7 @@ async def run_victim_with_authority_to_fd(
 
     with ExitStack() as cleanup:
         cleanup.callback(os.close, effect_fd)
-        sink = FdEffectSink(effect_fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        sink = _FaultInjectingV2Sink(effect_fd, fault)
         cleanup.callback(install_effect_sink(agent.event_manager, sink))
         cleanup.callback(
             install_agent_call_effect_recorder(
@@ -430,12 +431,7 @@ async def run_victim_with_authority_to_fd(
         decision = await agent.handle_request(request)
         if emit_guard_effect:
             await agent.runtime.execute_code("eval('1 + 1')")
-        if fault == "partial_tail_crash":
-            _write_all(effect_fd, b'{"schema_version":"nooa-effect-egress-v2"')
-            raise SystemExit(3)
-        if fault == "exit_between_frames":
-            raise SystemExit(5)
-        sink.close()
+        _finish_victim_effect_stream(sink, effect_fd, fault)
 
     return VictimSummary(
         scenario=scenario,
@@ -493,7 +489,7 @@ async def run_data_export_victim_to_fd(
 
     with ExitStack() as cleanup:
         cleanup.callback(os.close, effect_fd)
-        sink = FdEffectSink(effect_fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        sink = _FaultInjectingV2Sink(effect_fd, fault)
         cleanup.callback(install_effect_sink(agent.event_manager, sink))
         cleanup.callback(
             install_agent_call_effect_recorder(
@@ -506,12 +502,7 @@ async def run_data_export_victim_to_fd(
         decision = await agent.handle_request(request)
         if emit_guard_effect:
             await agent.runtime.execute_code("eval('1 + 1')")
-        if fault == "partial_tail_crash":
-            _write_all(effect_fd, b'{"schema_version":"nooa-effect-egress-v2"')
-            raise SystemExit(3)
-        if fault == "exit_between_frames":
-            raise SystemExit(5)
-        sink.close()
+        _finish_victim_effect_stream(sink, effect_fd, fault)
 
     return VictimSummary(
         scenario=scenario,
@@ -983,7 +974,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     victim_parser.add_argument("--approval-response-write-access-mode", type=int)
     victim_parser.add_argument(
         "--fault",
-        choices=("none", "partial_tail_crash", "exit_between_frames"),
+        choices=_VICTIM_FAULTS,
         default="none",
     )
     victim_parser.add_argument("--emit-guard-effect", action="store_true")
@@ -995,7 +986,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     demo_parser.add_argument("--scenario", default="vulnerable_attack")
     demo_parser.add_argument(
         "--victim-fault",
-        choices=("none", "partial_tail_crash", "exit_between_frames"),
+        choices=_VICTIM_FAULTS,
         default="none",
     )
     demo_parser.add_argument("--authority-fault", choices=("none", "exit_before_receipt"), default="none")

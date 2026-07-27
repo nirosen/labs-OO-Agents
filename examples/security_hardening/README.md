@@ -6,7 +6,7 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 
 ## V2 Effect Egress Stream-End Follow-On
 
-`codex/security-effect-egress-stream-end-v2` adds an opt-in V2 envelope to the shared egress reader and switches the subprocess collector and detector examples to it. V1 stays the default writer contract. In V2, normal victim completion calls `FdEffectSink.close()` and emits one stream-end frame with a writer-declared record count; EOF between complete frames now surfaces as `missing_stream_end` instead of looking like orderly completion.
+`codex/security-effect-egress-stream-end-v2` adds an opt-in V2 envelope to the shared egress reader and switches the subprocess collector and detector examples to it. V1 stays the default writer contract. In V2, normal victim completion calls `FdEffectSink.close()` and emits one stream-end frame with a writer-declared record count; EOF between complete frames now surfaces as `missing_stream_end` instead of looking like orderly completion. `codex/security-lossy-writer-fault-coverage` adds example-only sequence-gap and dropped-record faults so the composed detector path also exercises orderly-looking loss diagnostics without changing `src/nooa/**`.
 
 ```mermaid
 flowchart LR
@@ -15,16 +15,23 @@ flowchart LR
     V -- "close()" --> E["stream_end frame<br/>record_count=N"]
     E --> P
     V -. "exit_between_frames" .-> M["EOF without stream_end"]
+    V -. "sequence_gap" .-> G["stream_end with skipped sequence"]
+    V -. "drop_record_count_mismatch" .-> D["record omitted<br/>declared count retained"]
+    G --> P
+    D --> P
     P --> C["read_effect_egress()<br/>expected_schema_version=V2"]
     C --> OK["stream_end_declared=True"]
-    C --> X["missing_stream_end<br/>detector refuses"]
+    C --> X["completeness signal<br/>detector refuses"]
 ```
 
 Run the new between-frame failure against both subprocess surfaces:
 
 ```bash
 uv run python -m examples.security_hardening.effect_collector demo --victim-fault exit_between_frames
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault sequence_gap
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault drop_record_count_mismatch
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault exit_between_frames
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault drop_record_count_mismatch
 uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack --victim-fault exit_between_frames
 ```
 
@@ -33,9 +40,13 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario ex
 | Collector | None | Declared | `()` | Facts preserved |
 | Collector | `partial_tail_crash` | Missing | `("truncated", "missing_stream_end")` | Facts preserved |
 | Collector | `exit_between_frames` | Missing | `("missing_stream_end",)` | Facts preserved |
+| Collector | `sequence_gap` | Declared | `("first_sequence_error",)` | Facts preserved |
+| Collector | `drop_record_count_mismatch` | Declared | `("record_count_mismatch",)` | Facts preserved |
 | Detector | `exit_between_frames` | Missing | `("missing_stream_end",)` | Refused, not scored |
+| Detector | `sequence_gap` | Declared | `("first_sequence_error",)` | Refused, not scored |
+| Detector | `drop_record_count_mismatch` | Declared | `("record_count_mismatch",)` | Refused, not scored |
 
-The terminator closes one narrow ambiguity only: it distinguishes a writer that declared completion from a writer that stopped before declaring completion. It does not authenticate the writer, prove that all effects were emitted before close, make a forged terminator trustworthy, or change the same-user same-host process limits of these examples.
+The terminator closes one narrow ambiguity only: it distinguishes a writer that declared completion from a writer that stopped before declaring completion. The new loss faults pin two inconsistent writer states that the reader can already diagnose: a skipped sequence and a declared count larger than the retained record set. They still do not authenticate the writer, prove that all effects were emitted before close, make a forged terminator trustworthy, or change the same-user same-host process limits of these examples. A writer that drops an effect and declares the reduced count remains invisible by construction.
 
 ## Second Victim Detector Generality Follow-On
 
@@ -211,11 +222,13 @@ That optional path adds one validation-denial record after the identity
 decision. It demonstrates label separation across the subprocess boundary; it
 does not turn either record into a detector verdict.
 
-The example exposes two fault-injection modes after a real agent effect: one writes a partial trailing frame before exiting, and one exits between complete frames before the V2 terminator. The supervisor returns those stream facts beside the victim failure:
+The example exposes four fault-injection modes after a real agent effect: one writes a partial trailing frame before exiting, one exits between complete frames before the V2 terminator, one skips a sequence before a valid terminator, and one drops a record while declaring the pre-loss count. The supervisor returns those stream facts beside the victim outcome:
 
 ```bash
 uv run python -m examples.security_hardening.effect_collector demo --victim-fault partial_tail_crash
 uv run python -m examples.security_hardening.effect_collector demo --victim-fault exit_between_frames
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault sequence_gap
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault drop_record_count_mismatch
 ```
 
 This is a real but narrow boundary improvement: the victim subprocess cannot read back bytes after it writes them into the pipe, and the pipe is not a seekable output file it can truncate. `CollectorSummary` reports the records that arrived, the first sequence discontinuity, whether the final frame was truncated, and the V2 stream-end declaration plus declared count. `truncated=False` alone means only that the received byte stream ended between frames. `stream_end_declared=True` means only that the writer emitted a valid-looking V2 terminator; neither fact means the record set is authentic or complete.

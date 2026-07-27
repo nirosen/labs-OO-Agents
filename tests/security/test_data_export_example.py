@@ -13,6 +13,7 @@ from examples.security_hardening.data_export import (
 )
 from examples.security_hardening.detector_harness import run_detected_scenario, score_detector_input
 from examples.security_hardening.detector_policy import UnscoreableDetectorInputError
+from examples.security_hardening.effect_collector import VictimFault
 from examples.security_hardening.identity_approval import (
     EFFECT_TYPE,
     detect_grants_without_approval,
@@ -179,6 +180,32 @@ def test_detected_export_exit_between_frames_refuses_missing_stream_end() -> Non
     assert result.victim_returncode == 5
     assert result.detector.scored is False
     assert result.detector.effect_egress_completeness_signals == ("missing_stream_end",)
+    assert result.detector.effect_egress_completeness_gate_passed is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "data export scorer" in result.detector.refusal_reason
+
+
+@pytest.mark.parametrize(
+    ("victim_fault", "expected_signals"),
+    [
+        ("sequence_gap", ("first_sequence_error",)),
+        ("drop_record_count_mismatch", ("record_count_mismatch",)),
+    ],
+)
+def test_detected_export_loss_faults_refuse_profile_independently(
+    victim_fault: VictimFault,
+    expected_signals: tuple[str, ...],
+) -> None:
+    result = run_detected_scenario(
+        "export_vulnerable_attack",
+        victim_fault=victim_fault,
+    )
+
+    assert result.victim is not None
+    assert result.victim_returncode == 0
+    assert result.detector.scored is False
+    assert result.detector.effect_egress_completeness_signals == expected_signals
     assert result.detector.effect_egress_completeness_gate_passed is False
     assert result.detector.findings == ()
     assert result.detector.refusal_reason is not None

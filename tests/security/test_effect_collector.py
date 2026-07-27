@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
 
 import pytest
 
@@ -19,10 +20,27 @@ from examples.security_hardening.effect_collector import (
 )
 from examples.security_hardening.identity_approval import EFFECT_TYPE
 from nooa.security import (
+    EFFECT_EGRESS_SCHEMA_VERSION,
     EFFECT_EGRESS_SCHEMA_VERSION_V2,
     EFFECT_EGRESS_STREAM_END_EVENT_TYPE,
     EffectRecord,
+    effect_egress_completeness_signals,
+    read_effect_egress,
 )
+
+
+def _v1_frame_line(sequence: int, record: EffectRecord) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION,
+                "sequence": sequence,
+                "record": record.model_dump(mode="json"),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
 
 
 def _frame_line(sequence: int, record: EffectRecord) -> bytes:
@@ -252,6 +270,50 @@ def test_collected_scenario_reports_missing_stream_end_when_victim_exits_between
     assert result.collector.truncated is False
     assert result.collector.stream_end_declared is False
     assert result.collector.declared_record_count is None
+
+
+def test_collected_scenario_reports_sequence_gap_from_orderly_fault() -> None:
+    result = run_collected_scenario(
+        "vulnerable_attack",
+        victim_fault="sequence_gap",
+    )
+
+    assert result.victim is not None
+    assert result.victim_returncode == 0
+    assert result.collector.record_count == 1
+    assert result.collector.first_sequence_error == (1, 2)
+    assert result.collector.truncated is False
+    assert result.collector.stream_end_declared is True
+    assert result.collector.declared_record_count == 1
+
+
+def test_collected_scenario_reports_record_count_mismatch_from_dropped_record() -> None:
+    result = run_collected_scenario(
+        "vulnerable_attack",
+        victim_fault="drop_record_count_mismatch",
+    )
+
+    assert result.victim is not None
+    assert result.victim_returncode == 0
+    assert result.collector.records == ()
+    assert result.collector.record_count == 0
+    assert result.collector.first_sequence_error is None
+    assert result.collector.truncated is False
+    assert result.collector.stream_end_declared is True
+    assert result.collector.declared_record_count == 1
+
+
+def test_v1_sequence_gap_has_no_stream_end_count_signal() -> None:
+    first = EffectRecord(effect_type="fs.write", target="/tmp/a")
+    third = EffectRecord(effect_type="net.request", target="service-c")
+
+    egress = read_effect_egress(BytesIO(_v1_frame_line(0, first) + _v1_frame_line(2, third)))
+
+    assert egress.schema_version == EFFECT_EGRESS_SCHEMA_VERSION
+    assert egress.first_sequence_error == (1, 2)
+    assert egress.stream_end_declared is False
+    assert egress.declared_record_count is None
+    assert effect_egress_completeness_signals(egress) == ("first_sequence_error",)
 
 
 def test_collector_accepts_forged_frame_from_writer() -> None:

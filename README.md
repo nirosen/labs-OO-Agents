@@ -62,6 +62,48 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Lossy Writer Fault Coverage
+
+> Branch: `codex/security-lossy-writer-fault-coverage`
+
+This slice adds no new `src/nooa` API. It extends the example-only subprocess harness with two orderly-looking writer faults that the existing composed pipeline had not exercised end to end: one skips a sequence number before a valid V2 terminator, and one drops the first effect frame while declaring the pre-loss record count. The detector now has regression coverage for refusing both paths across the identity and data-export profiles instead of silently turning a lost allowed effect into a zero-finding score.
+
+```mermaid
+flowchart LR
+    V["victim emits allowed effect"] --> R["record frame<br/>sequence=0"]
+    R --> P["effect pipe"]
+    V -. "sequence_gap" .-> G["stream_end<br/>sequence=2<br/>record_count=1"]
+    V -. "drop_record_count_mismatch" .-> M["stream_end only<br/>sequence=0<br/>record_count=1"]
+    G --> P
+    M --> P
+    P --> D["detector subprocess"]
+    D --> GS["first_sequence_error<br/>refused"]
+    D --> MS["record_count_mismatch<br/>refused"]
+```
+
+| Fault | Retained records | Stream end | Completeness signals | Detector result |
+| --- | --- | --- | --- | --- |
+| `--victim-fault sequence_gap` | 1 | Declared | `("first_sequence_error",)` | Refused |
+| `--victim-fault drop_record_count_mismatch` | 0 | Declared count `1` | `("record_count_mismatch",)` | Refused |
+| Equivalent V1 sequence gap | 2 | Not applicable | `("first_sequence_error",)` | No V2 count signal |
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-local lossy writer faults in `effect_collector.py`, shared detector-harness plumbing, identity and export profile refusal tests, and a false-negative regression that proves the empty retained effect tuple would otherwise score as zero findings |
+| Security claim | The composed detector path now demonstrates refusal for reader-visible sequence discontinuity and V2 declared-count mismatch across both current victim profiles, including the empty-record false-negative case that the V2 count signal prevents. |
+| Non-claim | A declared count catches an inconsistent writer, not a dishonest one. A writer can still omit an effect and declare the reduced count, forge a terminator, or emit nothing before close. Sequence continuity still assumes a cooperative single writer; these faults add no authentication, sandboxing, attestation, or completeness proof. |
+| Base slice | `codex/security-surface-guide` |
+| Review files | `examples/security_hardening/effect_collector.py`, `examples/security_hardening/detector_harness.py`, `examples/security_hardening/README.md`, `examples/README.md`, `tests/security/test_effect_collector.py`, `tests/security/test_detector_harness.py`, `tests/security/test_data_export_example.py`, `README.md` |
+| Validation | `pytest tests/security`; `git diff --quiet 6fe84b5 -- src/nooa`; `pytest` |
+
+Run the new orderly-looking loss paths:
+
+```bash
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault sequence_gap
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault drop_record_count_mismatch
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack --victim-fault drop_record_count_mismatch
+```
+
 ## Security Review Follow-On: Checked Security Surface Guide
 
 > Branch: `codex/security-surface-guide`

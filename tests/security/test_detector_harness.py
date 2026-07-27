@@ -22,6 +22,7 @@ from examples.security_hardening.detector_harness import (
     run_detected_scenario,
     score_detector_input,
 )
+from examples.security_hardening.effect_collector import run_collected_scenario
 from examples.security_hardening.identity_approval import EFFECT_TYPE
 from nooa.security import DetectorInput, EffectRecord
 
@@ -269,6 +270,49 @@ def test_detected_exit_between_frames_refuses_missing_stream_end() -> None:
     assert result.detector.findings == ()
     assert result.detector.refusal_reason is not None
     assert "effect_egress_completeness_gate_passed=True" in result.detector.refusal_reason
+
+
+def test_detected_sequence_gap_refuses_orderly_v2_stream() -> None:
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        victim_fault="sequence_gap",
+    )
+
+    assert result.victim is not None
+    assert result.victim_returncode == 0
+    assert result.detector.scored is False
+    assert result.detector.effect_egress_completeness_signals == ("first_sequence_error",)
+    assert result.detector.effect_egress_completeness_gate_passed is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "identity approval scorer" in result.detector.refusal_reason
+
+
+def test_detected_record_count_mismatch_refuses_empty_false_negative() -> None:
+    collected = run_collected_scenario(
+        "vulnerable_attack",
+        victim_fault="drop_record_count_mismatch",
+    )
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        victim_fault="drop_record_count_mismatch",
+    )
+
+    assert collected.collector.records == ()
+    assert collected.collector.declared_record_count == 1
+    assert result.victim is not None
+    assert result.victim_returncode == 0
+    assert result.detector.scored is False
+    assert result.detector.effect_egress_completeness_signals == ("record_count_mismatch",)
+    assert result.detector.effect_egress_completeness_gate_passed is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "identity approval scorer" in result.detector.refusal_reason
+
+    same_effects_without_signal = _scoreable_input(effects=collected.collector.records)
+    would_be_clean_report = score_detector_input(same_effects_without_signal)
+    assert would_be_clean_report.scored is True
+    assert would_be_clean_report.findings == ()
 
 
 def test_detected_scenario_fails_closed_when_authority_exits_before_receipt_document() -> None:

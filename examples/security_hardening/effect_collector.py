@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import errno
 import fcntl
+import json
 import os
 import subprocess
 import sys
@@ -45,6 +46,7 @@ from examples.security_hardening.identity_approval import (
 )
 from nooa.security import (
     EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    EFFECT_EGRESS_STREAM_END_EVENT_TYPE,
     EffectEgressReadResult,
     EffectEgressSchemaVersion,
     EffectRecord,
@@ -63,9 +65,21 @@ _VICTIM_SCHEMA_VERSION: Literal["nooa-effect-collector-victim-example-v1"] = (
     "nooa-effect-collector-victim-example-v1"
 )
 _DEMO_SCHEMA_VERSION: Literal["nooa-effect-collector-demo-v2"] = "nooa-effect-collector-demo-v2"
-_VICTIM_FAULTS = ("none", "partial_tail_crash", "exit_between_frames")
+_VICTIM_FAULTS = (
+    "none",
+    "partial_tail_crash",
+    "exit_between_frames",
+    "sequence_gap",
+    "drop_record_count_mismatch",
+)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-VictimFault = Literal["none", "partial_tail_crash", "exit_between_frames"]
+VictimFault = Literal[
+    "none",
+    "partial_tail_crash",
+    "exit_between_frames",
+    "sequence_gap",
+    "drop_record_count_mismatch",
+]
 _FdIdentity = tuple[int, int, int]
 
 
@@ -141,6 +155,56 @@ class CollectedScenario(BaseModel):
         return self
 
 
+class _FaultInjectingV2Sink:
+    """Example-local V2 writer wrapper for exercising loss diagnostics.
+
+    The wrapper delegates normal record emission to :class:`FdEffectSink` and
+    only changes the final stream shape for explicit test faults. It is not a
+    reusable production sink and deliberately writes valid-looking V2
+    terminators directly so the reader sees the same ambiguity a compromised
+    or faulty writer could create.
+    """
+
+    def __init__(self, fd: int, fault: VictimFault) -> None:
+        self._fd = fd
+        self._fault = fault
+        self._sink = FdEffectSink(fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        self._observed_record_count = 0
+        self._emitted_record_count = 0
+        self._closed = False
+
+    def __call__(self, record: EffectRecord) -> None:
+        self._observed_record_count += 1
+        if self._fault == "drop_record_count_mismatch" and self._observed_record_count == 1:
+            return
+        self._sink(record)
+        self._emitted_record_count += 1
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self._fault == "sequence_gap":
+            _write_v2_stream_end(
+                self._fd,
+                sequence=self._emitted_record_count + 1,
+                record_count=self._observed_record_count,
+            )
+            self._closed = True
+            return
+        if self._fault == "drop_record_count_mismatch":
+            if self._observed_record_count == 0:
+                raise RuntimeError("drop_record_count_mismatch requires at least one effect")
+            _write_v2_stream_end(
+                self._fd,
+                sequence=self._emitted_record_count,
+                record_count=self._observed_record_count,
+            )
+            self._closed = True
+            return
+        self._sink.close()
+        self._closed = True
+
+
 def collect_fd(fd: int) -> CollectorSummary:
     """Read a borrowed descriptor to EOF and summarize the received frames."""
     with os.fdopen(fd, "rb", closefd=True) as fh:
@@ -196,7 +260,7 @@ async def run_victim_to_fd(
 
     with ExitStack() as cleanup:
         cleanup.callback(os.close, fd)
-        sink = FdEffectSink(fd, schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2)
+        sink = _FaultInjectingV2Sink(fd, fault)
         cleanup.callback(install_effect_sink(agent.event_manager, sink))
         cleanup.callback(
             install_agent_call_effect_recorder(
@@ -211,12 +275,7 @@ async def run_victim_to_fd(
         decision = await agent.handle_request(request)
         if emit_guard_effect:
             await agent.runtime.execute_code("eval('1 + 1')")
-        if fault == "partial_tail_crash":
-            _write_all(fd, b'{"schema_version":"nooa-effect-egress-v2"')
-            raise SystemExit(3)
-        if fault == "exit_between_frames":
-            raise SystemExit(5)
-        sink.close()
+        _finish_victim_effect_stream(sink, fd, fault)
 
     return VictimSummary(
         scenario=scenario,
@@ -329,6 +388,39 @@ def _write_all(fd: int, payload: bytes) -> None:
         if written == 0:
             raise OSError("collector example descriptor accepted zero bytes")
         view = view[written:]
+
+
+def _write_v2_stream_end(fd: int, *, sequence: int, record_count: int) -> None:
+    """Write one valid-looking example-local V2 stream-end frame."""
+    payload = (
+        json.dumps(
+            {
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION_V2,
+                "sequence": sequence,
+                "stream_end": {
+                    "event_type": EFFECT_EGRESS_STREAM_END_EVENT_TYPE,
+                    "record_count": record_count,
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+    _write_all(fd, payload)
+
+
+def _finish_victim_effect_stream(
+    sink: _FaultInjectingV2Sink,
+    fd: int,
+    fault: VictimFault,
+) -> None:
+    """Finish one example stream or terminate at one configured fault point."""
+    if fault == "partial_tail_crash":
+        _write_all(fd, b'{"schema_version":"nooa-effect-egress-v2"')
+        raise SystemExit(3)
+    if fault == "exit_between_frames":
+        raise SystemExit(5)
+    sink.close()
 
 
 def _fd_identity(fd: int) -> _FdIdentity:
