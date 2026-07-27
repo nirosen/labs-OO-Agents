@@ -210,4 +210,5 @@ async def test_framework_guard_observer_does_not_authenticate_generated_exceptio
     assert isinstance(record, EffectRecord)
     assert record.effect_type == "code.timeout"
     assert record.observer == "framework_guard"
+    assert record.decision == "observed"
     assert record.attributes == {"error_type": "CellTimeoutError"}
