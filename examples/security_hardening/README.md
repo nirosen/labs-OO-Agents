@@ -51,7 +51,7 @@ On `codex/security-hardening-e2e-provenance`, the same event manager can also ca
 ```mermaid
 flowchart LR
     A["grant_access()"] --> AE["EffectRecord<br/>observer=agent_call_middleware"]
-    B["execute_python validation denial"] --> FE["EffectRecord<br/>observer=framework_guard"]
+    B["execute_python result.error<br/>mapped type"] --> FE["EffectRecord<br/>observer=framework_guard"]
     AE --> C["same event stream"]
     FE --> C
     C --> D["observer labels remain distinct"]

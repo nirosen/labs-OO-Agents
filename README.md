@@ -80,8 +80,8 @@ flowchart LR
     AE --> S["application scorer"]
     R --> S
     S --> F["SecurityFinding<br/>run_id"]
-    V -. "validation result" .-> X["execute_python"]
-    X --> GO["framework_guard_observer"]
+    V --> X["execute_python"]
+    X -- "mapped result.error" --> GO["framework_guard_observer"]
     GO --> GE["EffectRecord<br/>observer=framework_guard"]
     GE --> P["guard evidence<br/>not scorer input"]
 ```

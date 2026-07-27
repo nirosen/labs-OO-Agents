@@ -166,6 +166,7 @@ async def test_application_and_framework_effects_keep_distinct_observers() -> No
         for event in agent.event_manager.filter(type="EffectRecord")
         if isinstance(event, EffectRecord)
     ]
+    assert len(records) == 2
     assert {(record.effect_type, record.observer, record.decision) for record in records} == {
         (EFFECT_TYPE, "agent_call_middleware", "allowed"),
         ("code.validation", "framework_guard", "denied"),
