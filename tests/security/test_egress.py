@@ -4,16 +4,30 @@
 
 from __future__ import annotations
 
+import base64
 import errno
 import io
 import json
 import os
+import re
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import ConfigDict
 
+import nooa.security.egress as egress_module
 from nooa.runtime.event_manager import EventManager
 from nooa.security import (
+    DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES,
+    EFFECT_EGRESS_FRAME_KEYS,
+    EFFECT_EGRESS_RECORD_EVENT_TYPE,
+    EFFECT_EGRESS_RECORD_KEYS,
+    EFFECT_EGRESS_SCHEMA_VERSION,
+    EFFECT_EGRESS_SCHEMA_VERSION_PATTERN,
+    EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE,
+    MAX_EFFECT_EGRESS_SEQUENCE,
     EffectEgressFrameTooLargeError,
     EffectEgressSinkFailedError,
     EffectRecord,
@@ -24,12 +38,15 @@ from nooa.security import (
     read_effect_egress,
 )
 
+CONFORMANCE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "effect_egress_conformance_v1.json"
+CONFORMANCE_FIXTURE_SCHEMA_VERSION = "nooa-effect-egress-conformance-v1"
+
 
 def _frame_line(sequence: int, record: EffectRecord) -> bytes:
     return (
         json.dumps(
             {
-                "schema_version": "nooa-effect-egress-v1",
+                "schema_version": EFFECT_EGRESS_SCHEMA_VERSION,
                 "sequence": sequence,
                 "record": record.model_dump(mode="json"),
             },
@@ -37,6 +54,96 @@ def _frame_line(sequence: int, record: EffectRecord) -> bytes:
         ).encode("utf-8")
         + b"\n"
     )
+
+
+def _load_conformance_fixture() -> dict[str, Any]:
+    return json.loads(CONFORMANCE_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
+    fixture = _load_conformance_fixture()
+
+    assert fixture["schema_version"] == CONFORMANCE_FIXTURE_SCHEMA_VERSION
+    assert fixture["wire_schema_version"] == EFFECT_EGRESS_SCHEMA_VERSION
+    assert fixture["wire_schema_version_pattern"] == EFFECT_EGRESS_SCHEMA_VERSION_PATTERN
+    assert (
+        fixture["wire_schema_version_pattern_match_mode"]
+        == EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE
+        == "full"
+    )
+    assert frozenset(fixture["frame_keys"]) == EFFECT_EGRESS_FRAME_KEYS
+    assert fixture["record_event_type"] == EFFECT_EGRESS_RECORD_EVENT_TYPE
+    assert frozenset(fixture["record_keys"]) == EFFECT_EGRESS_RECORD_KEYS
+    assert fixture["max_sequence"] == MAX_EFFECT_EGRESS_SEQUENCE
+    assert fixture["default_max_frame_bytes"] == DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES
+    assert fixture["max_frame_bytes_includes_terminating_lf"] is True
+    assert re.fullmatch(EFFECT_EGRESS_SCHEMA_VERSION_PATTERN, EFFECT_EGRESS_SCHEMA_VERSION)
+    assert (
+        frozenset(
+            field.alias or name
+            for name, field in egress_module._EffectEgressFrame.model_fields.items()
+        )
+        == EFFECT_EGRESS_FRAME_KEYS
+    )
+    assert frozenset(EffectRecord.model_fields) == EFFECT_EGRESS_RECORD_KEYS
+    vector_names = [vector["name"] for vector in fixture["vectors"]]
+    assert len(vector_names) == len(set(vector_names))
+    for vector in fixture["vectors"]:
+        assert len({"payload_utf8", "payload_base64"} & vector.keys()) == 1, vector["name"]
+
+
+def _vector_payload_bytes(vector: dict[str, Any]) -> bytes:
+    if "payload_utf8" in vector:
+        return vector["payload_utf8"].encode("utf-8")
+    return base64.b64decode(vector["payload_base64"], validate=True)
+
+
+@pytest.mark.parametrize(
+    "vector",
+    _load_conformance_fixture()["vectors"],
+    ids=lambda vector: str(vector["name"]),
+)
+def test_read_effect_egress_matches_conformance_vectors(vector: dict[str, Any]) -> None:
+    fixture = _load_conformance_fixture()
+    payload = _vector_payload_bytes(vector)
+    max_frame_bytes = vector.get("max_frame_bytes", DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES)
+    expected = vector["expect"]
+    outcome = expected["outcome"]
+
+    if outcome == "ok":
+        result = read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+        first_sequence_error = expected["first_sequence_error"]
+        assert [record.model_dump(mode="json") for record in result.records] == [
+            fixture["records"][record_ref] for record_ref in expected["record_refs"]
+        ]
+        assert result.first_sequence_error == (
+            tuple(first_sequence_error) if first_sequence_error is not None else None
+        )
+        assert result.truncated is expected["truncated"]
+        return
+
+    if outcome == "frame_too_large_error":
+        with pytest.raises(EffectEgressFrameTooLargeError) as exc_info:
+            read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+        assert exc_info.value.line_number == expected["line_number"]
+        return
+
+    if outcome == "unsupported_version_error":
+        with pytest.raises(UnsupportedEffectEgressVersionError) as exc_info:
+            read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+        assert exc_info.value.line_number == expected["line_number"]
+        assert exc_info.value.schema_version == expected["schema_version"]
+        return
+
+    if outcome == "invalid_frame_error":
+        with pytest.raises(
+            ValueError,
+            match=rf"^invalid effect egress frame at line {expected['line_number']}$",
+        ):
+            read_effect_egress(io.BytesIO(payload), max_frame_bytes=max_frame_bytes)
+        return
+
+    raise AssertionError(f"unsupported conformance outcome: {outcome}")
 
 
 def _write_fd_egress(path: Path, records: list[EffectRecord]) -> bytes:
@@ -62,6 +169,14 @@ def test_fd_effect_sink_round_trips_records_with_monotonic_sequence(tmp_path: Pa
     frames = [json.loads(line) for line in payload.splitlines()]
     result = read_effect_egress(io.BytesIO(payload))
 
+    assert all(
+        line.endswith(b"\n") and not line.endswith(b"\r\n")
+        for line in payload.splitlines(keepends=True)
+    )
+    assert all(line[:-1] == line[:-1].strip() for line in payload.splitlines(keepends=True))
+    assert all(frozenset(frame) == EFFECT_EGRESS_FRAME_KEYS for frame in frames)
+    assert all(frozenset(frame["record"]) == EFFECT_EGRESS_RECORD_KEYS for frame in frames)
+    assert all(frame["schema_version"] == EFFECT_EGRESS_SCHEMA_VERSION for frame in frames)
     assert [frame["sequence"] for frame in frames] == [0, 1]
     assert [record.effect_type for record in result.records] == ["fs.write", "net.request"]
     assert result.first_sequence_error is None
@@ -76,6 +191,103 @@ def test_fd_effect_sink_rejects_non_effect_records(tmp_path: Path) -> None:
             sink("not-an-effect-record")  # type: ignore[arg-type]
     finally:
         os.close(fd)
+
+
+def test_fd_effect_sink_rejects_subclass_only_wire_fields(tmp_path: Path) -> None:
+    class ExtendedEffectRecord(EffectRecord):
+        extra_field: str
+
+    fd = os.open(tmp_path / "effects.egress", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd)
+        with pytest.raises(TypeError, match="expected V1-compatible EffectRecord"):
+            sink(ExtendedEffectRecord(effect_type="fs.write", extra_field="must-not-drop"))
+    finally:
+        os.close(fd)
+
+
+def test_fd_effect_sink_rejects_subclass_event_type_drift(tmp_path: Path) -> None:
+    class PlainEffectRecord(EffectRecord):
+        pass
+
+    fd = os.open(tmp_path / "effects.egress", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd)
+        with pytest.raises(TypeError, match="expected V1-compatible EffectRecord"):
+            sink(PlainEffectRecord(effect_type="fs.write"))
+    finally:
+        os.close(fd)
+
+
+def test_fd_effect_sink_rejects_unserializable_subclass_fields(tmp_path: Path) -> None:
+    class UnserializableEffectRecord(EffectRecord):
+        model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+        blob: object
+
+    fd = os.open(tmp_path / "effects.egress", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd)
+        with pytest.raises(TypeError, match="expected V1-compatible EffectRecord"):
+            sink(UnserializableEffectRecord(effect_type="fs.write", blob=object()))
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize(
+    "record_kwargs",
+    [
+        pytest.param({"attributes": {"score": float("nan")}}, id="attributes-nan"),
+        pytest.param({"attributes": {"score": float("inf")}}, id="attributes-inf"),
+        pytest.param({"metadata": {"score": float("-inf")}}, id="metadata-neg-inf"),
+        pytest.param({"attributes": {"text": "\ud800"}}, id="attributes-lone-surrogate"),
+    ],
+)
+def test_fd_effect_sink_rejects_v1_invalid_scalar_values_before_write(
+    tmp_path: Path,
+    record_kwargs: dict[str, Any],
+) -> None:
+    path = tmp_path / "effects.egress"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd)
+        with pytest.raises(TypeError, match="expected V1-compatible EffectRecord"):
+            sink(EffectRecord(effect_type="fs.write", **record_kwargs))
+        sink(EffectRecord(effect_type="fs.write", target="/tmp/after-rejection"))
+    finally:
+        os.close(fd)
+
+    frames = [json.loads(line) for line in path.read_bytes().splitlines()]
+    assert [frame["sequence"] for frame in frames] == [0]
+    assert frames[0]["record"]["target"] == "/tmp/after-rejection"
+
+
+@pytest.mark.parametrize(
+    "metadata_value",
+    [
+        pytest.param(b"raw", id="bytes"),
+        pytest.param((1, 2), id="tuple"),
+        pytest.param({1, 2}, id="set"),
+        pytest.param(datetime(2026, 1, 1), id="datetime"),
+    ],
+)
+def test_fd_effect_sink_rejects_non_json_native_metadata_before_write(
+    tmp_path: Path,
+    metadata_value: object,
+) -> None:
+    path = tmp_path / "effects.egress"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd)
+        with pytest.raises(TypeError, match="expected V1-compatible EffectRecord"):
+            sink(EffectRecord(effect_type="fs.write", metadata={"value": metadata_value}))
+        sink(EffectRecord(effect_type="fs.write", target="/tmp/after-rejection"))
+    finally:
+        os.close(fd)
+
+    frames = [json.loads(line) for line in path.read_bytes().splitlines()]
+    assert [frame["sequence"] for frame in frames] == [0]
+    assert frames[0]["record"]["target"] == "/tmp/after-rejection"
 
 
 @pytest.mark.parametrize("fd", [True, "1"])
@@ -330,7 +542,7 @@ def test_read_effect_egress_rejects_malformed_complete_frame(
         ).encode("utf-8")
         + b"\n"
     )
-    with pytest.raises(ValueError, match="invalid effect egress frame at line 1"):
+    with pytest.raises(ValueError, match=r"^invalid effect egress frame at line 1$"):
         read_effect_egress(io.BytesIO(payload))
 
 
@@ -349,24 +561,39 @@ def test_read_effect_egress_rejects_unsupported_schema_version() -> None:
 
     with pytest.raises(
         UnsupportedEffectEgressVersionError,
-        match="unsupported effect egress schema_version at line 1",
+        match=r"^unsupported effect egress schema_version at line 1",
     ):
         read_effect_egress(io.BytesIO(payload))
 
 
 def test_read_effect_egress_rejects_oversized_frame() -> None:
-    payload = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a"))
+    first = _frame_line(0, EffectRecord(effect_type="fs.write", target="/tmp/a"))
+    second = _frame_line(
+        1,
+        EffectRecord(
+            effect_type="fs.write",
+            target="/tmp/b",
+            attributes={"blob": "x" * len(first)},
+        ),
+    )
 
     with pytest.raises(
         EffectEgressFrameTooLargeError,
-        match="frame at line 1 exceeds max_frame_bytes",
+        match=r"frame at line 2 exceeds max_frame_bytes",
     ):
-        read_effect_egress(io.BytesIO(payload), max_frame_bytes=len(payload) - 1)
+        read_effect_egress(io.BytesIO(first + second), max_frame_bytes=len(first))
 
 
 def test_read_effect_egress_rejects_empty_complete_frame() -> None:
-    with pytest.raises(ValueError, match="invalid effect egress frame at line 1"):
+    with pytest.raises(ValueError, match=r"^invalid effect egress frame at line 1$"):
         read_effect_egress(io.BytesIO(b"\n"))
+
+
+def test_read_effect_egress_rejects_deeply_nested_json_as_invalid_frame() -> None:
+    payload = b"[" * 10_000 + b"]" * 10_000 + b"\n"
+
+    with pytest.raises(ValueError, match=r"^invalid effect egress frame at line 1$"):
+        read_effect_egress(io.BytesIO(payload))
 
 
 def test_read_effect_egress_rejects_text_stream() -> None:

@@ -1,0 +1,516 @@
+{
+  "schema_version": "nooa-effect-egress-conformance-v1",
+  "wire_schema_version": "nooa-effect-egress-v1",
+  "wire_schema_version_pattern": "nooa-effect-egress-v[1-9][0-9]*",
+  "wire_schema_version_pattern_match_mode": "full",
+  "frame_keys": [
+    "record",
+    "schema_version",
+    "sequence"
+  ],
+  "record_event_type": "EffectRecord",
+  "record_keys": [
+    "attributes",
+    "decision",
+    "effect_type",
+    "event_type",
+    "generation_id",
+    "id",
+    "metadata",
+    "observer",
+    "status",
+    "tag",
+    "target",
+    "timestamp",
+    "tool_call_id"
+  ],
+  "max_sequence": 9007199254740991,
+  "default_max_frame_bytes": 1048576,
+  "max_frame_bytes_includes_terminating_lf": true,
+  "records": {
+    "record_a": {
+      "event_type": "EffectRecord",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "metadata": {},
+      "status": "active",
+      "tag": null,
+      "timestamp": "2026-07-27T00:00:00",
+      "effect_type": "fs.write",
+      "target": "/tmp/a",
+      "decision": "observed",
+      "observer": "",
+      "generation_id": "",
+      "tool_call_id": "",
+      "attributes": {}
+    },
+    "record_b": {
+      "event_type": "EffectRecord",
+      "id": "00000000-0000-0000-0000-000000000002",
+      "metadata": {},
+      "status": "active",
+      "tag": null,
+      "timestamp": "2026-07-27T00:00:01",
+      "effect_type": "net.request",
+      "target": "service-b",
+      "decision": "observed",
+      "observer": "",
+      "generation_id": "",
+      "tool_call_id": "",
+      "attributes": {}
+    },
+    "record_c": {
+      "event_type": "EffectRecord",
+      "id": "00000000-0000-0000-0000-000000000003",
+      "metadata": {},
+      "status": "active",
+      "tag": null,
+      "timestamp": "2026-07-27T00:00:02",
+      "effect_type": "fs.read",
+      "target": "/tmp/c",
+      "decision": "observed",
+      "observer": "",
+      "generation_id": "",
+      "tool_call_id": "",
+      "attributes": {}
+    }
+  },
+  "vectors": [
+    {
+      "name": "empty_stream",
+      "payload_utf8": "",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [],
+        "first_sequence_error": null,
+        "truncated": false
+      }
+    },
+    {
+      "name": "well_formed_multi_frame",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a",
+          "record_b"
+        ],
+        "first_sequence_error": null,
+        "truncated": false
+      }
+    },
+    {
+      "name": "internal_json_whitespace",
+      "payload_utf8": "{ \"schema_version\" : \"nooa-effect-egress-v1\" , \"sequence\" : 0 , \"record\" : { \"event_type\" : \"EffectRecord\" , \"id\" : \"00000000-0000-0000-0000-000000000001\" , \"metadata\" : {} , \"status\" : \"active\" , \"tag\" : null , \"timestamp\" : \"2026-07-27T00:00:00\" , \"effect_type\" : \"fs.write\" , \"target\" : \"/tmp/a\" , \"decision\" : \"observed\" , \"observer\" : \"\" , \"generation_id\" : \"\" , \"tool_call_id\" : \"\" , \"attributes\" : {} } }\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": false
+      }
+    },
+    {
+      "name": "first_sequence_gap",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":2,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a",
+          "record_b"
+        ],
+        "first_sequence_error": [
+          1,
+          2
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "name": "duplicate_sequence",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a",
+          "record_b"
+        ],
+        "first_sequence_error": [
+          1,
+          0
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "name": "first_error_wins_after_backward_step",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a",
+          "record_b"
+        ],
+        "first_sequence_error": [
+          0,
+          1
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "name": "backward_sequence",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000003\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:02\",\"effect_type\":\"fs.read\",\"target\":\"/tmp/c\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a",
+          "record_b",
+          "record_c"
+        ],
+        "first_sequence_error": [
+          2,
+          0
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "name": "trailing_partial_frame",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":1",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": true
+      }
+    },
+    {
+      "name": "oversized_complete_frame",
+      "max_frame_bytes": 100,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "frame_too_large_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "exact_max_complete_frame",
+      "max_frame_bytes": 348,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": null,
+        "truncated": false
+      }
+    },
+    {
+      "name": "one_over_max_complete_frame",
+      "max_frame_bytes": 347,
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "frame_too_large_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "exact_max_unterminated_frame",
+      "max_frame_bytes": 10,
+      "payload_utf8": "xxxxxxxxxx",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [],
+        "first_sequence_error": null,
+        "truncated": true
+      }
+    },
+    {
+      "name": "oversized_unterminated_frame",
+      "max_frame_bytes": 10,
+      "payload_utf8": "xxxxxxxxxxx",
+      "expect": {
+        "outcome": "frame_too_large_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "unsupported_future_version",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "unsupported_version_error",
+        "line_number": 1,
+        "schema_version": "nooa-effect-egress-v2"
+      }
+    },
+    {
+      "name": "unsupported_future_version_two_digits",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v10\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "unsupported_version_error",
+        "line_number": 1,
+        "schema_version": "nooa-effect-egress-v10"
+      }
+    },
+    {
+      "name": "unsupported_future_version_on_second_line",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{\"schema_version\":\"nooa-effect-egress-v2\",\"sequence\":1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000002\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:01\",\"effect_type\":\"net.request\",\"target\":\"service-b\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "unsupported_version_error",
+        "line_number": 2,
+        "schema_version": "nooa-effect-egress-v2"
+      }
+    },
+    {
+      "name": "malformed_future_version_token",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v01\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "malformed_future_version_zero",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v0\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "malformed_future_version_case_variant",
+      "payload_utf8": "{\"schema_version\":\"NOOA-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "malformed_future_version_trailing_whitespace",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2 \",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "malformed_future_version_trailing_newline_escape",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v2\\n\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "malformed_future_version_leading_junk",
+      "payload_utf8": "{\"schema_version\":\"x-nooa-effect-egress-v2\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "malformed_sequence_type",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":\"0\",\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "negative_sequence",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":-1,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "exact_max_sequence",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":9007199254740991,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "ok",
+        "record_refs": [
+          "record_a"
+        ],
+        "first_sequence_error": [
+          0,
+          9007199254740991
+        ],
+        "truncated": false
+      }
+    },
+    {
+      "name": "one_over_max_sequence",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":9007199254740992,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "blank_line",
+      "payload_utf8": "\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "leading_whitespace_frame",
+      "payload_utf8": "  {\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "trailing_whitespace_frame",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}  \n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "crlf_terminated_frame",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\r\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "utf8_bom_prefixed_frame",
+      "payload_base64": "77u/eyJzY2hlbWFfdmVyc2lvbiI6Im5vb2EtZWZmZWN0LWVncmVzcy12MSIsInNlcXVlbmNlIjowLCJyZWNvcmQiOnsiZXZlbnRfdHlwZSI6IkVmZmVjdFJlY29yZCIsImlkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxIiwibWV0YWRhdGEiOnt9LCJzdGF0dXMiOiJhY3RpdmUiLCJ0YWciOm51bGwsInRpbWVzdGFtcCI6IjIwMjYtMDctMjdUMDA6MDA6MDAiLCJlZmZlY3RfdHlwZSI6ImZzLndyaXRlIiwidGFyZ2V0IjoiL3RtcC9hIiwiZGVjaXNpb24iOiJvYnNlcnZlZCIsIm9ic2VydmVyIjoiIiwiZ2VuZXJhdGlvbl9pZCI6IiIsInRvb2xfY2FsbF9pZCI6IiIsImF0dHJpYnV0ZXMiOnt9fX0K",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "invalid_second_line",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n{}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 2
+      }
+    },
+    {
+      "name": "missing_record_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "missing_schema_version_key",
+      "payload_utf8": "{\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "missing_sequence_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "unexpected_frame_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}},\"extra\":\"not-allowed\"}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "unexpected_record_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{},\"extra\":\"not-allowed\"}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "unexpected_record_event_type",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"PlainEffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "empty_record_event_type",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "duplicate_frame_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "duplicate_record_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "non_finite_numeric_constant",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{\"score\":NaN}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "numeric_overflow_literal",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{\"score\":1e999}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "lone_surrogate_escape",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"id\":\"00000000-0000-0000-0000-000000000001\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"\\ud800\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "missing_defaulted_record_id_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-effect-egress-v1\",\"sequence\":0,\"record\":{\"event_type\":\"EffectRecord\",\"metadata\":{},\"status\":\"active\",\"tag\":null,\"timestamp\":\"2026-07-27T00:00:00\",\"effect_type\":\"fs.write\",\"target\":\"/tmp/a\",\"decision\":\"observed\",\"observer\":\"\",\"generation_id\":\"\",\"tool_call_id\":\"\",\"attributes\":{}}}\n",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    },
+    {
+      "name": "invalid_utf8_complete_line",
+      "payload_base64": "/wo=",
+      "expect": {
+        "outcome": "invalid_frame_error",
+        "line_number": 1
+      }
+    }
+  ]
+}
