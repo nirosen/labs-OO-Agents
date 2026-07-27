@@ -66,12 +66,12 @@ This design supports familiar Python testing, tracing, refactoring, and version-
 
 > Branch: `codex/security-receipt-contract`
 
-This branch adds a transport schema for corroborating facts collected outside the victim process. It deliberately keeps `SecurityReceipt` separate from `EffectRecord`: applications can carry both shapes, but NOOA does not authenticate or correlate them.
+This branch adds a transport schema for corroborating facts collected outside the victim process. It deliberately keeps `SecurityReceipt` separate from `EffectRecord`: applications can carry both shapes, but NOOA does not authenticate or correlate them. An optional application-assigned `run_id` lets independent collectors keep append-mode receipt batches scoped to one assessment run without hiding that scope inside free-form attributes.
 
 ```mermaid
 flowchart LR
     V["victim process"] --> E["EffectRecord"]
-    T["out-of-band backend or collector"] --> R["SecurityReceipt"]
+    T["out-of-band backend or collector"] --> R["SecurityReceipt<br/>run_id"]
     E --> C["application correlator"]
     R --> C
     C -. "join stays outside NOOA" .-> P["policy or detector"]
@@ -79,9 +79,9 @@ flowchart LR
 
 | Review item | Detail |
 | --- | --- |
-| Adds | Frozen `SecurityReceipt` transport schema for backend-issued corroboration |
-| Security claim | Applications can carry stable out-of-band receipt identity and provenance alongside NOOA telemetry. |
-| Non-claim | The schema does not authenticate its source, prove collection location, or auto-join receipts to `EffectRecord`. |
+| Adds | Frozen `SecurityReceipt` transport schema for backend-issued corroboration, including optional `run_id` scoping |
+| Security claim | Applications can carry stable out-of-band receipt identity, provenance, and explicit application-assigned run scope alongside NOOA telemetry. |
+| Non-claim | The schema does not authenticate its source or `run_id`, prove collection location, or auto-join receipts to `EffectRecord`. |
 | Shared base | `codex/trusted-evidence-contract`; parallel sibling slice with a small shared export edit in `src/nooa/security/__init__.py` |
 | Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `tests/security/test_receipts.py` |
 | Validation | `pytest tests/security/test_receipts.py` |

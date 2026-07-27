@@ -18,6 +18,7 @@ def _receipt(**updates: object) -> SecurityReceipt:
         "receipt_id": "audit-1",
         "receipt_type": "payment.accepted",
         "source": "payment_backend.audit",
+        "run_id": "run-20260727-identity-1",
         "target": "invoice-42",
         "effect_type": "payment.process",
         "issued_at": "2026-07-26T12:00:00Z",
@@ -30,10 +31,22 @@ def _receipt(**updates: object) -> SecurityReceipt:
 def test_security_receipt_is_strict_json_transport() -> None:
     receipt = _receipt()
 
+    assert set(receipt.model_dump(mode="json")) == {
+        "schema_version",
+        "receipt_id",
+        "receipt_type",
+        "source",
+        "run_id",
+        "target",
+        "effect_type",
+        "issued_at",
+        "attributes",
+    }
     assert receipt.schema_version == "nooa-receipt-v1"
     assert receipt.receipt_id == "audit-1"
     assert receipt.receipt_type == "payment.accepted"
     assert receipt.source == "payment_backend.audit"
+    assert receipt.run_id == "run-20260727-identity-1"
     assert receipt.target == "invoice-42"
     assert receipt.effect_type == "payment.process"
     assert receipt.issued_at == "2026-07-26T12:00:00Z"
@@ -57,6 +70,7 @@ def test_security_receipt_defaults_round_trip_and_freeze_field_bindings() -> Non
     assert receipt.target == ""
     assert receipt.effect_type == ""
     assert receipt.issued_at == ""
+    assert receipt.run_id == ""
     assert receipt.attributes == {}
     assert SecurityReceipt.model_validate_json(receipt.model_dump_json()) == receipt
 

@@ -20,8 +20,10 @@ class SecurityReceipt(BaseModel):
     code.
 
     Fields are intentionally generic so applications can preserve stable
-    receipt identity and provenance without standardizing policy or scorer
-    semantics into NOOA. ``target`` and ``effect_type`` mirror
+    receipt identity, provenance, and optional run scope without standardizing
+    policy or scorer semantics into NOOA. ``run_id`` is application-assigned;
+    NOOA does not mint it, verify it, or infer that equal values establish
+    trusted provenance. ``target`` and ``effect_type`` mirror
     :class:`~nooa.security.effects.EffectRecord` only for application-defined
     correlation; NOOA does not join receipts to effect records or guarantee
     that a backend knows runtime lineage fields such as ``generation_id`` or
@@ -48,6 +50,10 @@ class SecurityReceipt(BaseModel):
     source: str = Field(
         min_length=1,
         description="Sanitized identifier for the out-of-band source that issued the receipt.",
+    )
+    run_id: str = Field(
+        default="",
+        description="Application-assigned run or assessment scope for grouping related receipts.",
     )
     target: str = Field(
         default="",
