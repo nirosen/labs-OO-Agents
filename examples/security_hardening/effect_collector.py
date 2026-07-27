@@ -96,8 +96,8 @@ class CollectorSummary(BaseModel):
 class VictimSummary(BaseModel):
     """Example-local summary emitted by the victim subprocess.
 
-    Every field is victim-controlled. The descriptor probe exists only to pin
-    the honest harness construction in tests; it is not trusted evidence.
+    Every field is victim-controlled. The descriptor probes exist only to pin
+    honest harness construction in tests; they are not trusted evidence.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -108,6 +108,8 @@ class VictimSummary(BaseModel):
     decision_source: Literal["backend", "defender"]
     backend_event_count: int = Field(ge=0)
     self_reported_collector_read_endpoint_open: bool | None = None
+    self_reported_receipt_read_endpoint_open: bool | None = None
+    self_reported_receipt_write_endpoint_open: bool | None = None
 
 
 class CollectedScenario(BaseModel):
@@ -138,6 +140,8 @@ async def run_victim_to_fd(
     fd: int,
     *,
     collector_read_identity: _FdIdentity | None = None,
+    receipt_read_identity: _FdIdentity | None = None,
+    receipt_write_identity: _FdIdentity | None = None,
     fault: VictimFault = "none",
     emit_guard_effect: bool = False,
 ) -> VictimSummary:
@@ -153,6 +157,12 @@ async def run_victim_to_fd(
     agent = IdentityApprovalAgent(backend)
     self_reported_collector_read_endpoint_open = (
         _has_fd_identity(collector_read_identity) if collector_read_identity is not None else None
+    )
+    self_reported_receipt_read_endpoint_open = (
+        _has_fd_identity(receipt_read_identity) if receipt_read_identity is not None else None
+    )
+    self_reported_receipt_write_endpoint_open = (
+        _has_fd_identity(receipt_write_identity) if receipt_write_identity is not None else None
     )
 
     with ExitStack() as cleanup:
@@ -181,6 +191,8 @@ async def run_victim_to_fd(
         decision_source=decision.source,
         backend_event_count=len(backend.audit_log()),
         self_reported_collector_read_endpoint_open=self_reported_collector_read_endpoint_open,
+        self_reported_receipt_read_endpoint_open=self_reported_receipt_read_endpoint_open,
+        self_reported_receipt_write_endpoint_open=self_reported_receipt_write_endpoint_open,
     )
 
 
@@ -311,18 +323,33 @@ def _open_fd_numbers() -> tuple[int, ...]:
     return tuple(range(max_fd))
 
 
-def _collector_read_identity_from_args(args: argparse.Namespace) -> _FdIdentity | None:
-    """Parse the optional collector-read endpoint identity from CLI args."""
+def _fd_identity_from_args(args: argparse.Namespace, prefix: str) -> _FdIdentity | None:
+    """Parse one optional descriptor endpoint identity from CLI args."""
     values = (
-        args.collector_read_device,
-        args.collector_read_inode,
-        args.collector_read_access_mode,
+        getattr(args, f"{prefix}_device"),
+        getattr(args, f"{prefix}_inode"),
+        getattr(args, f"{prefix}_access_mode"),
     )
     if values == (None, None, None):
         return None
     if any(value is None for value in values):
-        raise ValueError("collector read identity requires device, inode, and access mode")
+        raise ValueError(f"{prefix.replace('_', ' ')} identity requires device, inode, and access mode")
     return cast(_FdIdentity, values)
+
+
+def _collector_read_identity_from_args(args: argparse.Namespace) -> _FdIdentity | None:
+    """Parse the optional collector-read endpoint identity from CLI args."""
+    return _fd_identity_from_args(args, "collector_read")
+
+
+def _receipt_read_identity_from_args(args: argparse.Namespace) -> _FdIdentity | None:
+    """Parse the optional receipt-read endpoint identity from CLI args."""
+    return _fd_identity_from_args(args, "receipt_read")
+
+
+def _receipt_write_identity_from_args(args: argparse.Namespace) -> _FdIdentity | None:
+    """Parse the optional receipt-write endpoint identity from CLI args."""
+    return _fd_identity_from_args(args, "receipt_write")
 
 
 def _validate_victim_fault(fault: str) -> VictimFault:
@@ -359,6 +386,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     victim_parser.add_argument("--collector-read-device", type=int)
     victim_parser.add_argument("--collector-read-inode", type=int)
     victim_parser.add_argument("--collector-read-access-mode", type=int)
+    victim_parser.add_argument("--receipt-read-device", type=int)
+    victim_parser.add_argument("--receipt-read-inode", type=int)
+    victim_parser.add_argument("--receipt-read-access-mode", type=int)
+    victim_parser.add_argument("--receipt-write-device", type=int)
+    victim_parser.add_argument("--receipt-write-inode", type=int)
+    victim_parser.add_argument("--receipt-write-access-mode", type=int)
     victim_parser.add_argument("--fault", choices=_VICTIM_FAULTS, default="none")
     victim_parser.add_argument("--emit-guard-effect", action="store_true")
 
@@ -384,6 +417,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.scenario,
                     args.fd,
                     collector_read_identity=_collector_read_identity_from_args(args),
+                    receipt_read_identity=_receipt_read_identity_from_args(args),
+                    receipt_write_identity=_receipt_write_identity_from_args(args),
                     fault=args.fault,
                     emit_guard_effect=args.emit_guard_effect,
                 )

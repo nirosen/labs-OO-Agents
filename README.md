@@ -62,6 +62,36 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Detector Subprocess Harness
+
+> Branch: `codex/security-trusted-detector-harness`
+
+This slice adds one example-only out-of-process detector harness on top of `DetectorInput`. The supervisor gives the victim only the effect-pipe write end, gives the detector only the effect-pipe read end plus a bounded supervisor-issued receipt document, and lets the detector construct and score one `DetectorInput` outside the victim process. A truncated effect stream becomes an explicit detector refusal rather than a misleading zero-finding result.
+
+```mermaid
+flowchart LR
+    S["supervisor<br/>scenario + demo receipt document"] --> RP["receipt pipe<br/>bounded JSON"]
+    S --> V["victim subprocess"]
+    V -- "effect write fd only" --> EP["effect pipe"]
+    RP -- "receipt read fd only" --> D["detector subprocess"]
+    EP -- "effect read fd only" --> D
+    D --> DI["DetectorInput<br/>assembled detector-side"]
+    DI --> P["identity scorer<br/>example-local policy"]
+    P --> R["DetectorReport<br/>scored or refused"]
+    D -. "gap / truncated tail" .-> X["refusal_reason"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-only `detector_harness.py`, `DetectorReceiptDocument`, `DetectorReport`, `DetectedScenario`, bounded receipt-document parsing, and an example-local `UnscoreableDetectorInputError` so detector refusal is data rather than a generic crash |
+| Security claim | Applications can place deterministic detector policy outside the victim process, assemble `DetectorInput` from collector-facing effect bytes plus a separately supplied receipt document, preserve reader-visible incompleteness as an explicit refusal, and cap receipt-document bytes before parsing. |
+| Non-claim | The detector subprocess is not automatically trusted: it shares a uid with the victim, the supervisor-issued receipt document is a deterministic demo artifact rather than a backend audit export, `receipt_coverage="asserted_complete"` remains an unverified supervisor assertion, findings are not more authentic merely because policy ran out of process, and a clean empty stream still cannot distinguish valid completion from intentional omission. This harness assembles `DetectorInput` detector-side; it does not define a byte-level `DetectorInput` wire protocol. `DetectorReport` and `DetectedScenario` are example artifacts, not stable NOOA schemas. |
+| Base slice | `codex/security-detector-input-contract` |
+| Review files | `examples/security_hardening/detector_harness.py`, `examples/security_hardening/effect_collector.py`, `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `examples/README.md`, `tests/security/test_detector_harness.py` |
+| Validation | `pytest tests/security`; `pytest` |
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the subprocess topology, refusal path, and trust-boundary limits.
+
 ## Security Review Slice: Detector Input Contract
 
 > Branch: `codex/security-detector-input-contract`

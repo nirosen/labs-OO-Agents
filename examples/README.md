@@ -21,6 +21,7 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 | — | Sandbox, memory, multimodal, NeMo Flow | see the [Advanced](#advanced-topics) section |
 | — | Security hardening flow | [`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) |
 | — | Out-of-process effect collector | [`security_hardening/effect_collector.py`](security_hardening/effect_collector.py) |
+| — | Out-of-process detector harness | [`security_hardening/detector_harness.py`](security_hardening/detector_harness.py) |
 
 ---
 
@@ -38,6 +39,12 @@ It compares a vulnerable grant, a defender-only denial, a denied backend-hardene
 
 ```bash
 uv run python -m examples.security_hardening.effect_collector demo
+```
+
+[`security_hardening/detector_harness.py`](security_hardening/detector_harness.py) is the detector-process follow-on. The supervisor gives the detector the effect-pipe read end plus a bounded supervisor-issued receipt document, the detector assembles one `DetectorInput`, and the example-local scorer returns a structured scored/refused report outside the victim process. That moves policy location only; the demo receipt document is not backend audit truth, and the subprocess split is not sandboxing or attestation.
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
 ```
 
 ## Step 1: Your first generation method

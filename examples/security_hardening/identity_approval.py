@@ -54,6 +54,10 @@ _APPROVED_TOKENS = {"req-approved": "approval-token-42"}
 _OFFLINE_LLM = FakeLLMClient()
 
 
+class UnscoreableDetectorInputError(ValueError):
+    """Raised when this example's detector policy refuses one input bundle."""
+
+
 @dataclass(frozen=True)
 class AccessRequest:
     """One identity change request entering the victim agent."""
@@ -286,12 +290,12 @@ def detect_grants_without_approval(
     complete.
     """
     if not detector_input.effect_egress_completeness_gate_passed:
-        raise ValueError(
+        raise UnscoreableDetectorInputError(
             "identity approval scorer requires "
             "effect_egress_completeness_gate_passed=True"
         )
     if detector_input.receipt_coverage != "asserted_complete":
-        raise ValueError(
+        raise UnscoreableDetectorInputError(
             "identity approval scorer requires receipt_coverage='asserted_complete'"
         )
 

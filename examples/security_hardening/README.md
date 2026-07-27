@@ -123,3 +123,40 @@ uv run python -m examples.security_hardening.effect_collector demo --victim-faul
 This is a real but narrow boundary improvement: the victim subprocess cannot read back bytes after it writes them into the pipe, and the pipe is not a seekable output file it can truncate. `CollectorSummary` reports the records that arrived, the first sequence discontinuity, and whether the final frame was truncated. `truncated=False` means only that the received byte stream ended between frames; it does not mean the record set is authentic or complete.
 
 The collector path carries effect records and victim status only. It does not move `DetectorInput`, receipts, findings, or the same-process demo's incomplete-stream scoring refusal into the subprocess boundary. The collector still accepts a valid-looking forged frame from any writer holding the write end, and an empty stream followed by a clean victim exit is still indistinguishable from a victim that intentionally omitted an effect and exited cleanly. Its shared reader byte and record budgets are local resource backstops, not authenticity guarantees. These are same-user, same-host processes with no privilege boundary between them; this branch demonstrates descriptor separation, not sandboxing, attestation, prevention, or a detector verdict. It keeps process lifecycle in the example instead of adding another core NOOA collector API.
+
+## Detector Subprocess Harness Follow-On
+
+`codex/security-trusted-detector-harness` adds an example-only detector process on top of the collector-facing contract. The supervisor gives the victim only the effect write end, gives the detector only the effect read end plus a separate receipt read end, writes one bounded `DetectorReceiptDocument`, and lets the detector construct `DetectorInput` itself before running the existing identity scorer.
+
+```mermaid
+flowchart LR
+    S["supervisor"] -- "effect write fd only" --> V["victim subprocess"]
+    S -- "receipt document<br/>bounded JSON" --> RP["receipt pipe"]
+    V --> EP["effect pipe"]
+    EP -- "effect read fd only" --> D["detector subprocess"]
+    RP -- "receipt read fd only" --> D
+    D --> DI["DetectorInput<br/>require_complete=False"]
+    DI --> P["identity scorer"]
+    P -- "scoreable" --> F["SecurityFinding rows"]
+    P -- "gap / truncation / unknown coverage" --> X["DetectorReport<br/>scored=False"]
+```
+
+Run a vulnerable replay that produces one out-of-process finding:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
+```
+
+Run the same victim with a partial trailing frame to see the detector preserve a refusal instead of reporting a clean zero-finding result:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault partial_tail_crash
+```
+
+The authorized scenario uses one supervisor-issued receipt document so the detector can demonstrate the no-finding path:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized
+```
+
+This is a placement demo, not a trust claim. The detector is outside the victim process, but it still shares the same user and host; a compromised supervisor compromises both children. The receipt document exists so the example can exercise the receipt-aware path deterministically. It is not a backend audit export, and `receipt_coverage="asserted_complete"` remains a supervisor assertion that the detector does not verify. The receipt byte cap is a local resource backstop, not authenticity or authorization. Findings emitted outside the victim are not automatically more authentic than findings emitted inside it, and an empty clean effect stream remains indistinguishable from intentional omission. The harness assembles `DetectorInput` inside the detector; it does not define a byte-level `DetectorInput` wire protocol. `DetectorReceiptDocument`, `DetectorReport`, and `DetectedScenario` stay in the example rather than becoming NOOA core schemas.
