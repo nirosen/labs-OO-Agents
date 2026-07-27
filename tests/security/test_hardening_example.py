@@ -35,6 +35,7 @@ async def test_vulnerable_grant_is_recorded_and_flagged_without_receipt(tmp_path
     assert result.receipts == ()
     assert len(result.findings) == 1
     assert result.findings[0].finding_type == FINDING_TYPE
+    assert result.findings[0].run_id == result.run_id
     assert result.findings[0].evidence_refs == (result.effects[0].id,)
     assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
 
@@ -70,6 +71,7 @@ async def test_hardened_authorized_grant_correlates_receipt_without_finding(tmp_
     assert result.effects[0].decision == "allowed"
     assert len(result.receipts) == 1
     assert result.receipts[0].effect_type == EFFECT_TYPE
+    assert result.receipts[0].run_id == result.run_id
     assert result.receipts[0].target == result.effects[0].target
     assert result.findings == ()
     assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
@@ -86,12 +88,45 @@ def test_mismatched_receipt_is_cited_as_divergence_evidence() -> None:
         receipt_id="receipt-req-attack",
         receipt_type="identity.approval",
         source="identity-backend-audit",
+        run_id="identity-approval-demo/vulnerable_attack",
         target="contractor@staging-db",
         effect_type=EFFECT_TYPE,
         attributes={"request_id": "req-attack"},
     )
 
-    findings = detect_grants_without_approval((effect,), (receipt,))
+    findings = detect_grants_without_approval(
+        (effect,),
+        (receipt,),
+        run_id="identity-approval-demo/vulnerable_attack",
+    )
 
     assert len(findings) == 1
     assert findings[0].evidence_refs == (effect.id, receipt.receipt_id)
+
+
+def test_other_run_receipt_does_not_suppress_current_run_finding() -> None:
+    effect = EffectRecord(
+        effect_type=EFFECT_TYPE,
+        target="contractor@prod-db",
+        decision="allowed",
+        attributes={"request_id": "req-attack"},
+    )
+    receipt = SecurityReceipt(
+        receipt_id="receipt-req-attack",
+        receipt_type="identity.approval",
+        source="identity-backend-audit",
+        run_id="identity-approval-demo/prior-run",
+        target="contractor@prod-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+
+    findings = detect_grants_without_approval(
+        (effect,),
+        (receipt,),
+        run_id="identity-approval-demo/current-run",
+    )
+
+    assert len(findings) == 1
+    assert findings[0].run_id == "identity-approval-demo/current-run"
+    assert findings[0].evidence_refs == (effect.id,)

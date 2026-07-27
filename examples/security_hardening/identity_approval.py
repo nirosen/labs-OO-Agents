@@ -77,6 +77,7 @@ class ScenarioResult:
     """Artifacts produced by one vulnerable or hardened run."""
 
     name: str
+    run_id: str
     request: AccessRequest
     decision: AccessDecision
     effects: tuple[EffectRecord, ...]
@@ -194,7 +195,11 @@ def observe_identity_grant(ctx: AgentCallContext) -> EffectRecord | None:
     )
 
 
-def collect_approval_receipts(backend: IdentityBackend) -> tuple[SecurityReceipt, ...]:
+def collect_approval_receipts(
+    backend: IdentityBackend,
+    *,
+    run_id: str,
+) -> tuple[SecurityReceipt, ...]:
     """Translate backend audit facts into out-of-band receipt-shaped evidence."""
     receipts: list[SecurityReceipt] = []
     for event in backend.audit_log():
@@ -205,6 +210,7 @@ def collect_approval_receipts(backend: IdentityBackend) -> tuple[SecurityReceipt
                 receipt_id=f"receipt-{event.request_id}",
                 receipt_type=RECEIPT_TYPE,
                 source="identity-backend-audit",
+                run_id=run_id,
                 target=f"{event.principal}@{event.resource}",
                 effect_type=EFFECT_TYPE,
                 attributes={
@@ -220,13 +226,16 @@ def collect_approval_receipts(backend: IdentityBackend) -> tuple[SecurityReceipt
 def detect_grants_without_approval(
     effects: Iterable[EffectRecord],
     receipts: Iterable[SecurityReceipt],
+    *,
+    run_id: str,
 ) -> tuple[SecurityFinding, ...]:
-    """Emit findings for allowed grants lacking a matching approval receipt."""
+    """Emit findings for allowed grants lacking a same-run approval receipt."""
     receipts_by_request: dict[str, list[SecurityReceipt]] = {}
     for receipt in receipts:
         request_id = receipt.attributes.get("request_id")
         if (
-            receipt.receipt_type == RECEIPT_TYPE
+            receipt.run_id == run_id
+            and receipt.receipt_type == RECEIPT_TYPE
             and receipt.effect_type == EFFECT_TYPE
             and isinstance(request_id, str)
         ):
@@ -249,6 +258,7 @@ def detect_grants_without_approval(
                 finding_id=f"finding-{finding_request_id}",
                 finding_type=FINDING_TYPE,
                 producer="identity-approval-scorer",
+                run_id=run_id,
                 target=effect.target,
                 evidence_refs=evidence_refs,
                 attributes={
@@ -277,6 +287,7 @@ async def run_scenario(
     output_dir: Path,
 ) -> ScenarioResult:
     """Run one identity-approval scenario and return all security artifacts."""
+    run_id = f"identity-approval-demo/{name}"
     backend = IdentityBackend(enforce_approval=enforce_approval)
     agent = IdentityApprovalAgent(backend)
     sink_path = output_dir / f"{name}.effects.jsonl"
@@ -296,10 +307,11 @@ async def run_scenario(
         for event in agent.event_manager.filter(type="EffectRecord")
         if isinstance(event, EffectRecord)
     )
-    receipts = collect_approval_receipts(backend)
-    findings = detect_grants_without_approval(effects, receipts)
+    receipts = collect_approval_receipts(backend, run_id=run_id)
+    findings = detect_grants_without_approval(effects, receipts, run_id=run_id)
     return ScenarioResult(
         name=name,
+        run_id=run_id,
         request=request,
         decision=decision,
         effects=effects,

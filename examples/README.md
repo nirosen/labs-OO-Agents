@@ -31,7 +31,7 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 uv run python examples/security_hardening/identity_approval.py
 ```
 
-It compares a vulnerable grant, a denied hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit.
+It compares a vulnerable grant, a denied hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit, including why receipts and findings carry an application-assigned `run_id` while `EffectRecord` keeps its existing runtime lineage fields.
 
 ## Step 1: Your first generation method
 

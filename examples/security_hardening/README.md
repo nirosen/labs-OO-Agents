@@ -1,6 +1,6 @@
 # Identity Approval Hardening Flow
 
-This offline example shows how the security review slices compose around one identity-changing agent method. It starts after untrusted content has influenced a victim agent to call `grant_access`, then separates observed effect telemetry, backend receipt collection, and application-local finding generation.
+This offline example shows how the security review slices compose around one identity-changing agent method. It starts after untrusted content has influenced a victim agent to call `grant_access`, then separates observed effect telemetry, backend receipt collection, and application-local finding generation. Each scenario assigns one `run_id` to its out-of-band receipts and findings so a stale receipt from another run cannot suppress the current finding.
 
 ```mermaid
 flowchart LR
@@ -10,10 +10,10 @@ flowchart LR
     O --> E["EffectRecord"]
     E --> J["JsonlEffectSink"]
     M --> B["identity backend"]
-    B --> R["SecurityReceipt collector"]
+    B --> R["SecurityReceipt collector<br/>run_id"]
     E --> S["application scorer"]
     R --> S
-    S --> F["SecurityFinding"]
+    S --> F["SecurityFinding<br/>run_id"]
 ```
 
 The same attack-shaped request is run twice:
@@ -43,6 +43,8 @@ hardened_authorized | allowed  | 1       | 1        | 0
 ```
 
 This is a composition example, not a trust claim. The JSONL sink, receipt collector, and scorer all run in one process for deterministic local execution. A production hardening path must place the sink and receipt source behind a separately trusted boundary and keep detector policy outside the victim process.
+
+The demo scopes only the out-of-band transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope.
 
 The demo keeps `grant_access()` async because the current `agent_call` recorder observes async agent methods; a sync tool method would require a different observation seam.
 

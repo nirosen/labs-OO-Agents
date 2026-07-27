@@ -66,7 +66,7 @@ This design supports familiar Python testing, tracing, refactoring, and version-
 
 > Branch: `codex/security-hardening-e2e`
 
-This branch composes the review slices into one identity-approval hardening flow. The demo starts at the post-prompt-injection effect boundary: a victim agent calls `grant_access`, NOOA records the method effect, a JSONL sink mirrors the record, a backend collector emits a receipt, and an application-local scorer produces a finding when an allowed grant lacks corroboration.
+This branch composes the review slices into one identity-approval hardening flow. The demo starts at the post-prompt-injection effect boundary: a victim agent calls `grant_access`, NOOA records the method effect, a JSONL sink mirrors the record, a backend collector emits a run-scoped receipt, and an application-local scorer produces a run-scoped finding when an allowed grant lacks corroboration.
 
 ```mermaid
 flowchart LR
@@ -76,16 +76,16 @@ flowchart LR
     O --> E["EffectRecord"]
     E --> J["JsonlEffectSink"]
     M --> B["identity backend"]
-    B --> R["SecurityReceipt collector"]
+    B --> R["SecurityReceipt collector<br/>run_id"]
     E --> S["application scorer"]
     R --> S
-    S --> F["SecurityFinding"]
+    S --> F["SecurityFinding<br/>run_id"]
 ```
 
 | Review item | Detail |
 | --- | --- |
-| Adds | End-to-end identity-approval example and composition tests over `EffectRecord`, agent-call recording, JSONL sink, `SecurityReceipt`, and `SecurityFinding` |
-| Security claim | Applications can compose NOOA effect telemetry with separately collected receipts and policy-specific findings without putting detector semantics into core NOOA. |
+| Adds | End-to-end identity-approval example and composition tests over `EffectRecord`, agent-call recording, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
+| Security claim | Applications can compose NOOA effect telemetry with separately collected receipts and policy-specific findings, while keeping out-of-band artifacts scoped to one application-assigned run, without putting detector semantics into core NOOA. |
 | Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, or make NOOA enforce authorization policy. |
 | Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract` |
 | Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `tests/security/test_hardening_example.py` |
