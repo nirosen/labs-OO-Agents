@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ import nooa.security.egress as egress_module
 from nooa.runtime.event_manager import EventManager
 from nooa.security import (
     DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES,
+    EFFECT_EGRESS_COMPLETENESS_SIGNALS,
     EFFECT_EGRESS_FRAME_KEYS,
     EFFECT_EGRESS_RECORD_EVENT_TYPE,
     EFFECT_EGRESS_RECORD_KEYS,
@@ -29,7 +31,10 @@ from nooa.security import (
     EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE,
     MAX_EFFECT_EGRESS_JSON_INTEGER,
     MAX_EFFECT_EGRESS_SEQUENCE,
+    EffectEgressCompletenessSignal,
     EffectEgressFrameTooLargeError,
+    EffectEgressIncompleteError,
+    EffectEgressReadResult,
     EffectEgressSinkFailedError,
     EffectRecord,
     FdEffectSink,
@@ -37,10 +42,11 @@ from nooa.security import (
     UnsupportedEffectEgressVersionError,
     install_effect_sink,
     read_effect_egress,
+    require_complete_effect_egress,
 )
 
-CONFORMANCE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "effect_egress_conformance_v1.json"
-CONFORMANCE_FIXTURE_SCHEMA_VERSION = "nooa-effect-egress-conformance-v1"
+CONFORMANCE_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "effect_egress_conformance_v2.json"
+CONFORMANCE_FIXTURE_SCHEMA_VERSION = "nooa-effect-egress-conformance-v2"
 
 
 def _frame_line(sequence: int, record: EffectRecord) -> bytes:
@@ -75,6 +81,7 @@ def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
     assert frozenset(fixture["frame_keys"]) == EFFECT_EGRESS_FRAME_KEYS
     assert fixture["record_event_type"] == EFFECT_EGRESS_RECORD_EVENT_TYPE
     assert frozenset(fixture["record_keys"]) == EFFECT_EGRESS_RECORD_KEYS
+    assert tuple(fixture["completeness_signals"]) == EFFECT_EGRESS_COMPLETENESS_SIGNALS
     assert fixture["max_json_integer"] == MAX_EFFECT_EGRESS_JSON_INTEGER
     assert fixture["max_sequence"] == MAX_EFFECT_EGRESS_SEQUENCE
     assert fixture["default_max_frame_bytes"] == DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES
@@ -92,6 +99,13 @@ def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
     assert len(vector_names) == len(set(vector_names))
     for vector in fixture["vectors"]:
         assert len({"payload_utf8", "payload_base64"} & vector.keys()) == 1, vector["name"]
+
+
+def test_effect_egress_completeness_signals_cover_read_result_diagnostics() -> None:
+    assert {field.name for field in fields(EffectEgressReadResult)} == {
+        "records",
+        *EFFECT_EGRESS_COMPLETENESS_SIGNALS,
+    }
 
 
 def _vector_payload_bytes(vector: dict[str, Any]) -> bytes:
@@ -495,6 +509,113 @@ def test_read_effect_egress_reports_first_sequence_gap() -> None:
     assert result.records == (first, third)
     assert result.first_sequence_error == (1, 2)
     assert result.truncated is False
+
+
+def test_require_complete_effect_egress_returns_original_records_tuple() -> None:
+    records = (
+        EffectRecord(effect_type="fs.write", target="/tmp/a"),
+        EffectRecord(effect_type="net.request", target="service-b"),
+    )
+    egress = EffectEgressReadResult(records=records)
+
+    assert require_complete_effect_egress(egress) is records
+
+
+def test_empty_stream_passes_and_is_not_proof_that_no_effects_occurred() -> None:
+    egress = EffectEgressReadResult(records=())
+
+    assert require_complete_effect_egress(egress) == ()
+
+
+@pytest.mark.parametrize(
+    ("egress", "expected_reasons"),
+    [
+        pytest.param(
+            EffectEgressReadResult(records=(), truncated=True),
+            ("truncated",),
+            id="truncated",
+        ),
+        pytest.param(
+            EffectEgressReadResult(records=(), first_sequence_error=(0, 1)),
+            ("first_sequence_error",),
+            id="sequence-error",
+        ),
+        pytest.param(
+            EffectEgressReadResult(
+                records=(),
+                first_sequence_error=(1, 3),
+                truncated=True,
+            ),
+            ("first_sequence_error", "truncated"),
+            id="both",
+        ),
+    ],
+)
+def test_require_complete_effect_egress_raises_structured_error(
+    egress: EffectEgressReadResult,
+    expected_reasons: tuple[EffectEgressCompletenessSignal, ...],
+) -> None:
+    with pytest.raises(EffectEgressIncompleteError) as exc_info:
+        require_complete_effect_egress(egress)
+
+    error = exc_info.value
+    assert error.reasons == expected_reasons
+    assert set(error.reasons).issubset(EFFECT_EGRESS_COMPLETENESS_SIGNALS)
+    assert error.first_sequence_error == egress.first_sequence_error
+    assert error.truncated is egress.truncated
+    assert not isinstance(error, ValueError)
+
+
+def test_require_complete_effect_egress_refuses_mid_stream_attachment() -> None:
+    egress = read_effect_egress(
+        io.BytesIO(_frame_line(3, EffectRecord(effect_type="fs.write", target="/tmp/a")))
+    )
+
+    with pytest.raises(EffectEgressIncompleteError) as exc_info:
+        require_complete_effect_egress(egress)
+
+    assert exc_info.value.first_sequence_error == (0, 3)
+    assert exc_info.value.reasons == ("first_sequence_error",)
+
+
+def test_require_complete_effect_egress_rejects_non_read_result() -> None:
+    with pytest.raises(TypeError, match="expected EffectEgressReadResult"):
+        require_complete_effect_egress("not-a-read-result")  # type: ignore[arg-type]
+
+
+def test_effect_egress_incomplete_error_rejects_clean_result() -> None:
+    with pytest.raises(ValueError, match="requires first_sequence_error or truncated"):
+        EffectEgressIncompleteError(EffectEgressReadResult(records=()))
+
+
+def test_effect_egress_incomplete_error_rejects_non_read_result() -> None:
+    with pytest.raises(TypeError, match="expected EffectEgressReadResult"):
+        EffectEgressIncompleteError("not-a-read-result")  # type: ignore[arg-type]
+
+
+def test_require_complete_effect_egress_composes_with_real_fd_stream(tmp_path: Path) -> None:
+    first = EffectRecord(effect_type="fs.write", target="/tmp/a")
+    second = EffectRecord(effect_type="net.request", target="service-b")
+    path = tmp_path / "effects.egress"
+    _write_fd_egress(path, [first, second])
+
+    with path.open("rb") as fh:
+        records = require_complete_effect_egress(read_effect_egress(fh))
+
+    assert records == (first, second)
+
+
+def test_require_complete_effect_egress_composes_with_truncated_fd_stream(tmp_path: Path) -> None:
+    path = tmp_path / "effects.egress"
+    _write_fd_egress(path, [EffectRecord(effect_type="fs.write", target="/tmp/a")])
+    with path.open("ab") as fh:
+        fh.write(b'{"schema_version":"nooa-effect-egress-v1"')
+
+    with path.open("rb") as fh:
+        with pytest.raises(EffectEgressIncompleteError) as exc_info:
+            require_complete_effect_egress(read_effect_egress(fh))
+
+    assert exc_info.value.reasons == ("truncated",)
 
 
 def test_fd_effect_sink_surfaces_closed_descriptor_error(tmp_path: Path) -> None:

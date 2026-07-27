@@ -1,5 +1,5 @@
 {
-  "schema_version": "nooa-effect-egress-conformance-v1",
+  "schema_version": "nooa-effect-egress-conformance-v2",
   "wire_schema_version": "nooa-effect-egress-v1",
   "wire_schema_version_pattern": "nooa-effect-egress-v[1-9][0-9]*",
   "wire_schema_version_pattern_match_mode": "full",
@@ -23,6 +23,10 @@
     "target",
     "timestamp",
     "tool_call_id"
+  ],
+  "completeness_signals": [
+    "first_sequence_error",
+    "truncated"
   ],
   "max_json_integer": 9007199254740991,
   "max_sequence": 9007199254740991,
