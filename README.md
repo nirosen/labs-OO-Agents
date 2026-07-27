@@ -64,9 +64,9 @@ This design supports familiar Python testing, tracing, refactoring, and version-
 
 ## Security Review Slice: Hardening Flow + Defender + Guard Labels + Egress Contract
 
-> Branch: `codex/security-hardening-e2e-defender-provenance-egress-contract`
+> Base slice: `codex/security-hardening-e2e-defender-provenance-egress-contract`
 
-This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, the built-in `framework_guard_observer`, bounded descriptor-backed effect egress, and the public `nooa-effect-egress-v1` collector contract. The same attack-shaped request still has vulnerable, defender-only, and backend-hardened comparison points. The scorer now consumes collector-facing `read_effect_egress()` records instead of the local event store and refuses to score a gapped or truncated stream. Public wire constants and conformance vectors let an independent collector implement the same transport without copying private source constants; the V1 writer and reader now also reject out-of-range JSON integers, cyclic metadata, and other values that would not round-trip portably, while backend receipts and findings remain outside core NOOA.
+This base slice composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, the built-in `framework_guard_observer`, bounded descriptor-backed effect egress, and the public `nooa-effect-egress-v1` collector contract. The same attack-shaped request still has vulnerable, defender-only, and backend-hardened comparison points. The scorer now consumes collector-facing `read_effect_egress()` records instead of the local event store and refuses to score a gapped or truncated stream. Public wire constants and conformance vectors let an independent collector implement the same transport without copying private source constants; the V1 writer and reader now also reject out-of-range JSON integers, cyclic metadata, and other values that would not round-trip portably, while backend receipts and findings remain outside core NOOA.
 
 ```mermaid
 flowchart LR
@@ -105,6 +105,43 @@ flowchart LR
 | Validation | `pytest tests/security` |
 
 See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the four-scenario comparison, egress notes, and guard-label notes.
+
+## Security Review Follow-On: Out-of-Process Collector
+
+> Branch: `codex/security-hardening-e2e-defender-provenance-egress-contract-collector`
+
+This follow-on layers the example-only supervisor and collector harness onto the composed slice above. The supervisor gives a victim subprocess only a pipe write end and a collector subprocess only the read end, then joins collector-side `read_effect_egress()` facts with the victim process status. The underlying V1 writer and reader still reject out-of-range JSON integers, cyclic metadata, and other values that would not round-trip portably; this follow-on delta adds no new `src/nooa` changes beyond the base slice.
+
+```mermaid
+flowchart LR
+    S["supervisor"] -- "pipe read fd only" --> C["collector subprocess"]
+    S -- "pipe write fd only" --> V["victim subprocess"]
+    I["prompt injection<br/>or unsafe context"] --> A
+    V --> A["NOOA victim agent"]
+    A --> E["FdEffectSink"]
+    A -.->|"--emit-guard-effect"| X["execute_python<br/>validation denial"]
+    X --> G["EffectRecord<br/>observer=framework_guard"]
+    G --> E
+    E --> P["pipe bytes"]
+    WC["V1 wire contract<br/>version + keys + bounds"] --> C
+    CV["conformance vectors"] --> WC
+    P --> C
+    C --> R["read_effect_egress()<br/>records + stream facts"]
+    V --> VX["victim returncode"]
+    R --> J["supervisor join"]
+    VX --> J
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `examples/security_hardening/effect_collector.py`, an example-only two-subprocess harness, collector summary models, an example-local `--emit-guard-effect` coverage knob, and focused collector tests |
+| Security claim | A supervisor can keep the pipe read end out of the victim subprocess, making bytes already written to the pipe unavailable for victim readback or truncation, while separately observing V1 stream-shape facts and the victim return code. With the example-local guard coverage knob enabled, the collector also preserves distinct `observer` labels for agent-call and framework-guard records that crossed the pipe. |
+| Non-claim | The collector path carries effect records and victim status only. It does not move receipts, findings, or the demo's incomplete-stream scoring refusal across the process boundary; authenticate records; prove omitted effects did not happen; distinguish malicious omission from valid clean completion; provide a privilege boundary between these same-user, same-host processes; provide sandboxing or attestation; prevent the effect; produce a detector verdict; or add a new core NOOA API. The reader bounds one frame but not total input. |
+| Base slice | `codex/security-hardening-e2e-defender-provenance-egress-contract` |
+| Review files | `examples/security_hardening/effect_collector.py`, `examples/security_hardening/README.md`, `examples/README.md`, `tests/security/test_effect_collector.py` |
+| Validation | `pytest tests/security`; `pytest` |
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the collector command, subprocess trust-boundary notes, and the base hardening flow.
 
 ## Effect Egress V1 Wire Contract
 

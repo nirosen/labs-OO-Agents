@@ -20,18 +20,25 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 | 11 | MCP tools | [`11_mcp.py`](quickstart/11_mcp.py) |
 | — | Sandbox, memory, multimodal, NeMo Flow | see the [Advanced](#advanced-topics) section |
 | — | Security hardening flow | [`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) |
+| — | Out-of-process effect collector | [`security_hardening/effect_collector.py`](security_hardening/effect_collector.py) |
 
 ---
 
 ## Security Hardening Flow
 
-[`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) is an offline composition example for effect telemetry, an example-only deterministic `agent_call` defender recipe, JSONL evidence mirroring, backend receipts, application-local findings, and optional guard-shaped observer labels around an identity-changing agent method.
+[`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) is an offline composition example for effect telemetry, an example-only deterministic `agent_call` defender recipe, bounded descriptor-backed effect egress, backend receipts, application-local findings, and optional guard-shaped observer labels around an identity-changing agent method.
 
 ```bash
 uv run python examples/security_hardening/identity_approval.py
 ```
 
 It compares a vulnerable grant, a defender-only denial, a denied backend-hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit, including why receipts and findings carry an application-assigned `run_id`, why `EffectRecord` keeps its existing runtime lineage fields, and why guard-shaped records remain labels rather than vulnerability verdicts.
+
+[`security_hardening/effect_collector.py`](security_hardening/effect_collector.py) is the follow-on subprocess harness for the same victim. It gives the victim only a pipe write end, gives a separate collector only the read end, and joins V1 stream-shape facts with the victim return code without claiming record authenticity or completeness.
+
+```bash
+uv run python -m examples.security_hardening.effect_collector demo
+```
 
 ## Step 1: Your first generation method
 
