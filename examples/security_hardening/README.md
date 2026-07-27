@@ -4,6 +4,30 @@ This offline example shows how the security review slices compose around one ide
 
 For the consolidated export map, V1/V2 egress rules, minimal integration, and canonical trust-boundary statements, see [`SURFACE.md`](SURFACE.md).
 
+## Current Joint Branch
+
+`codex/security-hardening-e2e-detector-pipeline-v2` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress for reader-visible refusal semantics, and exercises the same detector handoff across identity approval and data export victims.
+
+```mermaid
+flowchart LR
+    I["prompt injection<br/>or unsafe task context"] --> V1["identity victim"]
+    I --> V2["export victim"]
+    V1 --> A["approval authority<br/>identity only"]
+    V1 --> EP["V2 effect pipe"]
+    V2 --> EP
+    A --> RP["receipt pipe"]
+    EP --> D["detector subprocess"]
+    RP --> D
+    D --> DI["DetectorInput"]
+    DI --> S1["identity scorer"]
+    DI --> S2["export scorer"]
+    D -. "gap / truncation / missing end / count mismatch" .-> X["refused"]
+```
+
+The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v2). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes.
+
+This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, and a valid-looking V2 terminator or receipt remains only as trustworthy as the boundary that produced it.
+
 ## V2 Effect Egress Stream-End Follow-On
 
 `codex/security-effect-egress-stream-end-v2` adds an opt-in V2 envelope to the shared egress reader and switches the subprocess collector and detector examples to it. V1 stays the default writer contract. In V2, normal victim completion calls `FdEffectSink.close()` and emits one stream-end frame with a writer-declared record count; EOF between complete frames now surfaces as `missing_stream_end` instead of looking like orderly completion. `codex/security-lossy-writer-fault-coverage` adds example-only sequence-gap and dropped-record faults so the composed detector path also exercises orderly-looking loss diagnostics without changing `src/nooa/**`.

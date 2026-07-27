@@ -62,6 +62,71 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Joint Branch: End-to-End Detector Pipeline V2
+
+> Branch: `codex/security-hardening-e2e-detector-pipeline-v2`
+
+This is the current presentation branch for the security path assembled across the smaller review slices. It adds no runtime behavior beyond those slices. A maintainer can now review one cumulative path with two victim families, application-owned defender and backend policy, V2 collector-facing egress, optional approval-authority receipts, out-of-process detector scoring, reader-visible refusal on incomplete or inconsistent streams, and a checked surface guide for the public `nooa.security` exports. `SURFACE.md` owns the export map, egress rules, minimal integration, and canonical boundaries; this section owns the runnable composition and checked scenario matrix.
+
+```mermaid
+flowchart LR
+    I["prompt injection<br/>or unsafe task context"] --> V1["IdentityApprovalAgent"]
+    I --> V2["DataExportAgent"]
+    V1 --> D["defender middleware"]
+    D -- "continue" --> B1["identity backend"]
+    D -- "deny" --> E1["denied effect"]
+    V2 --> B2["export backend allowlist"]
+    V1 -- "approval request" --> A["approval authority"]
+    A -- "token response" --> V1
+    A -- "receipt document" --> RP["receipt pipe"]
+    B1 --> ES["FdEffectSink<br/>V2"]
+    B2 --> ES
+    E1 --> ES
+    ES --> EP["effect pipe"]
+    EP --> T["detector subprocess"]
+    RP --> T
+    T --> C["read_effect_egress()<br/>signals + budgets"]
+    C --> DI["DetectorInput"]
+    DI --> P1["identity scorer"]
+    DI --> P2["export scorer"]
+    P1 --> F["finding or refusal"]
+    P2 --> F
+    C -. "gap / truncation / missing end / count mismatch" .-> X["scored=False"]
+```
+
+<!-- JOINT_SCENARIO_MATRIX_START -->
+| Scenario | Victim fault | Profile | V2 signals | Scored | Findings |
+| --- | --- | --- | --- | --- | --- |
+| `vulnerable_attack` | `none` | `identity_approval` | `()` | `True` | `1` |
+| `defender_only_attack` | `none` | `identity_approval` | `()` | `True` | `0` |
+| `hardened_authorized` | `none` | `identity_approval` | `()` | `True` | `0` |
+| `export_vulnerable_attack` | `none` | `data_export` | `()` | `True` | `1` |
+| `export_hardened_attack` | `none` | `data_export` | `()` | `True` | `0` |
+| `vulnerable_attack` | `partial_tail_crash` | `identity_approval` | `("truncated", "missing_stream_end")` | `False` | `0` |
+| `vulnerable_attack` | `exit_between_frames` | `identity_approval` | `("missing_stream_end",)` | `False` | `0` |
+| `vulnerable_attack` | `drop_record_count_mismatch` | `identity_approval` | `("record_count_mismatch",)` | `False` | `0` |
+| `export_vulnerable_attack` | `sequence_gap` | `data_export` | `("first_sequence_error",)` | `False` | `0` |
+<!-- JOINT_SCENARIO_MATRIX_END -->
+
+| Review item | Detail |
+| --- | --- |
+| Included slices | `codex/security-hardening-e2e-detector-pipeline`, `codex/security-second-victim-detector-generality`, `codex/security-effect-egress-stream-end-v2`, `codex/security-surface-guide`, `codex/security-lossy-writer-fault-coverage` |
+| Security claim | Applications can compose and review one deterministic hardening path around current NOOA primitives: observe effects, keep authorization policy application-owned, move detector scoring outside the victim process, preserve V2 reader-visible refusal semantics, and reuse the same detector handoff across two example victim policies. |
+| Non-claim | This remains a same-user, same-host example with no sandboxing, signing, authentication, attestation, production IAM boundary, or completeness proof. Two victims do not establish general coverage. A valid-looking V2 terminator can still be forged, a dishonest writer can omit an effect and declare the reduced count, receipts remain caller-controlled copies, and zero findings remain policy-specific example outcomes rather than a general safety verdict. |
+| Presentation files | `README.md`, `examples/security_hardening/README.md`, `tests/security/test_joint_readme.py` |
+| Validation | `pytest tests/security/test_joint_readme.py`; `pytest tests/security`; `git diff --quiet feb3c7c -- src/nooa ':(glob)examples/**/*.py'`; `pytest` |
+
+Run representative paths:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized
+uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault drop_record_count_mismatch
+```
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the progressive rationale and [`examples/security_hardening/SURFACE.md`](examples/security_hardening/SURFACE.md) for the checked public-surface map. Historical per-slice review notes remain below for branch-by-branch context.
+
 ## Security Review Follow-On: Lossy Writer Fault Coverage
 
 > Branch: `codex/security-lossy-writer-fault-coverage`
@@ -223,60 +288,6 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario ex
 ```
 
 See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the profile split, receipt-free scoring path, and explicit non-claims.
-
-## Security Review Joint Branch: End-to-End Detector Pipeline
-
-> Branch: `codex/security-hardening-e2e-detector-pipeline`
-
-This branch is the presentation layer for the security path assembled across the smaller review slices. It adds no new API beyond those slices. The runnable example now has one complete defensive loop: a prompt-injection-shaped request reaches a NOOA victim, an application defender can deny before the backend, effect copies leave through bounded egress, a separate approval authority issues run-scoped tokens and receipt rows, an out-of-process detector assembles `DetectorInput`, and the application scorer emits findings or an explicit refusal.
-
-```mermaid
-flowchart LR
-    I["prompt injection<br/>or unsafe task context"] --> V["NOOA victim"]
-    V --> M["grant_access()"]
-    M --> D["defender middleware"]
-    D -- "deny" --> DX["denied effect"]
-    D -- "continue" --> B["identity backend"]
-    V -- "approval request" --> A["approval authority<br/>run-scoped token issuer"]
-    A -- "token response" --> V
-    A -- "AuthorityReceiptDocument" --> RP["receipt pipe"]
-    DX --> ES["FdEffectSink"]
-    B --> ES
-    ES --> EP["effect pipe"]
-    EP --> T["detector subprocess"]
-    RP --> T
-    T --> C["read_effect_egress()<br/>diagnostics + budgets"]
-    C --> DI["DetectorInput<br/>detector-side assembly"]
-    DI --> P["identity scorer"]
-    P --> F["SecurityFinding rows"]
-    P -. "gap / truncated tail / unknown coverage" .-> X["DetectorReport<br/>scored=False"]
-```
-
-| Scenario | Decision path | Authority tokens | Detector result |
-| --- | --- | --- | --- |
-| `vulnerable_attack` | Allowed | 0 | 1 finding |
-| `defender_only_attack` | Denied before backend | 0 | 0 findings |
-| `hardened_attack` | Denied by backend | 0 | 0 findings |
-| `hardened_authorized` | Allowed | 1 | 0 findings |
-| `vulnerable_attack --victim-fault partial_tail_crash` | Victim exits non-zero | 0 | Refused, not clean |
-
-| Review item | Detail |
-| --- | --- |
-| Included slices | `codex/security-hardening-e2e-defender-provenance-egress-contract-collector-completeness-gate-input-budget`, `codex/security-detector-input-contract`, `codex/security-trusted-detector-harness`, `codex/security-approval-authority-receipts` |
-| Security claim | Applications can compose a deterministic hardening loop around a NOOA agent: defense-in-depth before the backend, bounded collector-facing effect transport, explicit reader-visible completeness handling, a neutral detector handoff object, detector policy outside the victim process, and approval receipts derived from a separate issuing process action. |
-| Non-claim | This is still a same-user, same-host demo with no sandboxing, attestation, authentication, signing, or production IAM boundary. It does not prove omitted effects did not happen, prove an issued token was honored, make receipt coverage independently verifiable, turn guard labels into vulnerability verdicts, or make NOOA own application authorization policy. The run-scoped token derivation is a deterministic regression aid, not a secret-bearing protocol. |
-| Review files | `src/nooa/security/__init__.py`, `src/nooa/security/egress.py`, `src/nooa/security/evidence.py`, `examples/security_hardening/identity_approval.py`, `examples/security_hardening/effect_collector.py`, `examples/security_hardening/detector_harness.py`, `examples/security_hardening/approval_authority.py`, `examples/security_hardening/identity_contract.py`, `examples/security_hardening/README.md`, `tests/security/test_egress.py`, `tests/security/test_evidence.py`, `tests/security/test_hardening_example.py`, `tests/security/test_effect_collector.py`, `tests/security/test_detector_harness.py`, `tests/security/test_approval_authority.py` |
-| Validation | `pytest tests/security`; `pytest` |
-
-Run the full detector path with:
-
-```bash
-uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
-uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized
-uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault partial_tail_crash
-```
-
-See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the progressive slice-by-slice rationale and trust-boundary notes.
 
 ## Security Review Follow-On: Approval Authority Receipts
 
