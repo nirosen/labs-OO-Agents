@@ -66,11 +66,11 @@ This design supports familiar Python testing, tracing, refactoring, and version-
 
 > Branch: `codex/security-finding-contract`
 
-This branch adds a minimal transport schema for detector or scorer output. `SecurityFinding` gives applications a stable way to publish joinable findings without making NOOA own detector execution, evidence authentication, or policy semantics.
+This branch adds a minimal transport schema for detector or scorer output. `SecurityFinding` gives applications a stable way to publish joinable findings without making NOOA own detector execution, evidence authentication, or policy semantics. An optional application-assigned `run_id` lets independent scorers keep findings scoped to one assessment run without hiding that scope inside free-form attributes.
 
 ```mermaid
 flowchart LR
-    A["detector or scorer boundary"] --> B["SecurityFinding"]
+    A["detector or scorer boundary"] --> B["SecurityFinding<br/>run_id"]
     C["EffectRecord.id"] -. "opaque ref" .-> B
     D["SecurityReceipt.receipt_id"] -. "opaque ref" .-> B
     E["external evidence ID"] -. "opaque ref" .-> B
@@ -79,9 +79,9 @@ flowchart LR
 
 | Review item | Detail |
 | --- | --- |
-| Adds | Frozen `SecurityFinding` transport schema with opaque `evidence_refs` |
-| Security claim | Applications can publish joinable finding records without NOOA standardizing detector or verdict semantics. |
-| Non-claim | The schema does not authenticate producers or evidence, dereference refs, assign severity/verdict, or enforce policy. |
+| Adds | Frozen `SecurityFinding` transport schema with optional `run_id` and opaque `evidence_refs` |
+| Security claim | Applications can publish joinable, explicitly run-scoped finding records without NOOA standardizing detector or verdict semantics. |
+| Non-claim | The schema does not authenticate producers, evidence, or `run_id`, dereference refs, assign severity/verdict, or enforce policy. |
 | Base | `main` |
 | Merge note | Parallel sibling slice; other security branches also add `src/nooa/security/__init__.py`. |
 | Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `tests/security/test_findings.py` |
