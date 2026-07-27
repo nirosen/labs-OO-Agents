@@ -15,6 +15,7 @@ def _finding(**updates: object) -> SecurityFinding:
         "finding_id": "finding-1",
         "finding_type": "authorization.missing_receipt",
         "producer": "identity_policy.v1",
+        "run_id": "run-20260727-identity-1",
         "target": "invoice-42",
         "evidence_refs": ("effect-event-1", "receipt-audit-1"),
         "attributes": {"rule": "require_approval_token", "matched": True},
@@ -31,6 +32,7 @@ def test_security_finding_is_strict_json_transport() -> None:
         "finding_id",
         "finding_type",
         "producer",
+        "run_id",
         "target",
         "evidence_refs",
         "attributes",
@@ -39,6 +41,7 @@ def test_security_finding_is_strict_json_transport() -> None:
     assert finding.finding_id == "finding-1"
     assert finding.finding_type == "authorization.missing_receipt"
     assert finding.producer == "identity_policy.v1"
+    assert finding.run_id == "run-20260727-identity-1"
     assert finding.target == "invoice-42"
     assert finding.evidence_refs == ("effect-event-1", "receipt-audit-1")
     assert finding.attributes == {"rule": "require_approval_token", "matched": True}
@@ -61,6 +64,7 @@ def test_security_finding_defaults_round_trip_and_freeze_field_bindings() -> Non
     )
 
     assert finding.target == ""
+    assert finding.run_id == ""
     assert finding.evidence_refs == ()
     assert finding.attributes == {}
     assert SecurityFinding.model_validate_json(finding.model_dump_json()) == finding

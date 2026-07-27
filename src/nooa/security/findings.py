@@ -20,9 +20,12 @@ class SecurityFinding(BaseModel):
     process trustworthy. A finding is only as trustworthy as the execution and
     collection boundary that produced it.
 
-    ``evidence_refs`` are opaque identifiers so applications can point at
-    ``EffectRecord.id``, ``SecurityReceipt.receipt_id``, SIEM records, or other
-    evidence without making NOOA own the join semantics. The schema
+    ``run_id`` is application-assigned scope for grouping findings from one
+    run or assessment; NOOA does not mint it, verify it, or infer that equal
+    values establish trusted provenance. ``evidence_refs`` are opaque
+    identifiers so applications can point at ``EffectRecord.id``,
+    ``SecurityReceipt.receipt_id``, SIEM records, or other evidence without
+    making NOOA own the join semantics. The schema
     intentionally does not standardize severity, verdict, or enforcement
     action; those remain application policy. Field bindings are frozen for
     transport stability, but nested ``attributes`` values remain ordinary
@@ -48,6 +51,10 @@ class SecurityFinding(BaseModel):
     producer: str = Field(
         min_length=1,
         description="Sanitized identifier for the detector, scorer, or policy producer.",
+    )
+    run_id: str = Field(
+        default="",
+        description="Application-assigned run or assessment scope for grouping related findings.",
     )
     target: str = Field(
         default="",
