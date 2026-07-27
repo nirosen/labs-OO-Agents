@@ -62,6 +62,31 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: Framework Guard Observer
+
+> Branch: `codex/framework-guard-observer`
+
+This branch adds a built-in observer for deterministic framework-owned `execute_python` outcomes. When installed, it turns typed validation, timeout, memory, and worker failures into structured evidence without copying raw exception text into telemetry.
+
+```mermaid
+flowchart TD
+    A["execute_python result.error"] --> B["framework_guard_observer"]
+    B --> C["code.validation denied"]
+    B --> D["code.timeout observed"]
+    B --> E["sandbox.memory observed"]
+    B --> F["sandbox.worker observed"]
+    G["app exceptions or serialization errors"] -. "ignored" .-> B
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `framework_guard_observer()`, typed sandbox errors, and in-process timeout provenance handling in `execute_code` |
+| Security claim | NOOA can emit stable evidence for selected framework-owned guard outcomes. |
+| Non-claim | This is not a vulnerability detector, and a timeout record does not prove generated code stopped. |
+| Shared base | `codex/trusted-evidence-contract`; parallel sibling slice with a small shared export edit in `src/nooa/security/__init__.py` |
+| Review files | `src/nooa/security/observers.py`, `src/nooa/security/__init__.py`, `src/nooa/runtime/actor.py`, `src/nooa/runtime/sandbox/errors.py`, `tests/security/test_observers.py` |
+| Validation | `pytest tests/security/test_observers.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
