@@ -42,6 +42,12 @@ EFFECT_EGRESS_RECORD_KEYS: frozenset[str] = frozenset(
         "attributes",
     }
 )
+EffectEgressCompletenessSignal = Literal["first_sequence_error", "truncated"]
+# Tuple order is public because EffectEgressIncompleteError.reasons preserves it.
+EFFECT_EGRESS_COMPLETENESS_SIGNALS: tuple[EffectEgressCompletenessSignal, ...] = (
+    "first_sequence_error",
+    "truncated",
+)
 MAX_EFFECT_EGRESS_JSON_INTEGER: int = (1 << 53) - 1
 MAX_EFFECT_EGRESS_SEQUENCE: int = MAX_EFFECT_EGRESS_JSON_INTEGER
 DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES: int = 1024 * 1024
@@ -96,6 +102,35 @@ class EffectEgressReadResult:
     records: tuple[EffectRecord, ...]
     first_sequence_error: tuple[int, int] | None = None
     truncated: bool = False
+
+
+class EffectEgressIncompleteError(RuntimeError):
+    """Raised when known reader diagnostics show degraded effect egress.
+
+    This error reports only degradation visible in an
+    :class:`EffectEgressReadResult`. It does not authenticate records or prove
+    that a writer emitted every effect.
+    """
+
+    def __init__(self, egress: EffectEgressReadResult) -> None:
+        if not isinstance(egress, EffectEgressReadResult):
+            raise TypeError(
+                "EffectEgressIncompleteError expected EffectEgressReadResult, "
+                f"got {type(egress).__name__}"
+            )
+        reasons = _effect_egress_incomplete_reasons(egress)
+        if not reasons:
+            raise ValueError(
+                "EffectEgressIncompleteError requires first_sequence_error or truncated"
+            )
+        self.first_sequence_error = egress.first_sequence_error
+        self.truncated = egress.truncated
+        self.reasons = reasons
+        super().__init__(
+            "effect egress stream is incomplete: "
+            f"first_sequence_error={egress.first_sequence_error!r}, "
+            f"truncated={egress.truncated!r}"
+        )
 
 
 class FdEffectSink:
@@ -271,6 +306,54 @@ def read_effect_egress(
         first_sequence_error=first_sequence_error,
         truncated=truncated,
     )
+
+
+def require_complete_effect_egress(
+    egress: EffectEgressReadResult,
+) -> tuple[EffectRecord, ...]:
+    """Return records only when received bytes show no known degradation.
+
+    A clean result, including an empty stream, means only that the reader did
+    not observe a sequence discontinuity or a trailing partial frame. It does
+    not prove that a writer emitted every effect or that the bytes are genuine.
+    Because :func:`read_effect_egress` starts sequence validation at zero,
+    attaching to a mid-stream writer produces ``first_sequence_error`` and is
+    rejected by this helper.
+
+    This helper is the second half of a fail-closed collector read:
+    :func:`read_effect_egress` raises :class:`ValueError`, including its
+    :class:`UnsupportedEffectEgressVersionError` and
+    :class:`EffectEgressFrameTooLargeError` subclasses, for malformed complete
+    frames, unsupported versions, or over-bound input. This helper raises
+    :class:`EffectEgressIncompleteError` for parsed results that carry known
+    short-stream or sequence-discontinuity diagnostics.
+
+    Raises:
+        TypeError: If ``egress`` is not an :class:`EffectEgressReadResult`.
+        EffectEgressIncompleteError: If the reader reported a sequence
+            discontinuity or a trailing partial frame.
+    """
+
+    if not isinstance(egress, EffectEgressReadResult):
+        raise TypeError(
+            "require_complete_effect_egress expected EffectEgressReadResult, "
+            f"got {type(egress).__name__}"
+        )
+    if _effect_egress_incomplete_reasons(egress):
+        raise EffectEgressIncompleteError(egress)
+    return egress.records
+
+
+def _effect_egress_incomplete_reasons(
+    egress: EffectEgressReadResult,
+) -> tuple[EffectEgressCompletenessSignal, ...]:
+    """Return the known reader diagnostics that fail the completeness gate."""
+    reasons: list[EffectEgressCompletenessSignal] = []
+    if egress.first_sequence_error is not None:
+        reasons.append("first_sequence_error")
+    if egress.truncated:
+        reasons.append("truncated")
+    return tuple(reasons)
 
 
 def _parse_frame(line: bytes, line_number: int) -> _EffectEgressFrame:

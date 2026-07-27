@@ -27,6 +27,7 @@ from examples.security_hardening.identity_approval import (
 )
 from nooa.errors import RestrictedCodeError
 from nooa.security import (
+    EffectEgressIncompleteError,
     EffectEgressReadResult,
     EffectRecord,
     FdEffectSink,
@@ -157,7 +158,7 @@ async def test_run_scenario_refuses_to_score_incomplete_egress(
 
     monkeypatch.setattr(identity_approval, "_read_effect_egress", read_degraded_egress)
 
-    with pytest.raises(RuntimeError, match="refuses to score incomplete effect egress"):
+    with pytest.raises(EffectEgressIncompleteError, match="effect egress stream is incomplete"):
         await run_scenario(
             "vulnerable_attack",
             PROMPT_INJECTION_REQUEST,

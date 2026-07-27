@@ -14,9 +14,11 @@ flowchart LR
     B --> E2["EffectRecord<br/>decision_source=backend"]
     E --> J["FdEffectSink<br/>blocking fd"]
     E2 --> J
-    J --> C["read_effect_egress()<br/>records + stream status"]
+    J --> C["read_effect_egress()<br/>records + diagnostics"]
+    C --> G["require_complete_effect_egress()<br/>fail closed on gap / truncation"]
+    C -.->|"gap or truncated tail"| IX["EffectEgressIncompleteError"]
     B --> R["SecurityReceipt collector<br/>run_id"]
-    C --> S["application scorer"]
+    G --> S["application scorer"]
     R --> S
     S --> F["SecurityFinding<br/>run_id"]
 ```
@@ -50,7 +52,7 @@ hardened_attack      | denied   | backend  | 1       | 1       | 0        | 0
 hardened_authorized  | allowed  | backend  | 1       | 1       | 1        | 0
 ```
 
-This is a composition example, not a trust claim. The descriptor-backed sink, receipt collector, scorer, and defender middleware all run in one process for deterministic local execution. `run_scenario()` scores the collector-facing records returned by `read_effect_egress()` rather than the victim's in-memory event store, and it raises instead of scoring when that stream has a sequence discontinuity or truncated trailing frame. A same-process descriptor is still not trusted evidence. A production hardening path must hand `FdEffectSink` a separately controlled blocking descriptor, place the receipt source behind a separately trusted boundary, keep detector policy outside the victim process, and keep backend authorization authoritative. The direct-backend bypass probe stays in tests rather than the table because it intentionally leaves the observed agent method path and therefore does not create the `EffectRecord` input this narrow scorer requires.
+This is a composition example, not a trust claim. The descriptor-backed sink, receipt collector, scorer, and defender middleware all run in one process for deterministic local execution. `run_scenario()` scores the collector-facing records returned by `require_complete_effect_egress(read_effect_egress(...))` rather than the victim's in-memory event store, and the public gate raises instead of scoring when that stream has a sequence discontinuity or truncated trailing frame. A clean result, including an empty stream, means only that the reader saw no known gap or truncation. A same-process descriptor is still not trusted evidence. A production hardening path must hand `FdEffectSink` a separately controlled blocking descriptor, place the receipt source behind a separately trusted boundary, keep detector policy outside the victim process, and keep backend authorization authoritative. The direct-backend bypass probe stays in tests rather than the table because it intentionally leaves the observed agent method path and therefore does not create the `EffectRecord` input this narrow scorer requires.
 
 The demo scopes only the out-of-band transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope. The egress stream's sequence and truncation status only describe bytes received by the collector; they do not authenticate the writer, prove that omitted effects never happened, or turn transport health into a detector verdict.
 
@@ -73,7 +75,7 @@ The fake LLM client only satisfies `Agent` construction; no generation method ru
 
 ## Out-of-Process Collector Follow-On
 
-`codex/security-hardening-e2e-defender-provenance-egress-contract-collector` adds an example-only supervisor harness around the same identity victim without adding new `src/nooa` changes beyond the prior composed slice. The supervisor opens one pipe, passes only the write end to the victim subprocess, passes only the read end to the collector subprocess, and joins the collector summary with the victim return code.
+`codex/security-hardening-e2e-defender-provenance-egress-contract-collector` adds an example-only supervisor harness around the same identity victim. The supervisor opens one pipe, passes only the write end to the victim subprocess, passes only the read end to the collector subprocess, and joins the collector summary with the victim return code. The collector stays fact-reporting and does not call `require_complete_effect_egress()` so it can preserve truncated or gapped stream diagnostics for the supervisor.
 
 ```mermaid
 flowchart LR
@@ -116,4 +118,4 @@ uv run python -m examples.security_hardening.effect_collector demo --victim-faul
 
 This is a real but narrow boundary improvement: the victim subprocess cannot read back bytes after it writes them into the pipe, and the pipe is not a seekable output file it can truncate. `CollectorSummary` reports the records that arrived, the first sequence discontinuity, and whether the final frame was truncated. `truncated=False` means only that the received byte stream ended between frames; it does not mean the record set is authentic or complete.
 
-The collector path carries effect records and victim status only. It does not move receipts, findings, or the same-process demo's incomplete-stream scoring refusal into the subprocess boundary. The collector still accepts a valid-looking forged frame from any writer holding the write end, and an empty stream followed by a clean victim exit is still indistinguishable from a victim that intentionally omitted an effect and exited cleanly. These are same-user, same-host processes with no privilege boundary between them; this branch demonstrates descriptor separation, not sandboxing, attestation, prevention, or a detector verdict. It keeps process lifecycle in the example instead of adding a core NOOA collector API.
+The collector path carries effect records and victim status only. It does not move receipts, findings, or the same-process demo's incomplete-stream scoring refusal into the subprocess boundary. The collector still accepts a valid-looking forged frame from any writer holding the write end, and an empty stream followed by a clean victim exit is still indistinguishable from a victim that intentionally omitted an effect and exited cleanly. These are same-user, same-host processes with no privilege boundary between them; this branch demonstrates descriptor separation, not sandboxing, attestation, prevention, or a detector verdict. It keeps process lifecycle in the example instead of adding another core NOOA collector API.
