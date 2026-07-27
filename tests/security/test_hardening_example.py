@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -25,10 +26,13 @@ from examples.security_hardening.identity_approval import (
 from nooa.errors import RestrictedCodeError
 from nooa.security import (
     EffectRecord,
+    FdEffectSink,
     SecurityReceipt,
     framework_guard_observer,
     install_agent_call_effect_recorder,
     install_effect_recorder,
+    install_effect_sink,
+    read_effect_egress,
 )
 
 
@@ -52,7 +56,9 @@ async def test_vulnerable_grant_is_recorded_and_flagged_without_receipt(tmp_path
     assert result.findings[0].finding_type == FINDING_TYPE
     assert result.findings[0].run_id == result.run_id
     assert result.findings[0].evidence_refs == (result.effects[0].id,)
-    assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
+    assert result.egress.records == result.effects
+    assert result.egress.first_sequence_error is None
+    assert result.egress.truncated is False
 
 
 @pytest.mark.asyncio
@@ -72,7 +78,9 @@ async def test_hardened_backend_denies_same_attack_without_finding(tmp_path: Pat
     assert result.effects[0].attributes["decision_source"] == "backend"
     assert result.receipts == ()
     assert result.findings == ()
-    assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
+    assert result.egress.records == result.effects
+    assert result.egress.first_sequence_error is None
+    assert result.egress.truncated is False
 
 
 @pytest.mark.asyncio
@@ -95,7 +103,9 @@ async def test_hardened_authorized_grant_correlates_receipt_without_finding(tmp_
     assert result.receipts[0].run_id == result.run_id
     assert result.receipts[0].target == result.effects[0].target
     assert result.findings == ()
-    assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
+    assert result.egress.records == result.effects
+    assert result.egress.first_sequence_error is None
+    assert result.egress.truncated is False
 
 
 @pytest.mark.asyncio
@@ -117,7 +127,9 @@ async def test_defender_only_blocks_attack_before_vulnerable_backend(tmp_path: P
     assert result.effects[0].attributes["decision_source"] == "defender"
     assert result.receipts == ()
     assert result.findings == ()
-    assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
+    assert result.egress.records == result.effects
+    assert result.egress.first_sequence_error is None
+    assert result.egress.truncated is False
 
 
 @pytest.mark.asyncio
@@ -313,6 +325,48 @@ async def test_defender_denial_and_framework_effects_keep_distinct_observers() -
     ]
     assert len(records) == 2
     assert {(record.effect_type, record.observer, record.decision) for record in records} == {
+        (EFFECT_TYPE, "agent_call_middleware", "denied"),
+        ("code.validation", "framework_guard", "denied"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_egress_keeps_defender_and_framework_observer_labels_distinct(
+    tmp_path: Path,
+) -> None:
+    agent = IdentityApprovalAgent(IdentityBackend(enforce_approval=False))
+    egress_path = tmp_path / "combined.effects.egress"
+    sink_fd = os.open(egress_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    uninstall_sink = install_effect_sink(agent.event_manager, FdEffectSink(sink_fd))
+    uninstall_agent_call = install_agent_call_effect_recorder(
+        agent.event_manager,
+        observe_identity_grant,
+    )
+    uninstall_defender = install_identity_grant_defender(agent.event_manager)
+    uninstall_guard = install_effect_recorder(
+        agent.event_manager,
+        framework_guard_observer,
+    )
+    try:
+        decision = await agent.handle_request(PROMPT_INJECTION_REQUEST)
+        validation_result = await agent.runtime.execute_code("eval('1 + 1')")
+    finally:
+        uninstall_guard()
+        uninstall_defender()
+        uninstall_agent_call()
+        uninstall_sink()
+        os.close(sink_fd)
+
+    assert decision.granted is False
+    assert decision.source == "defender"
+    assert isinstance(validation_result.error, RestrictedCodeError)
+    with egress_path.open("rb") as fh:
+        egress = read_effect_egress(fh)
+    assert egress.first_sequence_error is None
+    assert egress.truncated is False
+    assert {
+        (record.effect_type, record.observer, record.decision) for record in egress.records
+    } == {
         (EFFECT_TYPE, "agent_call_middleware", "denied"),
         ("code.validation", "framework_guard", "denied"),
     }

@@ -62,11 +62,11 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Hardening Flow + Defender + Guard Labels
+## Security Review Slice: Hardening Flow + Defender + Guard Labels + Egress
 
-> Branch: `codex/security-hardening-e2e-defender-provenance`
+> Branch: `codex/security-hardening-e2e-defender-provenance-egress`
 
-This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, and the built-in `framework_guard_observer`. The same attack-shaped request now has vulnerable, defender-only, and backend-hardened comparison points. Backend receipts and findings still stay outside core NOOA; the added proof is narrower: application-owned method effects and guard-shaped observer records can coexist in one event stream while retaining distinct `observer` labels.
+This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, the built-in `framework_guard_observer`, and bounded descriptor-backed effect egress. The same attack-shaped request still has vulnerable, defender-only, and backend-hardened comparison points. The scorer now consumes collector-facing `read_effect_egress()` records instead of the local event store, while backend receipts and findings remain outside core NOOA.
 
 ```mermaid
 flowchart LR
@@ -77,29 +77,32 @@ flowchart LR
     D -- "deny before backend" --> DX["AccessDecision<br/>source=defender"]
     D -- "pass through" --> B["identity backend<br/>authoritative"]
     B --> BY["AccessDecision<br/>source=backend"]
-    DX --> AE["EffectRecord<br/>observer=agent_call_middleware<br/>decision_source"]
+    DX --> AE["EffectRecord<br/>observer=agent_call_middleware"]
     BY --> AE
-    AE --> J["JsonlEffectSink"]
-    B --> R["SecurityReceipt collector<br/>run_id"]
-    AE --> S["application scorer"]
-    R --> S
-    S --> F["SecurityFinding<br/>run_id"]
     V --> XP["execute_python"]
     XP -- "mapped result.error" --> GO["framework_guard_observer"]
     GO --> GE["EffectRecord<br/>observer=framework_guard"]
-    GE --> P["guard evidence<br/>not scorer input"]
+    AE --> ES["FdEffectSink<br/>blocking fd"]
+    GE --> ES
+    ES --> EC["read_effect_egress()<br/>records + stream status"]
+    EC --> AI["identity effects<br/>scorer input"]
+    EC --> P["guard evidence<br/>not scorer input"]
+    B --> R["SecurityReceipt collector<br/>run_id"]
+    AI --> S["application scorer"]
+    R --> S
+    S --> F["SecurityFinding<br/>run_id"]
 ```
 
 | Review item | Detail |
 | --- | --- |
-| Adds | End-to-end identity-approval example, an example-only deterministic `agent_call` defender recipe, and composition tests over application `EffectRecord` telemetry, `framework_guard_observer()`, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
-| Security claim | Applications can add a deterministic preflight denial and keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
-| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, make the defender a trusted boundary or backend authorization replacement, generalize beyond this scripted missing-token rule, authenticate the origin of a guard-shaped exception or record, turn guard telemetry into a vulnerability detector, or make NOOA enforce authorization policy. |
-| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer`, `codex/security-hardening-defender-recipe` |
-| Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/observers.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
+| Adds | End-to-end identity-approval example, an example-only deterministic `agent_call` defender recipe, `framework_guard_observer()`, bounded `FdEffectSink` transport, collector-side `read_effect_egress()`, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
+| Security claim | Applications can add a deterministic preflight denial, emit bounded framed effect copies through a chosen blocking descriptor, detect a first sequence discontinuity or trailing partial frame in received bytes, and keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
+| Non-claim | The demo does not simulate an LLM attack, make same-process descriptors/receipts trusted, make the defender a trusted boundary or backend authorization replacement, generalize beyond this scripted missing-token rule, authenticate the origin of a guard-shaped exception or record, turn guard telemetry into a vulnerability detector, prove unrecorded effects did not happen, or make NOOA enforce authorization policy. |
+| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer`, `codex/security-hardening-defender-recipe`, `codex/security-effect-egress` |
+| Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/egress.py`, `src/nooa/security/observers.py`, `tests/security/test_egress.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
 | Validation | `pytest tests/security` |
 
-See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the four-scenario comparison and guard-label notes.
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the four-scenario comparison, egress notes, and guard-label notes.
 
 ## Installation
 

@@ -12,11 +12,11 @@ flowchart LR
     D -- "otherwise" --> B["identity backend<br/>authoritative"]
     X --> E["EffectRecord<br/>decision_source=defender"]
     B --> E2["EffectRecord<br/>decision_source=backend"]
-    E --> J["JsonlEffectSink"]
+    E --> J["FdEffectSink<br/>blocking fd"]
     E2 --> J
+    J --> C["read_effect_egress()<br/>records + stream status"]
     B --> R["SecurityReceipt collector<br/>run_id"]
-    E --> S["application scorer"]
-    E2 --> S
+    C --> S["application scorer"]
     R --> S
     S --> F["SecurityFinding<br/>run_id"]
 ```
@@ -39,7 +39,7 @@ Run it with:
 uv run python examples/security_hardening/identity_approval.py
 ```
 
-Expected table output (the script then prints per-scenario JSONL effect IDs):
+Expected table output (the script then prints per-scenario framed egress IDs):
 
 ```text
 scenario             | decision | source   | backend | effects | receipts | findings
@@ -50,19 +50,19 @@ hardened_attack      | denied   | backend  | 1       | 1       | 0        | 0
 hardened_authorized  | allowed  | backend  | 1       | 1       | 1        | 0
 ```
 
-This is a composition example, not a trust claim. The JSONL sink, receipt collector, scorer, and defender middleware all run in one process for deterministic local execution. A production hardening path must place the sink and receipt source behind a separately trusted boundary, keep detector policy outside the victim process, and keep backend authorization authoritative. The direct-backend bypass probe stays in tests rather than the table because it intentionally leaves the observed agent method path and therefore does not create the `EffectRecord` input this narrow scorer requires.
+This is a composition example, not a trust claim. The descriptor-backed sink, receipt collector, scorer, and defender middleware all run in one process for deterministic local execution. `run_scenario()` scores the collector-facing records returned by `read_effect_egress()` rather than the victim's in-memory event store, but a same-process descriptor is still not trusted evidence. A production hardening path must hand `FdEffectSink` a separately controlled blocking descriptor, place the receipt source behind a separately trusted boundary, keep detector policy outside the victim process, and keep backend authorization authoritative. The direct-backend bypass probe stays in tests rather than the table because it intentionally leaves the observed agent method path and therefore does not create the `EffectRecord` input this narrow scorer requires.
 
-The demo scopes only the out-of-band transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope.
+The demo scopes only the out-of-band transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope. The egress stream's sequence and truncation status only describe bytes received by the collector; they do not authenticate the writer, prove that omitted effects never happened, or turn transport health into a detector verdict.
 
 The defender recipe is intentionally example-specific: it blocks only `grant_access()` requests without an approval token. It demonstrates existing `agent_call` middleware as a defense-in-depth seam; it does not become a generic NOOA policy API. The recorder is installed before the defender so the outer wrapper still records short-circuited denials; reversing that order would leave an inner recorder unable to observe the block. The demo keeps `grant_access()` async because the current `agent_call` recorder and defender observe async agent methods; a sync tool method would require a different observation seam.
 
-On `codex/security-hardening-e2e-defender-provenance`, the same event manager can also carry guard-shaped observer records without confusing their label with the application grant effect:
+On `codex/security-hardening-e2e-defender-provenance-egress`, the same event manager and egress stream can also carry guard-shaped observer records without confusing their label with the application grant effect:
 
 ```mermaid
 flowchart LR
     A["grant_access()"] --> AE["EffectRecord<br/>observer=agent_call_middleware"]
     B["execute_python result.error<br/>mapped type"] --> FE["EffectRecord<br/>observer=framework_guard"]
-    AE --> C["same event stream"]
+    AE --> C["same egress stream"]
     FE --> C
     C --> D["observer labels remain distinct"]
 ```

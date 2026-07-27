@@ -3,6 +3,14 @@
 """Security-oriented runtime primitives."""
 
 from nooa.security.effects import EffectRecord
+from nooa.security.egress import (
+    EffectEgressFrameTooLargeError,
+    EffectEgressReadResult,
+    EffectEgressSinkFailedError,
+    FdEffectSink,
+    UnsupportedEffectEgressVersionError,
+    read_effect_egress,
+)
 from nooa.security.findings import SecurityFinding
 from nooa.security.install import (
     AgentCallEffectObserver,
@@ -22,16 +30,22 @@ from nooa.security.sinks import (
 
 __all__ = [
     "AgentCallEffectObserver",
+    "EffectEgressFrameTooLargeError",
+    "EffectEgressReadResult",
+    "EffectEgressSinkFailedError",
     "EffectObservation",
     "EffectObserver",
     "EffectRecord",
     "EffectRecordSinkBackend",
     "EffectSink",
+    "FdEffectSink",
     "JsonlEffectSink",
     "SecurityFinding",
     "SecurityReceipt",
+    "UnsupportedEffectEgressVersionError",
     "framework_guard_observer",
     "install_agent_call_effect_recorder",
     "install_effect_recorder",
     "install_effect_sink",
+    "read_effect_egress",
 ]

@@ -18,22 +18,25 @@ process does not make them trusted.
 from __future__ import annotations
 
 import asyncio
-import json
+import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from nooa import Agent, hidden
 from nooa.runtime.middleware import MIDDLEWARE_AGENT_CALL, AgentCallContext, AgentCallNext
 from nooa.security import (
+    EffectEgressReadResult,
     EffectRecord,
-    JsonlEffectSink,
+    FdEffectSink,
     SecurityFinding,
     SecurityReceipt,
     install_agent_call_effect_recorder,
     install_effect_sink,
+    read_effect_egress,
 )
 from nooa.unifiedllm import FakeLLMClient
 
@@ -91,7 +94,7 @@ class ScenarioResult:
     effects: tuple[EffectRecord, ...]
     receipts: tuple[SecurityReceipt, ...]
     findings: tuple[SecurityFinding, ...]
-    sink_rows: tuple[dict[str, object], ...]
+    egress: EffectEgressReadResult
 
 
 PROMPT_INJECTION_REQUEST = AccessRequest(
@@ -313,13 +316,9 @@ def detect_grants_without_approval(
     return tuple(findings)
 
 
-def _read_sink_rows(path: Path) -> tuple[dict[str, object], ...]:
-    if not path.exists():
-        return ()
-    return tuple(
-        cast(dict[str, object], json.loads(line))
-        for line in path.read_text(encoding="utf-8").splitlines()
-    )
+def _read_effect_egress(path: Path) -> EffectEgressReadResult:
+    with path.open("rb") as fh:
+        return read_effect_egress(fh)
 
 
 async def run_scenario(
@@ -334,31 +333,24 @@ async def run_scenario(
     run_id = f"identity-approval-demo/{name}"
     backend = IdentityBackend(enforce_approval=enforce_approval)
     agent = IdentityApprovalAgent(backend)
-    sink_path = output_dir / f"{name}.effects.jsonl"
-    uninstall_sink = install_effect_sink(agent.event_manager, JsonlEffectSink(sink_path))
-    uninstall_recorder = install_agent_call_effect_recorder(
-        agent.event_manager,
-        observe_identity_grant,
-    )
-    uninstall_defender = (
-        install_identity_grant_defender(agent.event_manager)
-        if defender_enabled
-        else None
-    )
-    try:
+    sink_path = output_dir / f"{name}.effects.egress"
+    sink_fd = os.open(sink_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with ExitStack() as cleanup:
+        cleanup.callback(os.close, sink_fd)
+        cleanup.callback(install_effect_sink(agent.event_manager, FdEffectSink(sink_fd)))
+        cleanup.callback(
+            install_agent_call_effect_recorder(
+                agent.event_manager,
+                observe_identity_grant,
+            )
+        )
+        if defender_enabled:
+            cleanup.callback(install_identity_grant_defender(agent.event_manager))
         decision = await agent.handle_request(request)
-    finally:
-        if uninstall_defender is not None:
-            uninstall_defender()
-        uninstall_recorder()
-        uninstall_sink()
 
     backend_events = backend.audit_log()
-    effects = tuple(
-        event
-        for event in agent.event_manager.filter(type="EffectRecord")
-        if isinstance(event, EffectRecord)
-    )
+    egress = _read_effect_egress(sink_path)
+    effects = egress.records
     receipts = collect_approval_receipts(backend, run_id=run_id)
     findings = detect_grants_without_approval(effects, receipts, run_id=run_id)
     return ScenarioResult(
@@ -370,7 +362,7 @@ async def run_scenario(
         effects=effects,
         receipts=receipts,
         findings=findings,
-        sink_rows=_read_sink_rows(sink_path),
+        egress=egress,
     )
 
 
@@ -434,10 +426,14 @@ async def main() -> None:
         results = await run_demo(Path(tmp_dir))
         print(format_results(results))
         print()
-        print("JSONL effect copies:")
+        print("Framed effect egress copies:")
         for result in results:
-            effect_ids = [str(row["id"]) for row in result.sink_rows]
-            print(f"  {result.name}: {effect_ids}")
+            effect_ids = [record.id for record in result.egress.records]
+            print(
+                f"  {result.name}: {effect_ids} "
+                f"gap={result.egress.first_sequence_error} "
+                f"truncated={result.egress.truncated}"
+            )
 
 
 if __name__ == "__main__":
