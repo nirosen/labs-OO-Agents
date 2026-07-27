@@ -42,7 +42,8 @@ EFFECT_EGRESS_RECORD_KEYS: frozenset[str] = frozenset(
         "attributes",
     }
 )
-MAX_EFFECT_EGRESS_SEQUENCE: int = (1 << 53) - 1
+MAX_EFFECT_EGRESS_JSON_INTEGER: int = (1 << 53) - 1
+MAX_EFFECT_EGRESS_SEQUENCE: int = MAX_EFFECT_EGRESS_JSON_INTEGER
 DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES: int = 1024 * 1024
 
 _EFFECT_EGRESS_SCHEMA_VERSION_RE = re.compile(EFFECT_EGRESS_SCHEMA_VERSION_PATTERN)
@@ -120,10 +121,10 @@ class FdEffectSink:
     for a frame that was never emitted.
 
     Records that cannot be represented as the exact V1 payload shape, including
-    subclass-only fields, event-type drift, non-finite floats, lone surrogates,
-    or non-JSON-native metadata values that would be rewritten during
-    serialization, are refused with :class:`TypeError` before any bytes are
-    written.
+    subclass-only fields, event-type drift, out-of-range integers, non-finite
+    floats, lone surrogates, cyclic values, or non-JSON-native metadata values
+    that would be rewritten during serialization, are refused with
+    :class:`TypeError` before any bytes are written.
 
     The constructor rejects non-blocking descriptors. If a descriptor write or
     ``fsync`` raises :class:`OSError`, the sink is poisoned and subsequent calls
@@ -203,12 +204,10 @@ def _coerce_v1_effect_record(record: EffectRecord) -> EffectRecord:
         raise TypeError(f"FdEffectSink expected EffectRecord, got {type(record).__name__}")
     try:
         raw_payload = record.model_dump()
-        _reject_non_finite_numbers(raw_payload)
-        _reject_lone_surrogate_strings(raw_payload)
-        _reject_non_json_native_values(raw_payload.get("metadata"))
+        _validate_json_value_graph(raw_payload)
+        _validate_json_value_graph(raw_payload.get("metadata"), require_json_native=True)
         payload = record.model_dump(mode="json")
-        _reject_non_finite_numbers(payload)
-        _reject_lone_surrogate_strings(payload)
+        _validate_json_value_graph(payload, require_json_native=True)
         if payload.get("event_type") != EFFECT_EGRESS_RECORD_EVENT_TYPE:
             raise ValueError("V1 record.event_type must be 'EffectRecord'")
         return EffectRecord.model_validate(payload)
@@ -285,9 +284,9 @@ def _parse_frame(line: bytes, line_number: int) -> _EffectEgressFrame:
             object_pairs_hook=_reject_duplicate_json_object_pairs,
             parse_constant=_reject_non_finite_json_constant,
             parse_float=_parse_finite_json_float,
+            parse_int=_parse_safe_json_int,
         )
-        _reject_non_finite_numbers(payload)
-        _reject_lone_surrogate_strings(payload)
+        _validate_json_value_graph(payload, require_json_native=True)
     except (RecursionError, ValueError) as exc:
         raise ValueError(f"invalid effect egress frame at line {line_number}") from exc
 
@@ -343,56 +342,65 @@ def _parse_finite_json_float(token: str) -> float:
     return value
 
 
-def _reject_non_finite_numbers(payload: object) -> None:
-    """Reject decoded values that JSON serializers could silently rewrite."""
-    pending = [payload]
+def _parse_safe_json_int(token: str) -> int:
+    """Parse a JSON integer while rejecting values unsafe in IEEE-754 readers."""
+    value = int(token)
+    if abs(value) > MAX_EFFECT_EGRESS_JSON_INTEGER:
+        raise ValueError(f"JSON integer exceeds safe range: {token}")
+    return value
+
+
+def _validate_json_value_graph(payload: object, *, require_json_native: bool = False) -> None:
+    """Reject cycles and scalar values that make V1 JSON non-portable."""
+    pending: list[tuple[object, bool]] = [(payload, False)]
+    active_container_ids: set[int] = set()
+    validated_container_ids: set[int] = set()
     while pending:
-        value = pending.pop()
+        value, exiting = pending.pop()
+        if exiting:
+            container_id = id(value)
+            active_container_ids.remove(container_id)
+            validated_container_ids.add(container_id)
+            continue
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if abs(value) > MAX_EFFECT_EGRESS_JSON_INTEGER:
+                raise ValueError("JSON integer exceeds safe range")
+            continue
         if isinstance(value, float):
             if not math.isfinite(value):
                 raise ValueError("JSON value contains a non-finite float")
             continue
-        if isinstance(value, dict):
-            pending.extend(value.keys())
-            pending.extend(value.values())
-            continue
-        if isinstance(value, list):
-            pending.extend(value)
-
-
-def _reject_lone_surrogate_strings(payload: object) -> None:
-    """Reject decoded strings that cannot be represented as UTF-8."""
-    pending = [payload]
-    while pending:
-        value = pending.pop()
         if isinstance(value, str):
             if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
                 raise ValueError("JSON string contains a lone surrogate")
             continue
         if isinstance(value, dict):
-            pending.extend(value.keys())
-            pending.extend(value.values())
-            continue
-        if isinstance(value, list):
-            pending.extend(value)
-
-
-def _reject_non_json_native_values(payload: object) -> None:
-    """Reject metadata values that would change type during JSON serialization."""
-    pending = [payload]
-    while pending:
-        value = pending.pop()
-        if value is None or isinstance(value, (str, bool, int, float)):
-            continue
-        if isinstance(value, dict):
-            if any(not isinstance(key, str) for key in value):
+            if require_json_native and any(not isinstance(key, str) for key in value):
                 raise ValueError("JSON object key is not a string")
-            pending.extend(value.values())
+            container_id = id(value)
+            if container_id in active_container_ids:
+                raise ValueError("JSON value graph contains a cycle")
+            if container_id in validated_container_ids:
+                continue
+            active_container_ids.add(container_id)
+            pending.append((value, True))
+            pending.extend((child, False) for child in value.keys())
+            pending.extend((child, False) for child in value.values())
             continue
         if isinstance(value, list):
-            pending.extend(value)
+            container_id = id(value)
+            if container_id in active_container_ids:
+                raise ValueError("JSON value graph contains a cycle")
+            if container_id in validated_container_ids:
+                continue
+            active_container_ids.add(container_id)
+            pending.append((value, True))
+            pending.extend((child, False) for child in value)
             continue
-        raise ValueError(f"value is not JSON-native: {type(value).__name__}")
+        if require_json_native:
+            raise ValueError(f"value is not JSON-native: {type(value).__name__}")
 
 
 def _validate_max_frame_bytes(max_frame_bytes: int) -> int:
