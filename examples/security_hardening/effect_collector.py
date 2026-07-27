@@ -33,11 +33,11 @@ from typing import Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from examples.security_hardening.identity_approval import (
-    AUTHORIZED_REQUEST,
     PROMPT_INJECTION_REQUEST,
     AccessRequest,
     IdentityApprovalAgent,
     IdentityBackend,
+    authorized_request_with_token,
     install_identity_grant_defender,
     observe_identity_grant,
 )
@@ -110,6 +110,8 @@ class VictimSummary(BaseModel):
     self_reported_collector_read_endpoint_open: bool | None = None
     self_reported_receipt_read_endpoint_open: bool | None = None
     self_reported_receipt_write_endpoint_open: bool | None = None
+    self_reported_approval_request_read_endpoint_open: bool | None = None
+    self_reported_approval_response_write_endpoint_open: bool | None = None
 
 
 class CollectedScenario(BaseModel):
@@ -142,6 +144,8 @@ async def run_victim_to_fd(
     collector_read_identity: _FdIdentity | None = None,
     receipt_read_identity: _FdIdentity | None = None,
     receipt_write_identity: _FdIdentity | None = None,
+    approval_request_read_identity: _FdIdentity | None = None,
+    approval_response_write_identity: _FdIdentity | None = None,
     fault: VictimFault = "none",
     emit_guard_effect: bool = False,
 ) -> VictimSummary:
@@ -163,6 +167,16 @@ async def run_victim_to_fd(
     )
     self_reported_receipt_write_endpoint_open = (
         _has_fd_identity(receipt_write_identity) if receipt_write_identity is not None else None
+    )
+    self_reported_approval_request_read_endpoint_open = (
+        _has_fd_identity(approval_request_read_identity)
+        if approval_request_read_identity is not None
+        else None
+    )
+    self_reported_approval_response_write_endpoint_open = (
+        _has_fd_identity(approval_response_write_identity)
+        if approval_response_write_identity is not None
+        else None
     )
 
     with ExitStack() as cleanup:
@@ -193,6 +207,12 @@ async def run_victim_to_fd(
         self_reported_collector_read_endpoint_open=self_reported_collector_read_endpoint_open,
         self_reported_receipt_read_endpoint_open=self_reported_receipt_read_endpoint_open,
         self_reported_receipt_write_endpoint_open=self_reported_receipt_write_endpoint_open,
+        self_reported_approval_request_read_endpoint_open=(
+            self_reported_approval_request_read_endpoint_open
+        ),
+        self_reported_approval_response_write_endpoint_open=(
+            self_reported_approval_response_write_endpoint_open
+        ),
     )
 
 
@@ -352,6 +372,16 @@ def _receipt_write_identity_from_args(args: argparse.Namespace) -> _FdIdentity |
     return _fd_identity_from_args(args, "receipt_write")
 
 
+def _approval_request_read_identity_from_args(args: argparse.Namespace) -> _FdIdentity | None:
+    """Parse the optional approval-request-read endpoint identity from CLI args."""
+    return _fd_identity_from_args(args, "approval_request_read")
+
+
+def _approval_response_write_identity_from_args(args: argparse.Namespace) -> _FdIdentity | None:
+    """Parse the optional approval-response-write endpoint identity from CLI args."""
+    return _fd_identity_from_args(args, "approval_response_write")
+
+
 def _validate_victim_fault(fault: str) -> VictimFault:
     """Validate one example-local victim fault mode."""
     if fault == "none" or fault == "partial_tail_crash":
@@ -365,7 +395,7 @@ def _scenario_config(scenario: str) -> tuple[AccessRequest, bool, bool]:
         "vulnerable_attack": (PROMPT_INJECTION_REQUEST, False, False),
         "defender_only_attack": (PROMPT_INJECTION_REQUEST, False, True),
         "hardened_attack": (PROMPT_INJECTION_REQUEST, True, False),
-        "hardened_authorized": (AUTHORIZED_REQUEST, True, False),
+        "hardened_authorized": (authorized_request_with_token(), True, False),
     }
     try:
         return configs[scenario]
@@ -392,6 +422,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     victim_parser.add_argument("--receipt-write-device", type=int)
     victim_parser.add_argument("--receipt-write-inode", type=int)
     victim_parser.add_argument("--receipt-write-access-mode", type=int)
+    victim_parser.add_argument("--approval-request-read-device", type=int)
+    victim_parser.add_argument("--approval-request-read-inode", type=int)
+    victim_parser.add_argument("--approval-request-read-access-mode", type=int)
+    victim_parser.add_argument("--approval-response-write-device", type=int)
+    victim_parser.add_argument("--approval-response-write-inode", type=int)
+    victim_parser.add_argument("--approval-response-write-access-mode", type=int)
     victim_parser.add_argument("--fault", choices=_VICTIM_FAULTS, default="none")
     victim_parser.add_argument("--emit-guard-effect", action="store_true")
 
@@ -419,6 +455,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     collector_read_identity=_collector_read_identity_from_args(args),
                     receipt_read_identity=_receipt_read_identity_from_args(args),
                     receipt_write_identity=_receipt_write_identity_from_args(args),
+                    approval_request_read_identity=_approval_request_read_identity_from_args(args),
+                    approval_response_write_identity=_approval_response_write_identity_from_args(
+                        args
+                    ),
                     fault=args.fault,
                     emit_guard_effect=args.emit_guard_effect,
                 )

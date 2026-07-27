@@ -12,7 +12,6 @@ import pytest
 
 from examples.security_hardening import identity_approval
 from examples.security_hardening.identity_approval import (
-    AUTHORIZED_REQUEST,
     DEFENDER_REASON,
     EFFECT_TYPE,
     FINDING_TYPE,
@@ -20,6 +19,7 @@ from examples.security_hardening.identity_approval import (
     AccessRequest,
     IdentityApprovalAgent,
     IdentityBackend,
+    authorized_request_with_token,
     detect_grants_without_approval,
     install_identity_grant_defender,
     observe_identity_grant,
@@ -104,7 +104,7 @@ async def test_hardened_backend_denies_same_attack_without_finding(tmp_path: Pat
 async def test_hardened_authorized_grant_correlates_receipt_without_finding(tmp_path: Path) -> None:
     result = await run_scenario(
         "hardened_authorized",
-        AUTHORIZED_REQUEST,
+        authorized_request_with_token(),
         enforce_approval=True,
         output_dir=tmp_path,
     )
@@ -207,7 +207,7 @@ async def test_defender_recipe_does_not_replace_backend_authorization() -> None:
 async def test_defender_passes_authorized_request_to_backend(tmp_path: Path) -> None:
     result = await run_scenario(
         "defender_authorized",
-        AUTHORIZED_REQUEST,
+        authorized_request_with_token(),
         enforce_approval=True,
         defender_enabled=True,
         output_dir=tmp_path,

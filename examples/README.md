@@ -22,6 +22,7 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 | — | Security hardening flow | [`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) |
 | — | Out-of-process effect collector | [`security_hardening/effect_collector.py`](security_hardening/effect_collector.py) |
 | — | Out-of-process detector harness | [`security_hardening/detector_harness.py`](security_hardening/detector_harness.py) |
+| — | Approval authority receipts | [`security_hardening/approval_authority.py`](security_hardening/approval_authority.py) |
 
 ---
 
@@ -41,11 +42,13 @@ It compares a vulnerable grant, a defender-only denial, a denied backend-hardene
 uv run python -m examples.security_hardening.effect_collector demo
 ```
 
-[`security_hardening/detector_harness.py`](security_hardening/detector_harness.py) is the detector-process follow-on. The supervisor gives the detector the effect-pipe read end plus a bounded supervisor-issued receipt document, the detector assembles one `DetectorInput`, and the example-local scorer returns a structured scored/refused report outside the victim process. That moves policy location only; the demo receipt document is not backend audit truth, and the subprocess split is not sandboxing or attestation.
+[`security_hardening/detector_harness.py`](security_hardening/detector_harness.py) is the detector-process follow-on. On `codex/security-approval-authority-receipts`, the supervisor gives the detector the effect-pipe read end plus a bounded receipt document written by a separate example-only approval authority process. The authority owns the fixed demo allowlist, returns a deterministic run-scoped token to the victim, and emits a receipt only for tokens it actually issued. The detector assembles one `DetectorInput`, and the example-local scorer returns a structured scored/refused report outside the victim process.
 
 ```bash
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
 ```
+
+[`security_hardening/approval_authority.py`](security_hardening/approval_authority.py) contains only the example-local authority protocol and fixed demo policy. It demonstrates issuance separation, not an authenticated IAM service, sandbox, or attested receipt source.
 
 ## Step 1: Your first generation method
 

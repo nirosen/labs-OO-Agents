@@ -62,6 +62,37 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Approval Authority Receipts
+
+> Branch: `codex/security-approval-authority-receipts`
+
+This slice removes the detector harness's circular supervisor-issued receipt path. An example-only approval authority process now owns the fixed demo allowlist, returns a run-scoped token response to the victim, and writes a bounded receipt document directly to the detector with receipt rows only for tokens it actually issued. The shared authorized request fixture is tokenless; the same-process baseline still gets an explicit local helper, while the subprocess detector path must obtain its run-scoped token through the authority round trip.
+
+```mermaid
+flowchart LR
+    S["supervisor"] --> V["victim subprocess"]
+    V -- "approval request" --> A["approval authority<br/>fixed demo allowlist"]
+    A -- "token response" --> V
+    V -- "effect write fd only" --> EP["effect pipe"]
+    A -- "AuthorityReceiptDocument<br/>bounded JSON" --> RP["receipt pipe"]
+    EP -- "effect read fd only" --> D["detector subprocess"]
+    RP -- "receipt read fd only" --> D
+    D --> DI["DetectorInput<br/>assembled detector-side"]
+    DI --> P["identity scorer"]
+    P --> R["DetectorReport<br/>scored or refused"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-only `approval_authority.py`, shared `identity_contract.py` constants plus deterministic run-scoped token derivation, bounded request/response/receipt documents, authority subprocess wiring in `detector_harness.py`, authority issuance counts in the detector report, and an explicit local token helper for the older same-process demo |
+| Security claim | The detector's approval receipts now derive from a separate issuing process action rather than a supervisor branch on scenario name: an authorized request gets one authority-issued run-scoped token and receipt, while an unapproved request gets no receipt and remains detectable by the existing scorer. |
+| Non-claim | The authority is still a same-user, same-host demo process with no authentication, signing, sandboxing, or privilege boundary. A receipt says only that this authority process issued a token; it does not prove the backend honored it, prove the effect occurred, make `receipt_coverage="asserted_complete"` independently verifiable, or make a self-reported `issued_token_count` honest. The fixed allowlist and deterministic run-scoped token derivation are demo policy and regression aids, not an IAM system or secret-bearing protocol. |
+| Base slice | `codex/security-trusted-detector-harness` |
+| Review files | `examples/security_hardening/approval_authority.py`, `examples/security_hardening/identity_contract.py`, `examples/security_hardening/detector_harness.py`, `examples/security_hardening/identity_approval.py`, `examples/security_hardening/effect_collector.py`, `examples/security_hardening/README.md`, `examples/README.md`, `tests/security/test_approval_authority.py`, `tests/security/test_detector_harness.py`, `tests/security/test_hardening_example.py` |
+| Validation | `pytest tests/security`; `pytest` |
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the authority topology, failure path, and exact trust-boundary limits.
+
 ## Security Review Follow-On: Detector Subprocess Harness
 
 > Branch: `codex/security-trusted-detector-harness`

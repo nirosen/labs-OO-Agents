@@ -22,11 +22,16 @@ import asyncio
 import os
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Annotated, Literal
 
+from examples.security_hardening.approval_authority import (
+    approval_token_for_request,
+    approval_tokens_by_request_id,
+)
+from examples.security_hardening.identity_contract import EFFECT_TYPE, FINDING_TYPE, RECEIPT_TYPE
 from nooa import Agent, hidden
 from nooa.runtime.middleware import MIDDLEWARE_AGENT_CALL, AgentCallContext, AgentCallNext
 from nooa.security import (
@@ -46,11 +51,7 @@ from nooa.unifiedllm import FakeLLMClient
 if TYPE_CHECKING:
     from nooa.runtime.event_manager import EventManager
 
-EFFECT_TYPE = "identity.grant_access"
-RECEIPT_TYPE = "identity.approval"
-FINDING_TYPE = "identity.grant_without_approval"
 DEFENDER_REASON = "defender requires an approval token for untrusted grant requests"
-_APPROVED_TOKENS = {"req-approved": "approval-token-42"}
 _OFFLINE_LLM = FakeLLMClient()
 
 
@@ -118,8 +119,27 @@ AUTHORIZED_REQUEST = AccessRequest(
     principal="oncall-engineer",
     resource="prod-db",
     untrusted_content="Approved break-glass request from the incident channel.",
-    approval_token=_APPROVED_TOKENS["req-approved"],
 )
+
+
+def authorized_request_with_token(*, run_id: str = "") -> AccessRequest:
+    """Return the demo authorized request with one deterministic token.
+
+    The subprocess authority follow-on issues this token out of process. The
+    same-process example keeps an explicit local helper so its existing
+    comparison table remains deterministic without baking a token into the
+    shared request fixture. Passing ``run_id`` derives the run-scoped token
+    expected by the authority-backed subprocess harness.
+    """
+    token = approval_token_for_request(
+        AUTHORIZED_REQUEST.request_id,
+        principal=AUTHORIZED_REQUEST.principal,
+        resource=AUTHORIZED_REQUEST.resource,
+        run_id=run_id,
+    )
+    if token is None:
+        raise RuntimeError("authorized demo request is missing an approval token")
+    return replace(AUTHORIZED_REQUEST, approval_token=token)
 
 
 def _target(request: AccessRequest) -> str:
@@ -136,7 +156,7 @@ class IdentityBackend:
         approved_tokens: Mapping[str, str] | None = None,
     ) -> None:
         self._enforce_approval = enforce_approval
-        self._approved_tokens = dict(approved_tokens or _APPROVED_TOKENS)
+        self._approved_tokens = dict(approved_tokens or approval_tokens_by_request_id())
         self._audit_log: list[BackendGrantEvent] = []
 
     def grant_access(self, request: AccessRequest) -> AccessDecision:
@@ -331,7 +351,7 @@ def detect_grants_without_approval(
                 target=effect.target,
                 evidence_refs=(detector_input.input_id, *evidence_refs),
                 attributes={
-                    "reason": "allowed grant has no matching backend approval receipt",
+                    "reason": "allowed grant has no matching approval receipt",
                     "request_id": finding_request_id,
                 },
             )
@@ -422,7 +442,7 @@ async def run_demo(output_dir: Path) -> tuple[ScenarioResult, ...]:
         ),
         await run_scenario(
             "hardened_authorized",
-            AUTHORIZED_REQUEST,
+            authorized_request_with_token(),
             enforce_approval=True,
             output_dir=output_dir,
         ),

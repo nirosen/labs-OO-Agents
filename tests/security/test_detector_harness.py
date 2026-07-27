@@ -9,10 +9,13 @@ from io import BytesIO
 import pytest
 from pydantic import ValidationError
 
+from examples.security_hardening.approval_authority import (
+    AuthorityReceiptDocument,
+    AuthoritySummary,
+)
 from examples.security_hardening.detector_harness import (
     DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     DetectedScenario,
-    DetectorReceiptDocument,
     DetectorReceiptInputTooLargeError,
     DetectorReport,
     read_receipt_document,
@@ -36,7 +39,7 @@ def _scoreable_input(**updates: object) -> DetectorInput:
             ),
         ),
         "effect_egress_completeness_gate_passed": True,
-        "receipt_source": "supervisor-demo-receipts",
+        "receipt_source": "approval-authority",
         "receipt_coverage": "asserted_complete",
     }
     fields.update(updates)
@@ -50,7 +53,7 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
         scored=True,
     )
 
-    assert report.schema_version == "nooa-detector-harness-example-v1"
+    assert report.schema_version == "nooa-detector-harness-example-v2"
     assert report.findings == ()
     assert report.refusal_reason is None
 
@@ -75,6 +78,13 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
             effect_egress_completeness_signals=("truncated", "first_sequence_error"),
             scored=True,
         )
+    with pytest.raises(ValidationError, match="issued_token_count must match receipt_count"):
+        DetectorReport(
+            detector_input_id="detector-input-1",
+            receipt_count=1,
+            issued_token_count=0,
+            scored=True,
+        )
     with pytest.raises(ValidationError, match="requires refusal_reason"):
         DetectorReport(detector_input_id="detector-input-1", scored=False)
 
@@ -88,8 +98,10 @@ def test_score_detector_input_emits_identity_finding() -> None:
     assert report.run_id == detector_input.run_id
     assert report.scored is True
     assert report.effect_egress_completeness_gate_passed is True
-    assert report.receipt_source == "supervisor-demo-receipts"
+    assert report.receipt_source == "approval-authority"
     assert report.receipt_coverage == "asserted_complete"
+    assert report.receipt_count == 0
+    assert report.issued_token_count == 0
     assert report.findings[0].evidence_refs == (
         detector_input.input_id,
         detector_input.effects[0].id,
@@ -124,10 +136,7 @@ def test_score_detector_input_reports_policy_refusal(
 
 
 def test_read_receipt_document_round_trips_json_and_rejects_over_bound_payload() -> None:
-    document = DetectorReceiptDocument(
-        receipt_source="supervisor-demo-receipts",
-        receipt_coverage="asserted_complete",
-    )
+    document = AuthorityReceiptDocument(issued_token_count=0)
     payload = document.model_dump_json().encode("utf-8")
 
     assert read_receipt_document(BytesIO(payload)) == document
@@ -152,30 +161,48 @@ def test_read_receipt_document_rejects_invalid_budget(max_receipt_bytes: object)
         )
 
 
-def test_detected_vulnerable_scenario_scores_out_of_process_and_emits_finding() -> None:
+def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_finding() -> None:
     result = run_detected_scenario("vulnerable_attack")
 
     assert result.victim is not None
+    assert result.authority is not None
     assert result.victim_returncode == 0
+    assert result.authority_returncode == 0
     assert result.detector_returncode == 0
     assert result.victim.self_reported_collector_read_endpoint_open is False
     assert result.victim.self_reported_receipt_read_endpoint_open is False
     assert result.victim.self_reported_receipt_write_endpoint_open is False
+    assert result.victim.self_reported_approval_request_read_endpoint_open is False
+    assert result.victim.self_reported_approval_response_write_endpoint_open is False
+    assert result.authority.request_count == 1
+    assert result.authority.issued_token_count == 0
+    assert result.authority.receipt_count == 0
+    assert result.authority.receipt_ids == ()
     assert result.detector.detector_input_id == "detector-input-vulnerable_attack"
     assert result.detector.scored is True
     assert result.detector.effect_egress_completeness_signals == ()
     assert result.detector.effect_egress_completeness_gate_passed is True
-    assert result.detector.receipt_source == "supervisor-demo-receipts"
+    assert result.detector.receipt_source == "approval-authority"
     assert result.detector.receipt_coverage == "asserted_complete"
+    assert result.detector.receipt_count == 0
+    assert result.detector.issued_token_count == 0
     assert len(result.detector.findings) == 1
 
 
-def test_detected_authorized_scenario_uses_supervisor_receipt_and_emits_no_finding() -> None:
+def test_detected_authorized_scenario_uses_authority_receipt_and_emits_no_finding() -> None:
     result = run_detected_scenario("hardened_authorized")
 
     assert result.victim is not None
+    assert result.authority is not None
     assert result.victim.decision == "allowed"
+    assert result.authority.request_count == 1
+    assert result.authority.issued_token_count == 1
+    assert result.authority.receipt_count == 1
+    assert result.authority.receipt_ids == ("authority-receipt-req-approved",)
     assert result.detector.scored is True
+    assert result.detector.receipt_source == "approval-authority"
+    assert result.detector.receipt_count == 1
+    assert result.detector.issued_token_count == 1
     assert result.detector.findings == ()
 
 
@@ -186,7 +213,9 @@ def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:
     )
 
     assert result.victim is None
+    assert result.authority is not None
     assert result.victim_returncode == 3
+    assert result.authority_returncode == 0
     assert result.detector_returncode == 0
     assert result.detector.scored is False
     assert result.detector.effect_egress_completeness_signals == ("truncated",)
@@ -201,19 +230,37 @@ def test_detected_scenario_fails_closed_on_oversized_receipt_document() -> None:
         run_detected_scenario("hardened_authorized", max_receipt_bytes=1)
 
 
+def test_detected_scenario_fails_closed_when_authority_exits_before_receipt_document() -> None:
+    with pytest.raises(RuntimeError, match="authority subprocess failed"):
+        run_detected_scenario("hardened_authorized", authority_fault="exit_before_receipt")
+
+
 def test_detected_scenario_rejects_nonzero_detector_returncode() -> None:
     with pytest.raises(ValidationError, match="successful detector subprocess"):
         DetectedScenario(
             detector=DetectorReport(detector_input_id="detector-input-1", scored=True),
             victim_returncode=3,
+            authority=AuthoritySummary(
+                request_count=0,
+                issued_token_count=0,
+                receipt_count=0,
+            ),
+            authority_returncode=0,
             detector_returncode=1,
         )
 
 
-def test_default_receipt_budget_is_large_enough_for_demo_document() -> None:
-    payload = DetectorReceiptDocument(
-        receipt_source="supervisor-demo-receipts",
-        receipt_coverage="asserted_complete",
-    ).model_dump_json()
+def test_detected_scenario_rejects_nonzero_authority_returncode() -> None:
+    with pytest.raises(ValidationError, match="successful authority subprocess"):
+        DetectedScenario(
+            detector=DetectorReport(detector_input_id="detector-input-1", scored=True),
+            victim_returncode=3,
+            authority_returncode=1,
+            detector_returncode=0,
+        )
+
+
+def test_default_receipt_budget_is_large_enough_for_authority_document() -> None:
+    payload = AuthorityReceiptDocument(issued_token_count=0).model_dump_json()
 
     assert len(payload.encode("utf-8")) < DEFAULT_DETECTOR_RECEIPT_MAX_BYTES

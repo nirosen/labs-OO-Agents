@@ -160,3 +160,43 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario ha
 ```
 
 This is a placement demo, not a trust claim. The detector is outside the victim process, but it still shares the same user and host; a compromised supervisor compromises both children. The receipt document exists so the example can exercise the receipt-aware path deterministically. It is not a backend audit export, and `receipt_coverage="asserted_complete"` remains a supervisor assertion that the detector does not verify. The receipt byte cap is a local resource backstop, not authenticity or authorization. Findings emitted outside the victim are not automatically more authentic than findings emitted inside it, and an empty clean effect stream remains indistinguishable from intentional omission. The harness assembles `DetectorInput` inside the detector; it does not define a byte-level `DetectorInput` wire protocol. `DetectorReceiptDocument`, `DetectorReport`, and `DetectedScenario` stay in the example rather than becoming NOOA core schemas.
+
+## Approval Authority Receipt Follow-On
+
+`codex/security-approval-authority-receipts` removes the supervisor's scenario-based receipt synthesis from the detector harness. The shared `AUTHORIZED_REQUEST` fixture is now tokenless. In the subprocess path, the victim sends one bounded approval request document to a separate example authority, receives a deterministic run-scoped token response, and only then calls the backend configured for that same run scope. The authority writes one bounded `AuthorityReceiptDocument` directly to the detector, so the detector's clean authorized verdict rests on an issuance that happened rather than on a supervisor branch that already knew the scenario name.
+
+```mermaid
+flowchart LR
+    S["supervisor"] --> V["victim subprocess"]
+    V -- "ApprovalRequestDocument" --> A["approval authority<br/>fixed demo allowlist"]
+    A -- "ApprovalResponseDocument<br/>token or denial" --> V
+    V --> B["identity backend"]
+    V -- "effect write fd only" --> EP["effect pipe"]
+    A -- "AuthorityReceiptDocument<br/>issued_token_count" --> RP["receipt pipe"]
+    EP -- "effect read fd only" --> D["detector subprocess"]
+    RP -- "receipt read fd only" --> D
+    D --> DI["DetectorInput<br/>require_complete=False"]
+    DI --> P["identity scorer"]
+    P -- "scoreable" --> F["SecurityFinding rows"]
+    P -- "gap / truncation / unknown coverage" --> X["DetectorReport<br/>scored=False"]
+```
+
+Run the unapproved replay: the authority sees one request, issues zero tokens and zero receipts, and the detector emits one finding.
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
+```
+
+Run the authorized replay: the authority issues one token plus one receipt, the backend allows the request, and the detector emits zero findings.
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized
+```
+
+Run the authority failure path: the victim can still receive its response, but the supervisor exits non-zero and names the authority failure instead of treating a missing receipt document as a clean detector result.
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault exit_before_receipt
+```
+
+This remains a placement and causality demo, not a trust claim. The authority, victim, and detector are same-user, same-host processes with no authentication, signing, sandboxing, or privilege boundary. A receipt says only that the example authority issued a token; it does not prove the backend honored it, prove the effect occurred, or make the detector's finding authentic. `receipt_coverage="asserted_complete"` now means that the authority claims it enumerated every token it issued for this run, and `issued_token_count` is a self-reported consistency check from the same process that wrote the receipts; neither is independently verified. The fixed allowlist and deterministic run-scoped token derivation are demo policy and regression aids, not an IAM model or secret-bearing protocol. The detector still cannot distinguish a malicious clean effect omission from valid completion, and the harness still does not define a byte-level `DetectorInput` wire protocol.
