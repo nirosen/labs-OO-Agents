@@ -51,6 +51,8 @@ EFFECT_EGRESS_COMPLETENESS_SIGNALS: tuple[EffectEgressCompletenessSignal, ...] =
 MAX_EFFECT_EGRESS_JSON_INTEGER: int = (1 << 53) - 1
 MAX_EFFECT_EGRESS_SEQUENCE: int = MAX_EFFECT_EGRESS_JSON_INTEGER
 DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES: int = 1024 * 1024
+DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES: int = 256 * 1024 * 1024
+DEFAULT_EFFECT_EGRESS_MAX_RECORDS: int = 1 << 20
 
 _EFFECT_EGRESS_SCHEMA_VERSION_RE = re.compile(EFFECT_EGRESS_SCHEMA_VERSION_PATTERN)
 
@@ -74,6 +76,23 @@ class EffectEgressFrameTooLargeError(ValueError):
         self.line_number = line_number
         location = f" at line {line_number}" if line_number is not None else ""
         super().__init__(f"effect egress frame{location} exceeds max_frame_bytes={max_frame_bytes}")
+
+
+class EffectEgressInputTooLargeError(ValueError):
+    """Raised when a collector refuses a stream that exceeds an input budget."""
+
+    def __init__(
+        self,
+        limit_name: Literal["max_total_bytes", "max_records"],
+        limit_value: int,
+        *,
+        line_number: int | None = None,
+    ) -> None:
+        self.limit_name = limit_name
+        self.limit_value = limit_value
+        self.line_number = line_number
+        location = f" at line {line_number}" if line_number is not None else ""
+        super().__init__(f"effect egress input{location} exceeds {limit_name}={limit_value}")
 
 
 class EffectEgressSinkFailedError(RuntimeError):
@@ -256,6 +275,8 @@ def read_effect_egress(
     fh: BinaryIO,
     *,
     max_frame_bytes: int = DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES,
+    max_total_bytes: int = DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES,
+    max_records: int = DEFAULT_EFFECT_EGRESS_MAX_RECORDS,
 ) -> EffectEgressReadResult:
     """Read complete frames from a binary collector stream.
 
@@ -268,19 +289,35 @@ def read_effect_egress(
     ``max_frame_bytes`` bounds memory consumed by one newline-delimited frame,
     including its trailing LF byte; over-bound input raises
     :class:`EffectEgressFrameTooLargeError`. Callers should set the bound to the
-    same value used by :class:`FdEffectSink`.
+    same value used by :class:`FdEffectSink`. ``max_total_bytes`` bounds payload
+    bytes admitted to parsing, including an unterminated trailing line, and
+    ``max_records`` bounds complete parsed records retained in memory. The
+    reader may perform one bounded lookahead byte to distinguish exact EOF from
+    overflow. Exceeding either collector-wide budget raises
+    :class:`EffectEgressInputTooLargeError` rather than reporting truncation.
     """
 
     max_frame_bytes = _validate_max_frame_bytes(max_frame_bytes)
+    max_total_bytes = _validate_max_total_bytes(max_total_bytes)
+    max_records = _validate_max_records(max_records)
     records: list[EffectRecord] = []
     expected_sequence = 0
     first_sequence_error: tuple[int, int] | None = None
     truncated = False
     line_number = 0
+    total_bytes_read = 0
     while True:
-        line = fh.readline(max_frame_bytes + 1)
-        if not isinstance(line, bytes):
-            raise TypeError(f"read_effect_egress expected binary stream, got {type(line).__name__}")
+        if total_bytes_read == max_total_bytes:
+            if _stream_has_more_input(fh):
+                raise EffectEgressInputTooLargeError(
+                    "max_total_bytes",
+                    max_total_bytes,
+                    line_number=line_number + 1,
+                )
+            break
+
+        remaining_total_bytes = max_total_bytes - total_bytes_read
+        line = _read_binary_chunk(fh.readline(min(max_frame_bytes + 1, remaining_total_bytes + 1)))
         if not line:
             break
 
@@ -290,12 +327,25 @@ def read_effect_egress(
                 max_frame_bytes,
                 line_number=line_number,
             )
+        if len(line) > remaining_total_bytes:
+            raise EffectEgressInputTooLargeError(
+                "max_total_bytes",
+                max_total_bytes,
+                line_number=line_number,
+            )
+        total_bytes_read += len(line)
         if not line.endswith(b"\n"):
             truncated = True
             break
 
         frame = _parse_frame(line, line_number)
 
+        if len(records) == max_records:
+            raise EffectEgressInputTooLargeError(
+                "max_records",
+                max_records,
+                line_number=line_number,
+            )
         if first_sequence_error is None and frame.sequence != expected_sequence:
             first_sequence_error = (expected_sequence, frame.sequence)
         records.append(frame.record)
@@ -323,7 +373,8 @@ def require_complete_effect_egress(
     This helper is the second half of a fail-closed collector read:
     :func:`read_effect_egress` raises :class:`ValueError`, including its
     :class:`UnsupportedEffectEgressVersionError` and
-    :class:`EffectEgressFrameTooLargeError` subclasses, for malformed complete
+    :class:`EffectEgressFrameTooLargeError` and
+    :class:`EffectEgressInputTooLargeError` subclasses, for malformed complete
     frames, unsupported versions, or over-bound input. This helper raises
     :class:`EffectEgressIncompleteError` for parsed results that carry known
     short-stream or sequence-discontinuity diagnostics.
@@ -488,8 +539,35 @@ def _validate_json_value_graph(payload: object, *, require_json_native: bool = F
 
 def _validate_max_frame_bytes(max_frame_bytes: int) -> int:
     """Validate a frame-size bound shared by writers and readers."""
-    if not isinstance(max_frame_bytes, int) or isinstance(max_frame_bytes, bool):
-        raise TypeError(f"max_frame_bytes expected int, got {type(max_frame_bytes).__name__}")
-    if max_frame_bytes <= 0:
-        raise ValueError("max_frame_bytes must be positive")
-    return max_frame_bytes
+    return _validate_positive_int(max_frame_bytes, name="max_frame_bytes")
+
+
+def _validate_max_total_bytes(max_total_bytes: int) -> int:
+    """Validate a collector-wide byte budget."""
+    return _validate_positive_int(max_total_bytes, name="max_total_bytes")
+
+
+def _validate_max_records(max_records: int) -> int:
+    """Validate a collector-wide complete-record budget."""
+    return _validate_positive_int(max_records, name="max_records")
+
+
+def _validate_positive_int(value: int, *, name: str) -> int:
+    """Validate one positive integer limit while rejecting bools explicitly."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} expected int, got {type(value).__name__}")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _read_binary_chunk(chunk: object) -> bytes:
+    """Keep binary-stream type failures consistent across read paths."""
+    if not isinstance(chunk, bytes):
+        raise TypeError(f"read_effect_egress expected binary stream, got {type(chunk).__name__}")
+    return chunk
+
+
+def _stream_has_more_input(fh: BinaryIO) -> bool:
+    """Use one bounded lookahead byte to distinguish exact EOF from overflow."""
+    return bool(_read_binary_chunk(fh.read(1)))
