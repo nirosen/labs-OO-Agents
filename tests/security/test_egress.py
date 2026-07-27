@@ -27,6 +27,7 @@ from nooa.security import (
     EFFECT_EGRESS_SCHEMA_VERSION,
     EFFECT_EGRESS_SCHEMA_VERSION_PATTERN,
     EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE,
+    MAX_EFFECT_EGRESS_JSON_INTEGER,
     MAX_EFFECT_EGRESS_SEQUENCE,
     EffectEgressFrameTooLargeError,
     EffectEgressSinkFailedError,
@@ -74,6 +75,7 @@ def test_effect_egress_public_contract_matches_conformance_fixture() -> None:
     assert frozenset(fixture["frame_keys"]) == EFFECT_EGRESS_FRAME_KEYS
     assert fixture["record_event_type"] == EFFECT_EGRESS_RECORD_EVENT_TYPE
     assert frozenset(fixture["record_keys"]) == EFFECT_EGRESS_RECORD_KEYS
+    assert fixture["max_json_integer"] == MAX_EFFECT_EGRESS_JSON_INTEGER
     assert fixture["max_sequence"] == MAX_EFFECT_EGRESS_SEQUENCE
     assert fixture["default_max_frame_bytes"] == DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES
     assert fixture["max_frame_bytes_includes_terminating_lf"] is True
@@ -241,6 +243,14 @@ def test_fd_effect_sink_rejects_unserializable_subclass_fields(tmp_path: Path) -
         pytest.param({"attributes": {"score": float("inf")}}, id="attributes-inf"),
         pytest.param({"metadata": {"score": float("-inf")}}, id="metadata-neg-inf"),
         pytest.param({"attributes": {"text": "\ud800"}}, id="attributes-lone-surrogate"),
+        pytest.param(
+            {"attributes": {"count": MAX_EFFECT_EGRESS_JSON_INTEGER + 1}},
+            id="attributes-one-over-safe-int",
+        ),
+        pytest.param(
+            {"metadata": {"count": -(MAX_EFFECT_EGRESS_JSON_INTEGER + 1)}},
+            id="metadata-one-under-safe-int",
+        ),
     ],
 )
 def test_fd_effect_sink_rejects_v1_invalid_scalar_values_before_write(
@@ -288,6 +298,47 @@ def test_fd_effect_sink_rejects_non_json_native_metadata_before_write(
     frames = [json.loads(line) for line in path.read_bytes().splitlines()]
     assert [frame["sequence"] for frame in frames] == [0]
     assert frames[0]["record"]["target"] == "/tmp/after-rejection"
+
+
+def test_fd_effect_sink_rejects_cyclic_metadata_before_write(tmp_path: Path) -> None:
+    cyclic_metadata: dict[str, Any] = {}
+    cyclic_metadata["self"] = cyclic_metadata
+    path = tmp_path / "effects.egress"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd)
+        with pytest.raises(TypeError, match="expected V1-compatible EffectRecord"):
+            sink(EffectRecord(effect_type="fs.write", metadata=cyclic_metadata))
+        sink(EffectRecord(effect_type="fs.write", target="/tmp/after-rejection"))
+    finally:
+        os.close(fd)
+
+    frames = [json.loads(line) for line in path.read_bytes().splitlines()]
+    assert [frame["sequence"] for frame in frames] == [0]
+    assert frames[0]["record"]["target"] == "/tmp/after-rejection"
+
+
+def test_fd_effect_sink_accepts_shared_acyclic_metadata(tmp_path: Path) -> None:
+    shared_metadata = {"value": 1}
+    path = tmp_path / "effects.egress"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        sink = FdEffectSink(fd)
+        sink(
+            EffectRecord(
+                effect_type="fs.write",
+                metadata={"left": shared_metadata, "right": shared_metadata},
+            )
+        )
+    finally:
+        os.close(fd)
+
+    frames = [json.loads(line) for line in path.read_bytes().splitlines()]
+    assert [frame["sequence"] for frame in frames] == [0]
+    assert frames[0]["record"]["metadata"] == {
+        "left": {"value": 1},
+        "right": {"value": 1},
+    }
 
 
 @pytest.mark.parametrize("fd", [True, "1"])

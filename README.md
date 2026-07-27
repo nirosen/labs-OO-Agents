@@ -66,7 +66,7 @@ This design supports familiar Python testing, tracing, refactoring, and version-
 
 > Branch: `codex/security-effect-egress-contract`
 
-This branch builds on the descriptor-backed `FdEffectSink` from `codex/security-effect-egress` and adds the public compatibility contract that an independent collector needs. `FdEffectSink` writes bounded `nooa-effect-egress-v1` framed `EffectRecord` copies to a caller-supplied blocking descriptor without re-opening or re-resolving a mutable path on each record. `read_effect_egress()` gives a collector a narrow way to recover records and notice the first sequence gap or a truncated trailing frame. The new public `EFFECT_EGRESS_SCHEMA_VERSION`, `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN`, `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE`, `EFFECT_EGRESS_FRAME_KEYS`, `EFFECT_EGRESS_RECORD_EVENT_TYPE`, `EFFECT_EGRESS_RECORD_KEYS`, `MAX_EFFECT_EGRESS_SEQUENCE`, and `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` exports remove the need for external readers to copy private implementation constants, while checked-in conformance vectors pin the collector-facing cases this reader already handles. To avoid silently dropping or relabeling V1 evidence, this follow-up also rejects `EffectRecord` instances that do not serialize to the exact V1 record shape.
+This branch builds on the descriptor-backed `FdEffectSink` from `codex/security-effect-egress` and adds the public compatibility contract that an independent collector needs. `FdEffectSink` writes bounded `nooa-effect-egress-v1` framed `EffectRecord` copies to a caller-supplied blocking descriptor without re-opening or re-resolving a mutable path on each record. `read_effect_egress()` gives a collector a narrow way to recover records and notice the first sequence gap or a truncated trailing frame. The new public `EFFECT_EGRESS_SCHEMA_VERSION`, `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN`, `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE`, `EFFECT_EGRESS_FRAME_KEYS`, `EFFECT_EGRESS_RECORD_EVENT_TYPE`, `EFFECT_EGRESS_RECORD_KEYS`, `MAX_EFFECT_EGRESS_JSON_INTEGER`, `MAX_EFFECT_EGRESS_SEQUENCE`, and `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` exports remove the need for external readers to copy private implementation constants, while checked-in conformance vectors pin the collector-facing cases this reader already handles. To avoid silently dropping or relabeling V1 evidence, this follow-up also rejects `EffectRecord` instances that do not serialize to the exact V1 record shape.
 
 ```mermaid
 flowchart LR
@@ -105,6 +105,7 @@ An independent collector may rely on these public exports:
 | `EFFECT_EGRESS_FRAME_KEYS` | `{"schema_version", "sequence", "record"}` |
 | `EFFECT_EGRESS_RECORD_EVENT_TYPE` | `"EffectRecord"` |
 | `EFFECT_EGRESS_RECORD_KEYS` | `{"event_type", "id", "metadata", "status", "tag", "timestamp", "effect_type", "target", "decision", "observer", "generation_id", "tool_call_id", "attributes"}` |
+| `MAX_EFFECT_EGRESS_JSON_INTEGER` | `9007199254740991` |
 | `MAX_EFFECT_EGRESS_SEQUENCE` | `9007199254740991` |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | `1048576` |
 
@@ -112,8 +113,10 @@ The V1 transport is LF-delimited UTF-8 JSON. Each complete frame ends in one LF
 byte, has no BOM or leading/trailing whitespace outside the JSON object, and
 contains exactly the three keys above. CRLF termination is invalid; internal
 JSON whitespace is allowed. Duplicate object keys, non-standard numeric
-constants such as `NaN` or `Infinity`, numeric literals that overflow to a
-non-finite value, and lone-surrogate string escapes are invalid.
+constants such as `NaN` or `Infinity`, integer literals outside
+`-MAX_EFFECT_EGRESS_JSON_INTEGER..MAX_EFFECT_EGRESS_JSON_INTEGER`, numeric
+literals that overflow to a non-finite value, and lone-surrogate string escapes
+are invalid.
 
 ```json
 {"schema_version":"nooa-effect-egress-v1","sequence":0,"record":{"event_type":"EffectRecord","id":"00000000-0000-0000-0000-000000000001","metadata":{},"status":"active","tag":null,"timestamp":"2026-07-27T00:00:00","effect_type":"fs.write","target":"/tmp/a","decision":"observed","observer":"","generation_id":"","tool_call_id":"","attributes":{}}}
@@ -122,9 +125,10 @@ non-finite value, and lone-surrogate string escapes are invalid.
 The contract is intentionally narrow:
 
 - `schema_version` must equal `EFFECT_EGRESS_SCHEMA_VERSION`; a future token whose entire value matches `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN` under `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` raises `UnsupportedEffectEgressVersionError`. Use a whole-string API such as Python `re.fullmatch()` or its equivalent; do not emulate it with prefix/substring matching or `^...$`, which can treat a trailing newline specially. The pattern accepts `v1`, `v2`, and `v10`, but not `v0`, `v01`, case variants, or tokens with trailing whitespace or newline.
-- `sequence` is a strict integer in the inclusive range `0..MAX_EFFECT_EGRESS_SEQUENCE`. The upper bound keeps the discontinuity tuple exact in JSON implementations that use IEEE-754 numbers. The collector records the first `(expected, observed)` discontinuity but still returns the complete frames it could parse.
+- Every integer in the V1 JSON payload must stay within `-MAX_EFFECT_EGRESS_JSON_INTEGER..MAX_EFFECT_EGRESS_JSON_INTEGER`, which keeps values exact in JSON implementations that use IEEE-754 numbers.
+- `sequence` is a strict integer in the inclusive range `0..MAX_EFFECT_EGRESS_SEQUENCE`, where `MAX_EFFECT_EGRESS_SEQUENCE == MAX_EFFECT_EGRESS_JSON_INTEGER`. The collector records the first `(expected, observed)` discontinuity but still returns the complete frames it could parse.
 - `record` must contain exactly `EFFECT_EGRESS_RECORD_KEYS`, carry `event_type == EFFECT_EGRESS_RECORD_EVENT_TYPE`, and validate as an `EffectRecord`. V1 treats the full writer-emitted `EffectRecord` payload shape as part of this compatibility contract; omitted defaulted fields such as `id` or `timestamp` are invalid rather than minted at read time. Changing accepted record fields requires a V2 envelope or an explicitly versioned record payload.
-- `FdEffectSink` rejects `EffectRecord` instances whose serialized payload would add V1-incompatible fields, change the V1 event type, contain V1-invalid scalar values such as non-finite floats or lone surrogates, or require non-JSON-native `metadata` values to be rewritten during envelope serialization. `JsonlEffectSink` is a separate raw-record sink and should not be treated as a V1 envelope compatibility oracle.
+- `FdEffectSink` rejects `EffectRecord` instances whose serialized payload would add V1-incompatible fields, change the V1 event type, contain V1-invalid scalar values such as out-of-range integers, non-finite floats, or lone surrogates, or require cyclic or non-JSON-native `metadata` values to be rewritten during envelope serialization. `JsonlEffectSink` is a separate raw-record sink and should not be treated as a V1 envelope compatibility oracle.
 - `read_effect_egress()` starts sequence validation at `0`, so attaching to a stream after its first frame intentionally reports an initial discontinuity.
 - A trailing unterminated line is reported as `truncated=True` and is not parsed as a record.
 - A newline-terminated malformed frame raises a generic `ValueError`. Callers that distinguish outcomes must catch `UnsupportedEffectEgressVersionError` and `EffectEgressFrameTooLargeError` before a generic `ValueError` handler because both distinguished errors subclass `ValueError`.
@@ -134,15 +138,17 @@ The checked-in `tests/security/fixtures/effect_egress_conformance_v1.json`
 vectors cover empty input, compact and internally-spaced valid frames,
 well-formed multi-frame input, forward, duplicate, and backward sequence
 discontinuities, first-error-wins behavior after a later backward step, exact
-and one-over sequence bounds, a trailing partial frame, exact-max and
-over-bound complete and unterminated lines, future-version classification
-including malformed near misses such as a trailing newline escape, strict
+and one-over sequence bounds, exact and one-over record integer bounds, a
+trailing partial frame, exact-max and over-bound complete and unterminated
+lines, future-version classification including malformed near misses such as a
+trailing newline escape, strict
 LF framing without BOM or outer whitespace, blank and malformed frames
 including a second-line failure, negative sequence rejection, each missing
 required key, a missing defaulted record key, unexpected envelope and record
 keys including wrong or empty record event types, duplicate object keys,
-non-standard numeric constants, numeric overflow literals, lone-surrogate
-escapes, and one invalid UTF-8 line encoded as `payload_base64`.
+non-standard numeric constants, out-of-range integer literals, numeric
+overflow literals, lone-surrogate escapes, and one invalid UTF-8 line encoded
+as `payload_base64`.
 They are V1 reader compatibility fixtures for independent collectors, not
 evidence-authenticity fixtures.
 
