@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: Effect JSONL Sink
+
+> Branch: `codex/effect-record-jsonl-sink`
+
+This branch adds a composable backend wrapper that mirrors `EffectRecord` instances to a JSONL sink before delegating to the configured event backend. It exposes a point where applications can choose a separately controlled evidence sink, while keeping the trust decision with the process and filesystem that own that sink.
+
+```mermaid
+flowchart LR
+    A["EventManager.add"] --> B["EffectRecordSinkBackend"]
+    B -->|1. sink first| C["JsonlEffectSink"]
+    C --> D["JSONL copy"]
+    B -->|2. delegate| E["wrapped backend"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `JsonlEffectSink`, `EffectRecordSinkBackend`, and `install_effect_sink()` |
+| Security claim | Applications can mirror structured effect records to a separately chosen sink before local event storage. |
+| Non-claim | The helper is not transactional or tamper-proof; trust depends on the owning process and destination path. |
+| Shared base | `codex/trusted-evidence-contract`; parallel sibling slice with a small shared export edit in `src/nooa/security/__init__.py` |
+| Review files | `src/nooa/security/sinks.py`, `src/nooa/security/__init__.py`, `src/nooa/runtime/event_manager.py`, `tests/security/test_sinks.py`, `tests/test_event_manager.py` |
+| Validation | `pytest tests/security/test_sinks.py tests/test_event_manager.py` |
+
 ## Installation
 
 Install directly from GitHub with [uv](https://docs.astral.sh/uv/getting-started/installation/). Add the **core** framework to a new (or existing) Python project:
