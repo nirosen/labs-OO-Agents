@@ -8,17 +8,25 @@ import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING
 
-from nooa.runtime.middleware import MIDDLEWARE_EXECUTE_PYTHON
+from nooa.runtime.middleware import MIDDLEWARE_AGENT_CALL, MIDDLEWARE_EXECUTE_PYTHON
 from nooa.security.effects import EffectRecord
 
 if TYPE_CHECKING:
     from nooa.runtime.event_manager import EventManager
-    from nooa.runtime.middleware import ExecutePythonContext, ExecutePythonNext
+    from nooa.runtime.middleware import (
+        AgentCallContext,
+        AgentCallNext,
+        ExecutePythonContext,
+        ExecutePythonNext,
+    )
 
 
 EffectObservation = EffectRecord | Sequence[EffectRecord] | None
 EffectObserver = Callable[
     ["ExecutePythonContext"], "EffectObservation | Awaitable[EffectObservation]"
+]
+AgentCallEffectObserver = Callable[
+    ["AgentCallContext"], "EffectObservation | Awaitable[EffectObservation]"
 ]
 
 
@@ -51,6 +59,21 @@ def _normalize_records(observed: EffectObservation) -> tuple[EffectRecord, ...]:
     return records
 
 
+async def _observe_records[ObserverContextT](
+    event_manager: EventManager,
+    observer: Callable[[ObserverContextT], EffectObservation | Awaitable[EffectObservation]],
+    ctx: ObserverContextT,
+    *,
+    enrich: Callable[[EffectRecord], EffectRecord],
+) -> None:
+    """Run one observer and add its normalized records to the event manager."""
+    observed = observer(ctx)
+    if inspect.isawaitable(observed):
+        observed = await observed
+    for record in _normalize_records(observed):
+        event_manager.add(enrich(record))
+
+
 def install_effect_recorder(
     event_manager: EventManager,
     observer: EffectObserver,
@@ -77,13 +100,6 @@ def install_effect_recorder(
     while another exception is unwinding, the observer exception is propagated.
     """
 
-    async def _observe(ctx: ExecutePythonContext) -> None:
-        observed = observer(ctx)
-        if inspect.isawaitable(observed):
-            observed = await observed
-        for record in _normalize_records(observed):
-            event_manager.add(_enrich_record(record, ctx))
-
     async def _record_effect(
         ctx: ExecutePythonContext,
         nxt: ExecutePythonNext,
@@ -93,6 +109,70 @@ def install_effect_recorder(
             observed_ctx = await nxt(ctx)
             return observed_ctx
         finally:
-            await _observe(observed_ctx)
+            await _observe_records(
+                event_manager,
+                observer,
+                observed_ctx,
+                enrich=lambda record: _enrich_record(record, observed_ctx),
+            )
 
     return event_manager.intercept(MIDDLEWARE_EXECUTE_PYTHON, _record_effect)
+
+
+def install_agent_call_effect_recorder(
+    event_manager: EventManager,
+    observer: AgentCallEffectObserver,
+) -> Callable[[], None]:
+    """Install host-side effect observation on ``agent_call`` methods.
+
+    This is the agent-method sibling of :func:`install_effect_recorder`.
+    The observer runs from the wrapped method's ``finally`` path and may return
+    zero, one, or many :class:`EffectRecord` instances. Each record is added to
+    ``event_manager`` as hidden metadata and receives the current agent
+    ``call_id`` through the normal :meth:`EventManager.add` path.
+
+    This hook is intended for application-owned tool or method boundaries that
+    are not visible from ``execute_python`` alone. It records observed effects;
+    it does not decide whether a method result is authorized, successful, or
+    security-relevant. Applications must keep that policy in their observer or
+    in a separately trusted backend receipt source.
+
+    Like other ``agent_call`` middleware, this observes async agent methods that
+    enter the middleware path. Sync method wrappers currently skip async
+    middleware and are not observed by this installer. The hook runs for every
+    async method invocation, including nested agent methods, so observers should
+    filter on ``ctx.method_name`` or ``ctx.agent`` when they only want a
+    particular boundary.
+
+    ``AgentCallContext`` does not carry a stable generation or tool-call ID at
+    this outer boundary, so this installer only fills a missing ``observer``.
+    Observers that have trusted lineage identifiers should set them explicitly
+    on the returned record.
+
+    Observer exceptions propagate for the same reason as
+    :func:`install_effect_recorder`: evidence collection can fail closed after
+    an attempted effect rather than silently dropping the record.
+    """
+
+    def _enrich_agent_call_record(record: EffectRecord) -> EffectRecord:
+        if record.observer:
+            return record
+        return record.model_copy(update={"observer": "agent_call_middleware"})
+
+    async def _record_effect(
+        ctx: AgentCallContext,
+        nxt: AgentCallNext,
+    ) -> AgentCallContext:
+        observed_ctx = ctx
+        try:
+            observed_ctx = await nxt(ctx)
+            return observed_ctx
+        finally:
+            await _observe_records(
+                event_manager,
+                observer,
+                observed_ctx,
+                enrich=_enrich_agent_call_record,
+            )
+
+    return event_manager.intercept(MIDDLEWARE_AGENT_CALL, _record_effect)
