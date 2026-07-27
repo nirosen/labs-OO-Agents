@@ -62,28 +62,34 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Effect JSONL Sink
+## Security Review Slice: Descriptor-Backed Effect Egress
 
-> Branch: `codex/effect-record-jsonl-sink`
+> Branch: `codex/security-effect-egress`
 
-This branch adds a composable backend wrapper that mirrors `EffectRecord` instances to a JSONL sink before delegating to the configured event backend. It exposes a point where applications can choose a separately controlled evidence sink, while keeping the trust decision with the process and filesystem that own that sink.
+This branch adds a descriptor-backed sibling to the path-based `JsonlEffectSink`. `FdEffectSink` writes bounded `nooa-effect-egress-v1` framed `EffectRecord` copies to a caller-supplied blocking descriptor without re-opening or re-resolving a mutable path on each record. `read_effect_egress()` gives a collector a narrow way to recover records and notice the first sequence gap or a truncated trailing frame. `UnsupportedEffectEgressVersionError` keeps future wire versions distinct from malformed frames, `EffectEgressFrameTooLargeError` keeps over-bound frames distinct from both, and `EffectEgressSinkFailedError` prevents reuse after an uncertain descriptor failure.
 
 ```mermaid
 flowchart LR
     A["EventManager.add"] --> B["EffectRecordSinkBackend"]
-    B -->|1. sink first| C["JsonlEffectSink"]
-    C --> D["JSONL copy"]
-    B -->|2. delegate| E["wrapped backend"]
+    B -->|1. sink first| C["FdEffectSink<br/>borrowed fd"]
+    C --> D["frame 0<br/>EffectRecord"]
+    C --> E["frame 1<br/>EffectRecord"]
+    D --> F["collector<br/>read_effect_egress()"]
+    E --> F
+    F --> G["records + gap/truncation status"]
+    B -->|2. delegate| H["wrapped backend"]
+
+    I["path replacement"] -. "not re-resolved" .-> C
 ```
 
 | Review item | Detail |
 | --- | --- |
-| Adds | `JsonlEffectSink`, `EffectRecordSinkBackend`, and `install_effect_sink()` |
-| Security claim | Applications can mirror structured effect records to a separately chosen sink before local event storage. |
-| Non-claim | The helper is not transactional or tamper-proof; trust depends on the owning process and destination path. |
-| Shared base | `codex/trusted-evidence-contract`; parallel sibling slice with a small shared export edit in `src/nooa/security/__init__.py` |
-| Review files | `src/nooa/security/sinks.py`, `src/nooa/security/__init__.py`, `src/nooa/runtime/event_manager.py`, `tests/security/test_sinks.py`, `tests/test_event_manager.py` |
-| Validation | `pytest tests/security/test_sinks.py tests/test_event_manager.py` |
+| Adds | `FdEffectSink`, `EffectEgressReadResult`, `EffectEgressFrameTooLargeError`, `EffectEgressSinkFailedError`, `UnsupportedEffectEgressVersionError`, and `read_effect_egress()` |
+| Security claim | NOOA can emit bounded framed effect copies through a descriptor chosen before the sink is constructed, and a collector can detect a first sequence discontinuity or trailing partial frame in the bytes it receives. |
+| Non-claim | A descriptor is not authenticated evidence by itself. Code that can access the same fd can forge, close, seek, truncate, or reorder the stream; multiple writers can interleave frames; the reader does not prove an effect happened or that omitted effects did not happen. An over-bound writer rejection is surfaced in-process before write and does not create a collector-visible sequence gap. A descriptor failure can still leave one trailing partial frame before the sink poisons itself. This is not a detector, authorization policy, or enforcement mechanism. |
+| Shared base | `codex/effect-record-jsonl-sink`; this is an independent sibling proposal rather than an end-to-end merge. |
+| Review files | `src/nooa/security/egress.py`, `src/nooa/security/__init__.py`, `tests/security/test_egress.py`, `README.md` |
+| Validation | `pytest tests/security/test_egress.py tests/security/test_sinks.py` |
 
 ## Installation
 
