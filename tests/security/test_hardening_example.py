@@ -13,8 +13,10 @@ from examples.security_hardening.identity_approval import (
     EFFECT_TYPE,
     FINDING_TYPE,
     PROMPT_INJECTION_REQUEST,
+    detect_grants_without_approval,
     run_scenario,
 )
+from nooa.security import EffectRecord, SecurityReceipt
 
 
 @pytest.mark.asyncio
@@ -71,3 +73,25 @@ async def test_hardened_authorized_grant_correlates_receipt_without_finding(tmp_
     assert result.receipts[0].target == result.effects[0].target
     assert result.findings == ()
     assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
+
+
+def test_mismatched_receipt_is_cited_as_divergence_evidence() -> None:
+    effect = EffectRecord(
+        effect_type=EFFECT_TYPE,
+        target="contractor@prod-db",
+        decision="allowed",
+        attributes={"request_id": "req-attack"},
+    )
+    receipt = SecurityReceipt(
+        receipt_id="receipt-req-attack",
+        receipt_type="identity.approval",
+        source="identity-backend-audit",
+        target="contractor@staging-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+
+    findings = detect_grants_without_approval((effect,), (receipt,))
+
+    assert len(findings) == 1
+    assert findings[0].evidence_refs == (effect.id, receipt.receipt_id)

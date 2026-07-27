@@ -24,13 +24,15 @@ The same attack-shaped request is run twice:
 | `hardened_attack` | Approval enforced | Denied | No | No |
 | `hardened_authorized` | Approval enforced with valid token | Allowed | Yes | No |
 
+The `Finding` column reports only what this narrow scorer emits for these scripted inputs. A zero count is not a general safety claim.
+
 Run it with:
 
 ```bash
 uv run python examples/security_hardening/identity_approval.py
 ```
 
-Expected output:
+Expected table output (the script then prints per-scenario JSONL effect IDs):
 
 ```text
 scenario            | decision | effects | receipts | findings
@@ -41,3 +43,7 @@ hardened_authorized | allowed  | 1       | 1        | 0
 ```
 
 This is a composition example, not a trust claim. The JSONL sink, receipt collector, and scorer all run in one process for deterministic local execution. A production hardening path must place the sink and receipt source behind a separately trusted boundary and keep detector policy outside the victim process.
+
+The demo keeps `grant_access()` async because the current `agent_call` recorder observes async agent methods; a sync tool method would require a different observation seam.
+
+The fake LLM client only satisfies `Agent` construction; no generation method runs in this deterministic flow.
