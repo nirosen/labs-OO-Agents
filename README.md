@@ -62,29 +62,11 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Out-of-Band Receipts
+## Security Review Slice: Hardening Flow
 
-> Branch: `codex/security-receipt-contract`
+> Branch: `codex/security-hardening-e2e`
 
-This branch adds a transport schema for corroborating facts collected outside the victim process. It deliberately keeps `SecurityReceipt` separate from `EffectRecord`: applications can carry both shapes, but NOOA does not authenticate or correlate them.
-
-```mermaid
-flowchart LR
-    V["victim process"] --> E["EffectRecord"]
-    T["out-of-band backend or collector"] --> R["SecurityReceipt"]
-    E --> C["application correlator"]
-    R --> C
-    C -. "join stays outside NOOA" .-> P["policy or detector"]
-```
-
-| Review item | Detail |
-| --- | --- |
-| Adds | Frozen `SecurityReceipt` transport schema for backend-issued corroboration |
-| Security claim | Applications can carry stable out-of-band receipt identity and provenance alongside NOOA telemetry. |
-| Non-claim | The schema does not authenticate its source, prove collection location, or auto-join receipts to `EffectRecord`. |
-| Shared base | `codex/trusted-evidence-contract`; parallel sibling slice with a small shared export edit in `src/nooa/security/__init__.py` |
-| Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `tests/security/test_receipts.py` |
-| Validation | `pytest tests/security/test_receipts.py` |
+This branch composes the security review slices into an identity-approval hardening flow. The final README details, example, and validation table are added after the branch composition is complete.
 
 ## Installation
 
