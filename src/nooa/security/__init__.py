@@ -24,8 +24,14 @@ from nooa.security.egress import (
     EffectEgressSinkFailedError,
     FdEffectSink,
     UnsupportedEffectEgressVersionError,
+    effect_egress_completeness_signals,
     read_effect_egress,
     require_complete_effect_egress,
+)
+from nooa.security.evidence import (
+    DetectorInput,
+    ReceiptCoverage,
+    detector_input_from_egress,
 )
 from nooa.security.findings import SecurityFinding
 from nooa.security.install import (
@@ -58,6 +64,7 @@ __all__ = [
     "MAX_EFFECT_EGRESS_JSON_INTEGER",
     "MAX_EFFECT_EGRESS_SEQUENCE",
     "AgentCallEffectObserver",
+    "DetectorInput",
     "EffectEgressCompletenessSignal",
     "EffectEgressFrameTooLargeError",
     "EffectEgressIncompleteError",
@@ -71,9 +78,12 @@ __all__ = [
     "EffectSink",
     "FdEffectSink",
     "JsonlEffectSink",
+    "ReceiptCoverage",
     "SecurityFinding",
     "SecurityReceipt",
     "UnsupportedEffectEgressVersionError",
+    "detector_input_from_egress",
+    "effect_egress_completeness_signals",
     "framework_guard_observer",
     "install_agent_call_effect_recorder",
     "install_effect_recorder",

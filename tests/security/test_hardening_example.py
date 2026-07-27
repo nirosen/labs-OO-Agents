@@ -27,6 +27,7 @@ from examples.security_hardening.identity_approval import (
 )
 from nooa.errors import RestrictedCodeError
 from nooa.security import (
+    DetectorInput,
     EffectEgressIncompleteError,
     EffectEgressReadResult,
     EffectRecord,
@@ -59,7 +60,17 @@ async def test_vulnerable_grant_is_recorded_and_flagged_without_receipt(tmp_path
     assert len(result.findings) == 1
     assert result.findings[0].finding_type == FINDING_TYPE
     assert result.findings[0].run_id == result.run_id
-    assert result.findings[0].evidence_refs == (result.effects[0].id,)
+    assert result.detector_input.input_id == "detector-input-vulnerable_attack"
+    assert result.detector_input.effects == result.effects
+    assert result.detector_input.receipts == result.receipts
+    assert result.detector_input.receipt_source == "identity-backend-audit"
+    assert result.detector_input.receipt_coverage == "asserted_complete"
+    assert result.detector_input.effect_egress_completeness_signals == ()
+    assert result.detector_input.effect_egress_completeness_gate_passed is True
+    assert result.findings[0].evidence_refs == (
+        result.detector_input.input_id,
+        result.effects[0].id,
+    )
     assert result.egress.records == result.effects
     assert result.egress.first_sequence_error is None
     assert result.egress.truncated is False
@@ -82,6 +93,8 @@ async def test_hardened_backend_denies_same_attack_without_finding(tmp_path: Pat
     assert result.effects[0].attributes["decision_source"] == "backend"
     assert result.receipts == ()
     assert result.findings == ()
+    assert result.detector_input.effects == result.effects
+    assert result.detector_input.receipts == result.receipts
     assert result.egress.records == result.effects
     assert result.egress.first_sequence_error is None
     assert result.egress.truncated is False
@@ -107,6 +120,8 @@ async def test_hardened_authorized_grant_correlates_receipt_without_finding(tmp_
     assert result.receipts[0].run_id == result.run_id
     assert result.receipts[0].target == result.effects[0].target
     assert result.findings == ()
+    assert result.detector_input.effects == result.effects
+    assert result.detector_input.receipts == result.receipts
     assert result.egress.records == result.effects
     assert result.egress.first_sequence_error is None
     assert result.egress.truncated is False
@@ -131,6 +146,8 @@ async def test_defender_only_blocks_attack_before_vulnerable_backend(tmp_path: P
     assert result.effects[0].attributes["decision_source"] == "defender"
     assert result.receipts == ()
     assert result.findings == ()
+    assert result.detector_input.effects == result.effects
+    assert result.detector_input.receipts == result.receipts
     assert result.egress.records == result.effects
     assert result.egress.first_sequence_error is None
     assert result.egress.truncated is False
@@ -261,14 +278,22 @@ def test_mismatched_receipt_is_cited_as_divergence_evidence() -> None:
         attributes={"request_id": "req-attack"},
     )
 
-    findings = detect_grants_without_approval(
-        (effect,),
-        (receipt,),
+    detector_input = DetectorInput(
+        input_id="detector-input-vulnerable_attack",
         run_id="identity-approval-demo/vulnerable_attack",
+        effects=(effect,),
+        effect_egress_completeness_gate_passed=True,
+        receipts=(receipt,),
+        receipt_coverage="asserted_complete",
     )
+    findings = detect_grants_without_approval(detector_input)
 
     assert len(findings) == 1
-    assert findings[0].evidence_refs == (effect.id, receipt.receipt_id)
+    assert findings[0].evidence_refs == (
+        detector_input.input_id,
+        effect.id,
+        receipt.receipt_id,
+    )
 
 
 def test_other_run_receipt_does_not_suppress_current_run_finding() -> None:
@@ -288,15 +313,49 @@ def test_other_run_receipt_does_not_suppress_current_run_finding() -> None:
         attributes={"request_id": "req-attack"},
     )
 
-    findings = detect_grants_without_approval(
-        (effect,),
-        (receipt,),
+    detector_input = DetectorInput(
+        input_id="detector-input-current-run",
         run_id="identity-approval-demo/current-run",
+        effects=(effect,),
+        effect_egress_completeness_gate_passed=True,
+        receipts=(receipt,),
+        receipt_coverage="asserted_complete",
     )
+    findings = detect_grants_without_approval(detector_input)
 
     assert len(findings) == 1
     assert findings[0].run_id == "identity-approval-demo/current-run"
-    assert findings[0].evidence_refs == (effect.id,)
+    assert findings[0].evidence_refs == (detector_input.input_id, effect.id)
+
+
+@pytest.mark.parametrize(
+    ("detector_input", "match"),
+    [
+        (
+            DetectorInput(
+                input_id="detector-input-unchecked",
+                effects=(EffectRecord(effect_type=EFFECT_TYPE, target="contractor@prod-db"),),
+                receipt_coverage="asserted_complete",
+            ),
+            "effect_egress_completeness_gate_passed=True",
+        ),
+        (
+            DetectorInput(
+                input_id="detector-input-unknown-receipts",
+                effects=(EffectRecord(effect_type=EFFECT_TYPE, target="contractor@prod-db"),),
+                effect_egress_completeness_gate_passed=True,
+            ),
+            "receipt_coverage='asserted_complete'",
+        ),
+    ],
+    ids=["unchecked-egress", "unknown-receipt-coverage"],
+)
+def test_identity_scorer_refuses_unscoreable_detector_input(
+    detector_input: DetectorInput,
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        detect_grants_without_approval(detector_input)
 
 
 @pytest.mark.asyncio

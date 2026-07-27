@@ -43,6 +43,7 @@ from nooa.security import (
     FdEffectSink,
     JsonlEffectSink,
     UnsupportedEffectEgressVersionError,
+    effect_egress_completeness_signals,
     install_effect_sink,
     read_effect_egress,
     require_complete_effect_egress,
@@ -695,6 +696,42 @@ def test_empty_stream_passes_and_is_not_proof_that_no_effects_occurred() -> None
     ("egress", "expected_reasons"),
     [
         pytest.param(
+            EffectEgressReadResult(records=()),
+            (),
+            id="clean",
+        ),
+        pytest.param(
+            EffectEgressReadResult(records=(), truncated=True),
+            ("truncated",),
+            id="truncated",
+        ),
+        pytest.param(
+            EffectEgressReadResult(records=(), first_sequence_error=(0, 1)),
+            ("first_sequence_error",),
+            id="sequence-error",
+        ),
+        pytest.param(
+            EffectEgressReadResult(
+                records=(),
+                first_sequence_error=(1, 3),
+                truncated=True,
+            ),
+            ("first_sequence_error", "truncated"),
+            id="both",
+        ),
+    ],
+)
+def test_effect_egress_completeness_signals_returns_canonical_reader_diagnostics(
+    egress: EffectEgressReadResult,
+    expected_reasons: tuple[EffectEgressCompletenessSignal, ...],
+) -> None:
+    assert effect_egress_completeness_signals(egress) == expected_reasons
+
+
+@pytest.mark.parametrize(
+    ("egress", "expected_reasons"),
+    [
+        pytest.param(
             EffectEgressReadResult(records=(), truncated=True),
             ("truncated",),
             id="truncated",
@@ -745,6 +782,11 @@ def test_require_complete_effect_egress_refuses_mid_stream_attachment() -> None:
 def test_require_complete_effect_egress_rejects_non_read_result() -> None:
     with pytest.raises(TypeError, match="expected EffectEgressReadResult"):
         require_complete_effect_egress("not-a-read-result")  # type: ignore[arg-type]
+
+
+def test_effect_egress_completeness_signals_rejects_non_read_result() -> None:
+    with pytest.raises(TypeError, match="expected EffectEgressReadResult"):
+        effect_egress_completeness_signals("not-a-read-result")  # type: ignore[arg-type]
 
 
 def test_effect_egress_incomplete_error_rejects_clean_result() -> None:

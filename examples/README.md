@@ -26,13 +26,13 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 
 ## Security Hardening Flow
 
-[`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) is an offline composition example for effect telemetry, an example-only deterministic `agent_call` defender recipe, bounded descriptor-backed effect egress, collector-wide byte and record budgets, the public `require_complete_effect_egress()` gate, backend receipts, application-local findings, and optional guard-shaped observer labels around an identity-changing agent method.
+[`security_hardening/identity_approval.py`](security_hardening/identity_approval.py) is an offline composition example for effect telemetry, an example-only deterministic `agent_call` defender recipe, bounded descriptor-backed effect egress, collector-wide byte and record budgets, the public `require_complete_effect_egress()` gate, backend receipts, a detector-facing `DetectorInput` handoff, application-local findings, and optional guard-shaped observer labels around an identity-changing agent method.
 
 ```bash
 uv run python examples/security_hardening/identity_approval.py
 ```
 
-It compares a vulnerable grant, a defender-only denial, a denied backend-hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit, including why receipts and findings carry an application-assigned `run_id`, why `EffectRecord` keeps its existing runtime lineage fields, why a clean egress result is not proof of completeness, why collector budgets are resource backstops rather than authenticity claims, and why guard-shaped records remain labels rather than vulnerability verdicts.
+It compares a vulnerable grant, a defender-only denial, a denied backend-hardened replay, and an authorized hardened grant. The example README keeps the trust-boundary and non-claim details explicit, including why `DetectorInput`, receipts, and findings carry an application-assigned `run_id`, why `EffectRecord` keeps its existing runtime lineage fields, why a clean egress result is not proof of completeness, why receipt coverage is a caller assertion rather than a verified property, why collector budgets are resource backstops rather than authenticity claims, and why guard-shaped records remain labels rather than vulnerability verdicts.
 
 [`security_hardening/effect_collector.py`](security_hardening/effect_collector.py) is the follow-on subprocess harness for the same victim. It gives the victim only a pipe write end, gives a separate collector only the read end, and joins V1 stream-shape facts with the victim return code without claiming record authenticity or completeness. The collector intentionally reports gapped or truncated facts instead of applying the downstream completeness gate itself.
 

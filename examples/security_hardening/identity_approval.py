@@ -5,7 +5,8 @@
 This example starts at the post-prompt-injection effect boundary: an agent
 method is asked to grant access, an observer records the effect, an optional
 application-local defender can short-circuit the method, a backend collector
-emits receipts, and an application-local scorer produces findings.
+emits receipts, a detector-facing transport bundle is assembled, and an
+application-local scorer produces findings.
 
 The defender, receipt collector, and scorer run in the same Python process for
 a compact, deterministic demo. In production the receipt collector and scorer
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,15 +30,16 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from nooa import Agent, hidden
 from nooa.runtime.middleware import MIDDLEWARE_AGENT_CALL, AgentCallContext, AgentCallNext
 from nooa.security import (
+    DetectorInput,
     EffectEgressReadResult,
     EffectRecord,
     FdEffectSink,
     SecurityFinding,
     SecurityReceipt,
+    detector_input_from_egress,
     install_agent_call_effect_recorder,
     install_effect_sink,
     read_effect_egress,
-    require_complete_effect_egress,
 )
 from nooa.unifiedllm import FakeLLMClient
 
@@ -94,6 +96,7 @@ class ScenarioResult:
     backend_events: tuple[BackendGrantEvent, ...]
     effects: tuple[EffectRecord, ...]
     receipts: tuple[SecurityReceipt, ...]
+    detector_input: DetectorInput
     findings: tuple[SecurityFinding, ...]
     egress: EffectEgressReadResult
 
@@ -271,17 +274,32 @@ def collect_approval_receipts(
 
 
 def detect_grants_without_approval(
-    effects: Iterable[EffectRecord],
-    receipts: Iterable[SecurityReceipt],
-    *,
-    run_id: str,
+    detector_input: DetectorInput,
 ) -> tuple[SecurityFinding, ...]:
-    """Emit findings for allowed grants lacking a same-run approval receipt."""
+    """Emit findings for allowed grants lacking a same-run approval receipt.
+
+    This is application-local policy over one detector-facing transport bundle.
+    ``DetectorInput`` does not make the effects, receipts, or coverage
+    assertion trustworthy, and this scorer still decides its own join
+    semantics. This narrow scorer refuses to evaluate a missing-receipt finding
+    unless the public completeness gate passed and receipt coverage is asserted
+    complete.
+    """
+    if not detector_input.effect_egress_completeness_gate_passed:
+        raise ValueError(
+            "identity approval scorer requires "
+            "effect_egress_completeness_gate_passed=True"
+        )
+    if detector_input.receipt_coverage != "asserted_complete":
+        raise ValueError(
+            "identity approval scorer requires receipt_coverage='asserted_complete'"
+        )
+
     receipts_by_request: dict[str, list[SecurityReceipt]] = {}
-    for receipt in receipts:
+    for receipt in detector_input.receipts:
         request_id = receipt.attributes.get("request_id")
         if (
-            receipt.run_id == run_id
+            receipt.run_id == detector_input.run_id
             and receipt.receipt_type == RECEIPT_TYPE
             and receipt.effect_type == EFFECT_TYPE
             and isinstance(request_id, str)
@@ -289,7 +307,7 @@ def detect_grants_without_approval(
             receipts_by_request.setdefault(request_id, []).append(receipt)
 
     findings: list[SecurityFinding] = []
-    for effect in effects:
+    for effect in detector_input.effects:
         if effect.effect_type != EFFECT_TYPE or effect.decision != "allowed":
             continue
         request_id = effect.attributes.get("request_id")
@@ -305,9 +323,9 @@ def detect_grants_without_approval(
                 finding_id=f"finding-{finding_request_id}",
                 finding_type=FINDING_TYPE,
                 producer="identity-approval-scorer",
-                run_id=run_id,
+                run_id=detector_input.run_id,
                 target=effect.target,
-                evidence_refs=evidence_refs,
+                evidence_refs=(detector_input.input_id, *evidence_refs),
                 attributes={
                     "reason": "allowed grant has no matching backend approval receipt",
                     "request_id": finding_request_id,
@@ -351,9 +369,17 @@ async def run_scenario(
 
     backend_events = backend.audit_log()
     egress = _read_effect_egress(sink_path)
-    effects = require_complete_effect_egress(egress)
     receipts = collect_approval_receipts(backend, run_id=run_id)
-    findings = detect_grants_without_approval(effects, receipts, run_id=run_id)
+    detector_input = detector_input_from_egress(
+        egress,
+        input_id=f"detector-input-{name}",
+        run_id=run_id,
+        receipts=receipts,
+        receipt_source="identity-backend-audit",
+        receipt_coverage="asserted_complete",
+    )
+    effects = detector_input.effects
+    findings = detect_grants_without_approval(detector_input)
     return ScenarioResult(
         name=name,
         run_id=run_id,
@@ -362,6 +388,7 @@ async def run_scenario(
         backend_events=backend_events,
         effects=effects,
         receipts=receipts,
+        detector_input=detector_input,
         findings=findings,
         egress=egress,
     )

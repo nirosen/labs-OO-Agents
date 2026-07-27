@@ -137,7 +137,7 @@ class EffectEgressIncompleteError(RuntimeError):
                 "EffectEgressIncompleteError expected EffectEgressReadResult, "
                 f"got {type(egress).__name__}"
             )
-        reasons = _effect_egress_incomplete_reasons(egress)
+        reasons = effect_egress_completeness_signals(egress)
         if not reasons:
             raise ValueError(
                 "EffectEgressIncompleteError requires first_sequence_error or truncated"
@@ -390,15 +390,28 @@ def require_complete_effect_egress(
             "require_complete_effect_egress expected EffectEgressReadResult, "
             f"got {type(egress).__name__}"
         )
-    if _effect_egress_incomplete_reasons(egress):
+    if effect_egress_completeness_signals(egress):
         raise EffectEgressIncompleteError(egress)
     return egress.records
 
 
-def _effect_egress_incomplete_reasons(
+def effect_egress_completeness_signals(
     egress: EffectEgressReadResult,
 ) -> tuple[EffectEgressCompletenessSignal, ...]:
-    """Return the known reader diagnostics that fail the completeness gate."""
+    """Return known reader diagnostics in canonical public order.
+
+    The returned tuple describes only degradation visible in one
+    :class:`EffectEgressReadResult`. An empty tuple does not prove that a
+    writer emitted every effect or that the bytes are authentic.
+
+    Raises:
+        TypeError: If ``egress`` is not an :class:`EffectEgressReadResult`.
+    """
+    if not isinstance(egress, EffectEgressReadResult):
+        raise TypeError(
+            "effect_egress_completeness_signals expected EffectEgressReadResult, "
+            f"got {type(egress).__name__}"
+        )
     reasons: list[EffectEgressCompletenessSignal] = []
     if egress.first_sequence_error is not None:
         reasons.append("first_sequence_error")

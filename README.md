@@ -62,6 +62,34 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Slice: Detector Input Contract
+
+> Branch: `codex/security-detector-input-contract`
+
+This slice adds one neutral handoff object between collector-facing evidence and application-owned detector policy. `DetectorInput` carries effect copies, public egress completeness diagnostics, a narrowly named completeness-gate assertion, backend receipt copies, and a caller-asserted receipt collection coverage label. The identity-approval example now scores one `DetectorInput` instead of loose `(effects, receipts, run_id)` arguments, so findings can cite the exact detector input that policy consumed without moving join semantics into NOOA.
+
+```mermaid
+flowchart LR
+    E["read_effect_egress()<br/>EffectRecord copies"] --> S["effect_egress_completeness_signals()"]
+    E --> G["require_complete_effect_egress()<br/>default fail-closed handoff"]
+    S --> D["DetectorInput<br/>signals + gate assertion"]
+    G --> D
+    R["SecurityReceipt copies<br/>caller-asserted source + coverage"] --> D
+    D --> P["application detector policy<br/>outside NOOA core"]
+    P --> F["SecurityFinding<br/>evidence_refs include input_id"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `DetectorInput`, `ReceiptCoverage`, `effect_egress_completeness_signals()`, and `detector_input_from_egress()`; the identity-approval example now constructs and scores a detector input bundle |
+| Security claim | Applications can make the detector handoff explicit: collector-facing effect copies, reader-visible completeness diagnostics, the specific completeness-gate assertion, and caller-asserted receipt collection coverage can cross one frozen-field transport object without making NOOA own detector policy or receipt-to-effect correlation. |
+| Non-claim | The bundle authenticates nothing, proves no omitted effect, verifies no receipt source or coverage assertion, verifies no receipt belongs to its `run_id`, establishes no relationship between a receipt and an effect, and is not itself a detector, threshold, verdict, or enforcement action. Constructing it in a victim process does not make it trusted. |
+| Base slice | `codex/security-hardening-e2e-defender-provenance-egress-contract-collector-completeness-gate-input-budget` |
+| Review files | `src/nooa/security/evidence.py`, `src/nooa/security/egress.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/identity_approval.py`, `tests/security/test_evidence.py`, `tests/security/test_egress.py`, `tests/security/test_hardening_example.py` |
+| Validation | `pytest tests/security`; `pytest` |
+
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the detector-input placement in the hardening flow and the explicit trust-boundary limits.
+
 ## Security Review Slice: Hardening Flow + Defender + Guard Labels + Bounded Egress
 
 > Branch: `codex/security-hardening-e2e-defender-provenance-egress-contract-collector-completeness-gate-input-budget`
@@ -174,6 +202,12 @@ A collector that wants a fail-closed handoff can pass the
 report truncation. Otherwise it raises `EffectEgressIncompleteError`, whose `reasons`,
 `first_sequence_error`, and `truncated` fields preserve the reader-visible
 degradation without inventing a detector verdict.
+
+`effect_egress_completeness_signals(egress)` exposes the same canonical
+reader-visible diagnostics without forcing the fail-closed decision. It
+returns only `first_sequence_error` and `truncated` facts already present on
+the read result; an empty tuple still does not prove omitted effects did not
+occur or that received bytes are authentic.
 
 The conformance fixture's own `schema_version` is
 `"nooa-effect-egress-conformance-v3"` because it now publishes the collector
