@@ -62,11 +62,11 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Hardening Flow + Guard Provenance
+## Security Review Slice: Hardening Flow + Guard Labels
 
 > Branch: `codex/security-hardening-e2e-provenance`
 
-This optional joint branch composes the identity-approval hardening demo with the built-in `framework_guard_observer`. The demo still keeps backend receipts and findings outside core NOOA; the added proof is narrower: application-owned method effects and framework-owned guard outcomes can coexist in one event stream without collapsing provenance.
+This optional joint branch composes the identity-approval hardening demo with the built-in `framework_guard_observer`. The demo still keeps backend receipts and findings outside core NOOA; the added proof is narrower: application-owned method effects and guard-shaped observer records can coexist in one event stream while retaining distinct `observer` labels.
 
 ```mermaid
 flowchart LR
@@ -80,7 +80,7 @@ flowchart LR
     AE --> S["application scorer"]
     R --> S
     S --> F["SecurityFinding<br/>run_id"]
-    V -. "generated code rejected" .-> X["execute_python"]
+    V -. "validation result" .-> X["execute_python"]
     X --> GO["framework_guard_observer"]
     GO --> GE["EffectRecord<br/>observer=framework_guard"]
     GE --> P["guard evidence<br/>not scorer input"]
@@ -89,8 +89,8 @@ flowchart LR
 | Review item | Detail |
 | --- | --- |
 | Adds | End-to-end identity-approval example plus a composition test over application `EffectRecord` telemetry, `framework_guard_observer()`, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
-| Security claim | Applications can keep application-owned effects and framework-owned guard outcomes distinguishable by `observer` while composing separately collected receipts and policy-specific findings. |
-| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, turn guard telemetry into a vulnerability detector, or make NOOA enforce authorization policy. |
+| Security claim | Applications can keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
+| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, authenticate the origin of a guard-shaped exception or record, turn guard telemetry into a vulnerability detector, or make NOOA enforce authorization policy. |
 | Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer` |
 | Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/observers.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
 | Validation | `pytest tests/security` |

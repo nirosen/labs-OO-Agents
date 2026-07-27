@@ -27,22 +27,25 @@ _GUARD_EFFECT_TYPES: tuple[
 
 
 def framework_guard_observer(ctx: ExecutePythonContext) -> EffectRecord | None:
-    """Return hidden telemetry for typed framework-owned ``execute_python`` outcomes.
+    """Return hidden telemetry for typed ``execute_python`` guard-shaped outcomes.
 
     Install this with :func:`nooa.security.install_effect_recorder`. The
-    observer only classifies deterministic framework-owned outcomes already
-    present on ``ctx.result.error``: code validation failures, runtime cell
-    timeouts, and sandbox resource/worker failures. Ordinary application
-    exceptions and sandbox serialization plumbing failures are intentionally
-    ignored.
+    observer classifies mapped error types already present on
+    ``ctx.result.error``: code validation failures, runtime cell timeouts, and
+    sandbox resource/worker failures. Ordinary application exceptions outside
+    those mapped types and sandbox serialization plumbing failures are
+    intentionally ignored.
 
     This is evidence of a NOOA guard outcome, not a vulnerability detector and
-    not an enforcement boundary. The record omits raw exception text because
-    built-in observers must not copy arbitrary runtime data into
-    ``EffectRecord.attributes`` without application-specific sanitization. A
-    timeout record proves that the runtime deadline fired, not that generated
-    code stopped; existing runtime semantics still allow code that catches
-    cancellation to continue.
+    not an enforcement boundary. It also does not authenticate exception
+    origin: generated code that can construct one of these public exception
+    classes can mint an indistinguishable record. The record omits raw
+    exception text because built-in observers must not copy arbitrary runtime
+    data into ``EffectRecord.attributes`` without application-specific
+    sanitization. A timeout record proves only that ``ctx.result.error`` carried
+    ``CellTimeoutError``; it does not prove that a runtime deadline fired or
+    that generated code stopped. Existing runtime semantics still allow code
+    that catches cancellation to continue.
     """
     if ctx.result is None or ctx.result.error is None:
         return None

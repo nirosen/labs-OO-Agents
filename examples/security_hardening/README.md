@@ -46,7 +46,7 @@ This is a composition example, not a trust claim. The JSONL sink, receipt collec
 
 The demo scopes only the out-of-band transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope.
 
-On `codex/security-hardening-e2e-provenance`, the same event manager can also carry framework-owned guard evidence without confusing it with the application grant effect:
+On `codex/security-hardening-e2e-provenance`, the same event manager can also carry guard-shaped observer records without confusing their label with the application grant effect:
 
 ```mermaid
 flowchart LR
@@ -54,10 +54,10 @@ flowchart LR
     B["execute_python validation denial"] --> FE["EffectRecord<br/>observer=framework_guard"]
     AE --> C["same event stream"]
     FE --> C
-    C --> D["observer keeps provenance distinct"]
+    C --> D["observer labels remain distinct"]
 ```
 
-The built-in guard record is evidence of a framework outcome only. It is not fed into the identity scorer in this example and does not become a vulnerability verdict.
+The built-in guard record classifies a mapped `ctx.result.error` type; it does not prove that the exception originated in framework code. Generated code that raises the same public exception class can mint an indistinguishable record. The record is not fed into the identity scorer in this example and does not become a vulnerability verdict.
 
 The demo keeps `grant_access()` async because the current `agent_call` recorder observes async agent methods; a sync tool method would require a different observation seam.
 
