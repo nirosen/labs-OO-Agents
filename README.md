@@ -62,36 +62,40 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Hardening Flow + Guard Labels
+## Security Review Slice: Hardening Flow + Defender + Guard Labels
 
-> Branch: `codex/security-hardening-e2e-provenance`
+> Branch: `codex/security-hardening-e2e-defender-provenance`
 
-This optional joint branch composes the identity-approval hardening demo with the built-in `framework_guard_observer`. The demo still keeps backend receipts and findings outside core NOOA; the added proof is narrower: application-owned method effects and guard-shaped observer records can coexist in one event stream while retaining distinct `observer` labels.
+This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, and the built-in `framework_guard_observer`. The same attack-shaped request now has vulnerable, defender-only, and backend-hardened comparison points. Backend receipts and findings still stay outside core NOOA; the added proof is narrower: application-owned method effects and guard-shaped observer records can coexist in one event stream while retaining distinct `observer` labels.
 
 ```mermaid
 flowchart LR
     I["prompt injection or unsafe context"] --> V["NOOA victim agent"]
     V --> M["grant_access()"]
-    M --> AO["agent_call observer"]
-    AO --> AE["EffectRecord<br/>observer=agent_call_middleware"]
+    M --> O["agent_call recorder<br/>outer wrapper"]
+    O --> D["example defender middleware<br/>missing token rule"]
+    D -- "deny before backend" --> DX["AccessDecision<br/>source=defender"]
+    D -- "pass through" --> B["identity backend<br/>authoritative"]
+    B --> BY["AccessDecision<br/>source=backend"]
+    DX --> AE["EffectRecord<br/>observer=agent_call_middleware<br/>decision_source"]
+    BY --> AE
     AE --> J["JsonlEffectSink"]
-    M --> B["identity backend"]
     B --> R["SecurityReceipt collector<br/>run_id"]
     AE --> S["application scorer"]
     R --> S
     S --> F["SecurityFinding<br/>run_id"]
-    V --> X["execute_python"]
-    X -- "mapped result.error" --> GO["framework_guard_observer"]
+    V --> XP["execute_python"]
+    XP -- "mapped result.error" --> GO["framework_guard_observer"]
     GO --> GE["EffectRecord<br/>observer=framework_guard"]
     GE --> P["guard evidence<br/>not scorer input"]
 ```
 
 | Review item | Detail |
 | --- | --- |
-| Adds | End-to-end identity-approval example plus a composition test over application `EffectRecord` telemetry, `framework_guard_observer()`, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
-| Security claim | Applications can keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
-| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, authenticate the origin of a guard-shaped exception or record, turn guard telemetry into a vulnerability detector, or make NOOA enforce authorization policy. |
-| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer` |
+| Adds | End-to-end identity-approval example, an example-only deterministic `agent_call` defender recipe, and composition tests over application `EffectRecord` telemetry, `framework_guard_observer()`, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
+| Security claim | Applications can add a deterministic preflight denial and keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
+| Non-claim | The demo does not simulate an LLM attack, make same-process sinks/receipts trusted, make the defender a trusted boundary or backend authorization replacement, generalize beyond this scripted missing-token rule, authenticate the origin of a guard-shaped exception or record, turn guard telemetry into a vulnerability detector, or make NOOA enforce authorization policy. |
+| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer`, `codex/security-hardening-defender-recipe` |
 | Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/observers.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
 | Validation | `pytest tests/security` |
 

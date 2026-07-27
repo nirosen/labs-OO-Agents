@@ -10,12 +10,15 @@ import pytest
 
 from examples.security_hardening.identity_approval import (
     AUTHORIZED_REQUEST,
+    DEFENDER_REASON,
     EFFECT_TYPE,
     FINDING_TYPE,
     PROMPT_INJECTION_REQUEST,
+    AccessRequest,
     IdentityApprovalAgent,
     IdentityBackend,
     detect_grants_without_approval,
+    install_identity_grant_defender,
     observe_identity_grant,
     run_scenario,
 )
@@ -42,6 +45,8 @@ async def test_vulnerable_grant_is_recorded_and_flagged_without_receipt(tmp_path
     assert len(result.effects) == 1
     assert result.effects[0].effect_type == EFFECT_TYPE
     assert result.effects[0].decision == "allowed"
+    assert result.effects[0].attributes["decision_source"] == "backend"
+    assert len(result.backend_events) == 1
     assert result.receipts == ()
     assert len(result.findings) == 1
     assert result.findings[0].finding_type == FINDING_TYPE
@@ -60,8 +65,11 @@ async def test_hardened_backend_denies_same_attack_without_finding(tmp_path: Pat
     )
 
     assert result.decision.granted is False
+    assert result.decision.source == "backend"
+    assert len(result.backend_events) == 1
     assert len(result.effects) == 1
     assert result.effects[0].decision == "denied"
+    assert result.effects[0].attributes["decision_source"] == "backend"
     assert result.receipts == ()
     assert result.findings == ()
     assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
@@ -77,14 +85,116 @@ async def test_hardened_authorized_grant_correlates_receipt_without_finding(tmp_
     )
 
     assert result.decision.granted is True
+    assert result.decision.source == "backend"
+    assert len(result.backend_events) == 1
     assert len(result.effects) == 1
     assert result.effects[0].decision == "allowed"
+    assert result.effects[0].attributes["decision_source"] == "backend"
     assert len(result.receipts) == 1
     assert result.receipts[0].effect_type == EFFECT_TYPE
     assert result.receipts[0].run_id == result.run_id
     assert result.receipts[0].target == result.effects[0].target
     assert result.findings == ()
     assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
+
+
+@pytest.mark.asyncio
+async def test_defender_only_blocks_attack_before_vulnerable_backend(tmp_path: Path) -> None:
+    result = await run_scenario(
+        "defender_only_attack",
+        PROMPT_INJECTION_REQUEST,
+        enforce_approval=False,
+        defender_enabled=True,
+        output_dir=tmp_path,
+    )
+
+    assert result.decision.granted is False
+    assert result.decision.source == "defender"
+    assert result.decision.reason == DEFENDER_REASON
+    assert result.backend_events == ()
+    assert len(result.effects) == 1
+    assert result.effects[0].decision == "denied"
+    assert result.effects[0].attributes["decision_source"] == "defender"
+    assert result.receipts == ()
+    assert result.findings == ()
+    assert result.sink_rows == (result.effects[0].model_dump(mode="json"),)
+
+
+@pytest.mark.asyncio
+async def test_defender_recipe_does_not_replace_backend_authorization() -> None:
+    backend = IdentityBackend(enforce_approval=False)
+    agent = IdentityApprovalAgent(backend)
+    uninstall = install_identity_grant_defender(agent.event_manager)
+    try:
+        blocked = await agent.grant_access(PROMPT_INJECTION_REQUEST)
+        assert backend.audit_log() == ()
+        bypassed = backend.grant_access(PROMPT_INJECTION_REQUEST)
+    finally:
+        uninstall()
+
+    assert blocked.granted is False
+    assert blocked.source == "defender"
+    assert bypassed.granted is True
+    assert bypassed.source == "backend"
+    assert len(backend.audit_log()) == 1
+
+
+@pytest.mark.asyncio
+async def test_defender_passes_authorized_request_to_backend(tmp_path: Path) -> None:
+    result = await run_scenario(
+        "defender_authorized",
+        AUTHORIZED_REQUEST,
+        enforce_approval=True,
+        defender_enabled=True,
+        output_dir=tmp_path,
+    )
+
+    assert result.decision.granted is True
+    assert result.decision.source == "backend"
+    assert len(result.backend_events) == 1
+    assert len(result.receipts) == 1
+    assert result.findings == ()
+
+
+@pytest.mark.asyncio
+async def test_defender_blocks_missing_token_without_untrusted_content(tmp_path: Path) -> None:
+    result = await run_scenario(
+        "defender_missing_token",
+        AccessRequest(
+            request_id="req-empty",
+            principal="contractor",
+            resource="prod-db",
+            untrusted_content="",
+        ),
+        enforce_approval=False,
+        defender_enabled=True,
+        output_dir=tmp_path,
+    )
+
+    assert result.decision.granted is False
+    assert result.decision.source == "defender"
+    assert result.backend_events == ()
+
+
+@pytest.mark.asyncio
+async def test_defender_outside_recorder_short_circuits_without_effect_row() -> None:
+    backend = IdentityBackend(enforce_approval=False)
+    agent = IdentityApprovalAgent(backend)
+    uninstall_defender = install_identity_grant_defender(agent.event_manager)
+    uninstall_recorder = install_agent_call_effect_recorder(
+        agent.event_manager,
+        observe_identity_grant,
+    )
+    try:
+        decision = await agent.grant_access(PROMPT_INJECTION_REQUEST)
+    finally:
+        uninstall_recorder()
+        uninstall_defender()
+
+    assert decision.granted is False
+    assert decision.source == "defender"
+    assert backend.audit_log() == ()
+    assert agent.event_manager.filter(type="EffectRecord") == []
 
 
 def test_mismatched_receipt_is_cited_as_divergence_evidence() -> None:
@@ -169,5 +279,40 @@ async def test_application_and_framework_effects_keep_distinct_observers() -> No
     assert len(records) == 2
     assert {(record.effect_type, record.observer, record.decision) for record in records} == {
         (EFFECT_TYPE, "agent_call_middleware", "allowed"),
+        ("code.validation", "framework_guard", "denied"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_defender_denial_and_framework_effects_keep_distinct_observers() -> None:
+    agent = IdentityApprovalAgent(IdentityBackend(enforce_approval=False))
+    uninstall_agent_call = install_agent_call_effect_recorder(
+        agent.event_manager,
+        observe_identity_grant,
+    )
+    uninstall_defender = install_identity_grant_defender(agent.event_manager)
+    uninstall_guard = install_effect_recorder(
+        agent.event_manager,
+        framework_guard_observer,
+    )
+    try:
+        decision = await agent.handle_request(PROMPT_INJECTION_REQUEST)
+        validation_result = await agent.runtime.execute_code("eval('1 + 1')")
+    finally:
+        uninstall_guard()
+        uninstall_defender()
+        uninstall_agent_call()
+
+    assert decision.granted is False
+    assert decision.source == "defender"
+    assert isinstance(validation_result.error, RestrictedCodeError)
+    records = [
+        event
+        for event in agent.event_manager.filter(type="EffectRecord")
+        if isinstance(event, EffectRecord)
+    ]
+    assert len(records) == 2
+    assert {(record.effect_type, record.observer, record.decision) for record in records} == {
+        (EFFECT_TYPE, "agent_call_middleware", "denied"),
         ("code.validation", "framework_guard", "denied"),
     }
