@@ -90,7 +90,7 @@ flowchart LR
 | --- | --- |
 | Adds | End-to-end identity-approval example plus an example-only deterministic `agent_call` defender recipe over `EffectRecord`, JSONL sink, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
 | Security claim | Applications can use existing NOOA middleware to add a deterministic preflight denial and keep effect, receipt, and finding evidence coherent across vulnerable, defender-only, and backend-hardened replays. |
-| Non-claim | The defender recipe is not a trusted boundary, does not replace backend authorization, does not generalize beyond this scripted rule, and a path outside the guarded method can still reach a permissive backend. |
+| Non-claim | The defender recipe is not a trusted boundary, does not replace backend authorization, does not generalize beyond this scripted missing-token rule, and a path outside the guarded method can still reach a permissive backend. |
 | Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract` |
 | Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `tests/security/test_hardening_example.py` |
 | Validation | `pytest tests/security/test_hardening_example.py tests/security` |

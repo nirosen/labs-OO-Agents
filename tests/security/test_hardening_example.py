@@ -14,13 +14,15 @@ from examples.security_hardening.identity_approval import (
     EFFECT_TYPE,
     FINDING_TYPE,
     PROMPT_INJECTION_REQUEST,
+    AccessRequest,
     IdentityApprovalAgent,
     IdentityBackend,
     detect_grants_without_approval,
     install_identity_grant_defender,
+    observe_identity_grant,
     run_scenario,
 )
-from nooa.security import EffectRecord, SecurityReceipt
+from nooa.security import EffectRecord, SecurityReceipt, install_agent_call_effect_recorder
 
 
 @pytest.mark.asyncio
@@ -145,6 +147,47 @@ async def test_defender_passes_authorized_request_to_backend(tmp_path: Path) -> 
     assert len(result.backend_events) == 1
     assert len(result.receipts) == 1
     assert result.findings == ()
+
+
+@pytest.mark.asyncio
+async def test_defender_blocks_missing_token_without_untrusted_content(tmp_path: Path) -> None:
+    result = await run_scenario(
+        "defender_missing_token",
+        AccessRequest(
+            request_id="req-empty",
+            principal="contractor",
+            resource="prod-db",
+            untrusted_content="",
+        ),
+        enforce_approval=False,
+        defender_enabled=True,
+        output_dir=tmp_path,
+    )
+
+    assert result.decision.granted is False
+    assert result.decision.source == "defender"
+    assert result.backend_events == ()
+
+
+@pytest.mark.asyncio
+async def test_defender_outside_recorder_short_circuits_without_effect_row() -> None:
+    backend = IdentityBackend(enforce_approval=False)
+    agent = IdentityApprovalAgent(backend)
+    uninstall_defender = install_identity_grant_defender(agent.event_manager)
+    uninstall_recorder = install_agent_call_effect_recorder(
+        agent.event_manager,
+        observe_identity_grant,
+    )
+    try:
+        decision = await agent.grant_access(PROMPT_INJECTION_REQUEST)
+    finally:
+        uninstall_recorder()
+        uninstall_defender()
+
+    assert decision.granted is False
+    assert decision.source == "defender"
+    assert backend.audit_log() == ()
+    assert agent.event_manager.filter(type="EffectRecord") == []
 
 
 def test_mismatched_receipt_is_cited_as_divergence_evidence() -> None:

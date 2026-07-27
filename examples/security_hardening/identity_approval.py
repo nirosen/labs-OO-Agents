@@ -207,11 +207,14 @@ def observe_identity_grant(ctx: AgentCallContext) -> EffectRecord | None:
 def install_identity_grant_defender(event_manager: EventManager) -> Callable[[], None]:
     """Install one application-specific, deterministic grant preflight rule.
 
-    This recipe blocks only the example's ``grant_access`` method when an
-    untrusted request has no approval token. It is defense-in-depth inside the
-    victim process, not backend authorization. A caller that bypasses this
-    method boundary or removes the middleware still reaches whatever policy the
-    backend enforces.
+    This recipe blocks only the example's ``grant_access`` method when a request
+    has no approval token. It is defense-in-depth inside the victim process,
+    not backend authorization. A caller that bypasses this method boundary or
+    removes the middleware still reaches whatever policy the backend enforces.
+
+    Install the effect recorder before this middleware when blocked decisions
+    must become ``EffectRecord`` rows. ``agent_call`` registration order is
+    outermost-first, so an inner recorder cannot observe a short-circuit.
     """
 
     async def _defend(ctx: AgentCallContext, nxt: AgentCallNext) -> AgentCallContext:
@@ -222,7 +225,7 @@ def install_identity_grant_defender(event_manager: EventManager) -> Callable[[],
         if not isinstance(request, AccessRequest):
             return await nxt(ctx)
 
-        if request.approval_token is None and bool(request.untrusted_content):
+        if request.approval_token is None:
             ctx.result = AccessDecision(
                 granted=False,
                 reason=DEFENDER_REASON,
