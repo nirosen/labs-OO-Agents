@@ -99,7 +99,7 @@ flowchart LR
 | Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/observers.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
 | Validation | `pytest tests/security` |
 
-See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the vulnerable and hardened comparison.
+See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the four-scenario comparison and guard-label notes.
 
 ## Installation
 
