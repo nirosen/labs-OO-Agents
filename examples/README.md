@@ -24,6 +24,7 @@ A progressive tour of the framework. Each step is a standalone, copy-paste-runna
 | — | Out-of-process detector harness | [`security_hardening/detector_harness.py`](security_hardening/detector_harness.py) |
 | — | Approval authority receipts | [`security_hardening/approval_authority.py`](security_hardening/approval_authority.py) |
 | — | Second victim detector generality | [`security_hardening/data_export.py`](security_hardening/data_export.py) |
+| — | Checked security surface guide | [`security_hardening/SURFACE.md`](security_hardening/SURFACE.md) |
 
 ---
 
@@ -58,6 +59,8 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario vu
 ```bash
 uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
 ```
+
+[`security_hardening/SURFACE.md`](security_hardening/SURFACE.md) consolidates the current `nooa.security` exports, egress versions, installation seams, and trust-boundary limits in one place. `tests/security/test_surface_guide.py` checks that every public export is indexed exactly once and that the documented minimal integration still executes.
 
 ## Step 1: Your first generation method
 

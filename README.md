@@ -62,6 +62,32 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Checked Security Surface Guide
+
+> Branch: `codex/security-surface-guide`
+
+This slice adds no new runtime behavior. It consolidates the current `nooa.security` surface into one checked guide beside the hardening examples, so a maintainer can review the composed API without reconstructing ten chronological branch deltas. A new test keeps the guide's export index aligned with `nooa.security.__all__` and executes the documented minimal V2 sink-to-detector path.
+
+```mermaid
+flowchart LR
+    A["46 public exports"] --> G["SURFACE.md<br/>grouped by audience"]
+    G --> T["test_surface_guide.py"]
+    T --> X["export index exact match"]
+    T --> S["executable minimal integration"]
+    G --> B["canonical boundaries<br/>stated once"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `examples/security_hardening/SURFACE.md`, a grouped export index, one runnable minimal integration, consolidated trust-boundary statements, and `tests/security/test_surface_guide.py` |
+| Security claim | The documented surface is checked against the actual public export list, and the documented minimal sink-to-`DetectorInput` path is executable against the current API. |
+| Non-claim | Documentation is not a security control, an API stability guarantee, or a hardened deployment recipe. Grouping exports by audience is editorial and does not restrict access, authenticate evidence, or add enforcement. |
+| Base slice | `codex/security-effect-egress-stream-end-v2` |
+| Review files | `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `tests/security/test_surface_guide.py`, `README.md` |
+| Validation | `pytest tests/security/test_surface_guide.py`; `git diff --quiet 805b8e6 -- src/nooa`; `pytest` |
+
+Read the consolidated guide at [`examples/security_hardening/SURFACE.md`](examples/security_hardening/SURFACE.md).
+
 ## Security Review Follow-On: V2 Effect Egress Stream End
 
 > Branch: `codex/security-effect-egress-stream-end-v2`
