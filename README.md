@@ -62,11 +62,11 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
-## Security Review Slice: Hardening Flow + Defender + Guard Labels + Egress
+## Security Review Slice: Hardening Flow + Defender + Guard Labels + Egress Contract
 
-> Branch: `codex/security-hardening-e2e-defender-provenance-egress`
+> Branch: `codex/security-hardening-e2e-defender-provenance-egress-contract`
 
-This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, the built-in `framework_guard_observer`, and bounded descriptor-backed effect egress. The same attack-shaped request still has vulnerable, defender-only, and backend-hardened comparison points. The scorer now consumes collector-facing `read_effect_egress()` records instead of the local event store and refuses to score a gapped or truncated stream, while backend receipts and findings remain outside core NOOA.
+This optional joint branch composes the identity-approval hardening demo, one deterministic application-owned `agent_call` defender recipe, the built-in `framework_guard_observer`, bounded descriptor-backed effect egress, and the public `nooa-effect-egress-v1` collector contract. The same attack-shaped request still has vulnerable, defender-only, and backend-hardened comparison points. The scorer now consumes collector-facing `read_effect_egress()` records instead of the local event store and refuses to score a gapped or truncated stream. Public wire constants and conformance vectors let an independent collector implement the same transport without copying private source constants, while backend receipts and findings remain outside core NOOA.
 
 ```mermaid
 flowchart LR
@@ -85,6 +85,8 @@ flowchart LR
     AE --> ES["FdEffectSink<br/>blocking fd"]
     GE --> ES
     ES --> EC["read_effect_egress()<br/>records + stream status"]
+    WC["V1 wire contract<br/>version + keys + bounds"] --> EC
+    CV["conformance vectors"] --> WC
     EC --> AI["identity effects<br/>scorer input"]
     EC --> P["guard evidence<br/>not scorer input"]
     B --> R["SecurityReceipt collector<br/>run_id"]
@@ -95,14 +97,67 @@ flowchart LR
 
 | Review item | Detail |
 | --- | --- |
-| Adds | End-to-end identity-approval example, an example-only deterministic `agent_call` defender recipe, `framework_guard_observer()`, bounded `FdEffectSink` transport, collector-side `read_effect_egress()`, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
-| Security claim | Applications can add a deterministic preflight denial, emit bounded framed effect copies through a chosen blocking descriptor, refuse to score when received bytes show a first sequence discontinuity or trailing partial frame, and keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
-| Non-claim | The demo does not simulate an LLM attack, make same-process descriptors/receipts trusted, make the defender a trusted boundary or backend authorization replacement, generalize beyond this scripted missing-token rule, authenticate the origin of a guard-shaped exception or record, turn guard telemetry into a vulnerability detector, prove unrecorded effects did not happen, or make NOOA enforce authorization policy. |
-| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer`, `codex/security-hardening-defender-recipe`, `codex/security-effect-egress` |
-| Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/egress.py`, `src/nooa/security/observers.py`, `tests/security/test_egress.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
+| Adds | End-to-end identity-approval example, an example-only deterministic `agent_call` defender recipe, `framework_guard_observer()`, bounded `FdEffectSink` transport, public V1 wire constants and conformance vectors, collector-side `read_effect_egress()`, run-scoped `SecurityReceipt`, and run-scoped `SecurityFinding` |
+| Security claim | Applications can add a deterministic preflight denial, emit bounded framed effect copies through a chosen blocking descriptor, let an independent collector implement the documented `nooa-effect-egress-v1` transport, refuse to score when received bytes show a first sequence discontinuity or trailing partial frame, and keep application-owned effects and guard-shaped records distinguishable by `observer` label while composing separately collected receipts and policy-specific findings. |
+| Non-claim | The demo does not simulate an LLM attack, make same-process descriptors or receipts trusted, make the defender a trusted boundary or backend authorization replacement, generalize beyond this scripted missing-token rule, authenticate the origin of a guard-shaped exception or record, turn transport compatibility or guard telemetry into a vulnerability detector, prove unrecorded effects did not happen, promise future-version wire stability, or make NOOA enforce authorization policy. The reader bounds one frame but not total input. |
+| Included slices | `codex/security-receipt-contract`, `codex/agent-call-effect-recorder`, `codex/effect-record-jsonl-sink`, `codex/security-finding-contract`, `codex/framework-guard-observer`, `codex/security-hardening-defender-recipe`, `codex/security-effect-egress`, `codex/security-effect-egress-contract` |
+| Review files | `examples/security_hardening/identity_approval.py`, `examples/security_hardening/README.md`, `src/nooa/security/__init__.py`, `src/nooa/security/egress.py`, `src/nooa/security/observers.py`, `tests/security/fixtures/effect_egress_conformance_v1.json`, `tests/security/test_egress.py`, `tests/security/test_hardening_example.py`, `tests/security/test_observers.py` |
 | Validation | `pytest tests/security` |
 
 See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the four-scenario comparison, egress notes, and guard-label notes.
+
+## Effect Egress V1 Wire Contract
+
+An independent collector may rely on these public exports:
+
+| Export | Value |
+| --- | --- |
+| `EFFECT_EGRESS_SCHEMA_VERSION` | `"nooa-effect-egress-v1"` |
+| `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN` | `nooa-effect-egress-v[1-9][0-9]*` |
+| `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE` | `"full"` |
+| `EFFECT_EGRESS_FRAME_KEYS` | `{"schema_version", "sequence", "record"}` |
+| `EFFECT_EGRESS_RECORD_EVENT_TYPE` | `"EffectRecord"` |
+| `EFFECT_EGRESS_RECORD_KEYS` | `{"event_type", "id", "metadata", "status", "tag", "timestamp", "effect_type", "target", "decision", "observer", "generation_id", "tool_call_id", "attributes"}` |
+| `MAX_EFFECT_EGRESS_SEQUENCE` | `9007199254740991` |
+| `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | `1048576` |
+
+The V1 transport is LF-delimited UTF-8 JSON. Each complete frame ends in one LF
+byte, has no BOM or leading/trailing whitespace outside the JSON object, and
+contains exactly the three keys above. CRLF termination is invalid; internal
+JSON whitespace is allowed. Duplicate object keys, non-standard numeric
+constants such as `NaN` or `Infinity`, numeric literals that overflow to a
+non-finite value, and lone-surrogate string escapes are invalid.
+
+```json
+{"schema_version":"nooa-effect-egress-v1","sequence":0,"record":{"event_type":"EffectRecord","id":"00000000-0000-0000-0000-000000000001","metadata":{},"status":"active","tag":null,"timestamp":"2026-07-27T00:00:00","effect_type":"fs.write","target":"/tmp/a","decision":"observed","observer":"","generation_id":"","tool_call_id":"","attributes":{}}}
+```
+
+The contract is intentionally narrow:
+
+- `schema_version` must equal `EFFECT_EGRESS_SCHEMA_VERSION`; a future token whose entire value matches `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN` under `EFFECT_EGRESS_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` raises `UnsupportedEffectEgressVersionError`. Use a whole-string API such as Python `re.fullmatch()` or its equivalent; do not emulate it with prefix/substring matching or `^...$`, which can treat a trailing newline specially. The pattern accepts `v1`, `v2`, and `v10`, but not `v0`, `v01`, case variants, or tokens with trailing whitespace or newline.
+- `sequence` is a strict integer in the inclusive range `0..MAX_EFFECT_EGRESS_SEQUENCE`. The upper bound keeps the discontinuity tuple exact in JSON implementations that use IEEE-754 numbers. The collector records the first `(expected, observed)` discontinuity but still returns the complete frames it could parse.
+- `record` must contain exactly `EFFECT_EGRESS_RECORD_KEYS`, carry `event_type == EFFECT_EGRESS_RECORD_EVENT_TYPE`, and validate as an `EffectRecord`. V1 treats the full writer-emitted `EffectRecord` payload shape as part of this compatibility contract; omitted defaulted fields such as `id` or `timestamp` are invalid rather than minted at read time. Changing accepted record fields requires a V2 envelope or an explicitly versioned record payload.
+- `FdEffectSink` rejects `EffectRecord` instances whose serialized payload would add V1-incompatible fields, change the V1 event type, contain V1-invalid scalar values such as non-finite floats or lone surrogates, or require non-JSON-native `metadata` values to be rewritten during envelope serialization. `JsonlEffectSink` is a separate raw-record sink and should not be treated as a V1 envelope compatibility oracle.
+- `read_effect_egress()` starts sequence validation at `0`, so attaching to a stream after its first frame intentionally reports an initial discontinuity.
+- A trailing unterminated line is reported as `truncated=True` and is not parsed as a record.
+- A newline-terminated malformed frame raises a generic `ValueError`. Callers that distinguish outcomes must catch `UnsupportedEffectEgressVersionError` and `EffectEgressFrameTooLargeError` before a generic `ValueError` handler because both distinguished errors subclass `ValueError`.
+- A line larger than the configured maximum, counting the terminating LF byte for complete frames, raises `EffectEgressFrameTooLargeError`; it is not downgraded to truncation.
+
+The checked-in `tests/security/fixtures/effect_egress_conformance_v1.json`
+vectors cover empty input, compact and internally-spaced valid frames,
+well-formed multi-frame input, forward, duplicate, and backward sequence
+discontinuities, first-error-wins behavior after a later backward step, exact
+and one-over sequence bounds, a trailing partial frame, exact-max and
+over-bound complete and unterminated lines, future-version classification
+including malformed near misses such as a trailing newline escape, strict
+LF framing without BOM or outer whitespace, blank and malformed frames
+including a second-line failure, negative sequence rejection, each missing
+required key, a missing defaulted record key, unexpected envelope and record
+keys including wrong or empty record event types, duplicate object keys,
+non-standard numeric constants, numeric overflow literals, lone-surrogate
+escapes, and one invalid UTF-8 line encoded as `payload_base64`.
+They are V1 reader compatibility fixtures for independent collectors, not
+evidence-authenticity fixtures.
 
 ## Installation
 

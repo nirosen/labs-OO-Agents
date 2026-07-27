@@ -56,7 +56,7 @@ The demo scopes only the out-of-band transport objects with `run_id`. `EffectRec
 
 The defender recipe is intentionally example-specific: it blocks only `grant_access()` requests without an approval token. It demonstrates existing `agent_call` middleware as a defense-in-depth seam; it does not become a generic NOOA policy API. The recorder is installed before the defender so the outer wrapper still records short-circuited denials; reversing that order would leave an inner recorder unable to observe the block. The demo keeps `grant_access()` async because the current `agent_call` recorder and defender observe async agent methods; a sync tool method would require a different observation seam.
 
-On `codex/security-hardening-e2e-defender-provenance-egress`, the same event manager and egress stream can also carry guard-shaped observer records without confusing their label with the application grant effect:
+On `codex/security-hardening-e2e-defender-provenance-egress-contract`, the same event manager and egress stream can also carry guard-shaped observer records without confusing their label with the application grant effect:
 
 ```mermaid
 flowchart LR
