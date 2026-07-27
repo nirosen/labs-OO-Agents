@@ -54,6 +54,41 @@ This is a composition example, not a trust claim. The descriptor-backed sink, re
 
 The demo scopes only the out-of-band transport objects with `run_id`. `EffectRecord` keeps its existing runtime lineage fields; a real collector can stamp copied records through the open metadata dict when it needs the same assessment scope. The egress stream's sequence and truncation status only describe bytes received by the collector; they do not authenticate the writer, prove that omitted effects never happened, or turn transport health into a detector verdict.
 
+## Out-of-Process Collector Follow-On
+
+`codex/security-effect-collector` adds an example-only supervisor harness around the same identity victim without adding new `src/nooa` changes beyond the prior composed slice. The supervisor opens one pipe, passes only the write end to the victim subprocess, passes only the read end to the collector subprocess, and joins the collector summary with the victim return code.
+
+```mermaid
+flowchart LR
+    S["supervisor"] -- "pipe read fd only" --> C["collector subprocess"]
+    S -- "pipe write fd only" --> V["victim subprocess"]
+    I["prompt injection<br/>or unsafe task context"] --> A
+    V --> A["IdentityApprovalAgent"]
+    A --> E["FdEffectSink"]
+    E --> P["pipe"]
+    P --> C
+    C --> R["CollectorSummary<br/>records + stream facts"]
+    V --> VX["victim returncode"]
+    R --> J["CollectedScenario"]
+    VX --> J
+```
+
+Run the subprocess demo with:
+
+```bash
+uv run python -m examples.security_hardening.effect_collector demo
+```
+
+The example also exposes one fault-injection mode that writes a partial trailing frame after a real agent effect and exits the victim non-zero, so the supervisor can return the collector's truncated-stream facts beside the victim failure:
+
+```bash
+uv run python -m examples.security_hardening.effect_collector demo --victim-fault partial_tail_crash
+```
+
+This is a real but narrow boundary improvement: the victim subprocess cannot read back bytes after it writes them into the pipe, and the pipe is not a seekable output file it can truncate. `CollectorSummary` reports the records that arrived, the first sequence discontinuity, and whether the final frame was truncated. `truncated=False` means only that the received byte stream ended between frames; it does not mean the record set is authentic or complete.
+
+The collector still accepts a valid-looking forged frame from any writer holding the write end, and an empty stream followed by a clean victim exit is still indistinguishable from a victim that intentionally omitted an effect and exited cleanly. This branch demonstrates OS process separation, not sandboxing, attestation, prevention, or a detector verdict. It keeps process lifecycle in the example instead of adding a core NOOA collector API.
+
 The defender recipe is intentionally example-specific: it blocks only `grant_access()` requests without an approval token. It demonstrates existing `agent_call` middleware as a defense-in-depth seam; it does not become a generic NOOA policy API. The recorder is installed before the defender so the outer wrapper still records short-circuited denials; reversing that order would leave an inner recorder unable to observe the block. The demo keeps `grant_access()` async because the current `agent_call` recorder and defender observe async agent methods; a sync tool method would require a different observation seam.
 
 On `codex/security-hardening-e2e-defender-provenance-egress`, the same event manager and egress stream can also carry guard-shaped observer records without confusing their label with the application grant effect:
