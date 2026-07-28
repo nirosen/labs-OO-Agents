@@ -10,6 +10,30 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Receipt Admission Diagnostics Follow-On
+
+`codex/security-receipt-admission-diagnostics` adds no public `nooa.security` API. The example-local `DetectorReport` now carries one detector-supplied `receipt_admission_refusal` field for the three post-completeness receipt wrappers already in the identity-approval path. The wrapper that refuses the input sets the field before the detector emits its report, and the supervisor preserves the value when it admits a parseable report.
+
+```mermaid
+flowchart LR
+    B["complete ReceiptBundle rows"] --> I["receipt ID uniqueness gate"]
+    I --> A["receipt source alignment gate"]
+    A --> S["receipt scope gate"]
+    I -. "duplicate_receipt_id" .-> D["receipt_admission_refusal"]
+    A -. "receipt_source_mismatch" .-> D
+    S -. "scope_drift" .-> D
+```
+
+Run the three receipt-gate faults:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault duplicate_receipt_id
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault mislabel_receipt_source
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault stale_receipt_run_id
+```
+
+This is observability for a detector-authored report, not a trust upgrade. The field is detector-supplied and unverified, so a detector can report any receipt stage or `None`, exactly as it can with `refusal_reason`; the supervisor deliberately preserves the field rather than treating it as trusted evidence. It does not authenticate receipts, sources, identifiers, scope, detector output, or refusal text; add a new receipt gate; cover receipt transport failures; or make same-user subprocesses trustworthy.
+
 ## Receipt Source Alignment Follow-On
 
 `codex/security-receipt-source-alignment` adds the public opt-in `ReceiptSourceAlignmentValidation` helper and wires one detector-side `receipt_source_alignment_gated_scorer()` wrapper into the identity-approval profile after receipt-ID uniqueness and before receipt scope or profile policy. One `mislabel_receipt_source` authority fault rewrites an issued receipt copy before bundle write while keeping `declared_receipt_count` coherent, so the detector reaches the new source-label gate instead of confusing the case with transport or scope drift.

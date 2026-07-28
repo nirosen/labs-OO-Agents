@@ -21,6 +21,7 @@ from examples.security_hardening.data_export import EXPORT_EFFECT_TYPE
 from examples.security_hardening.detector_harness import (
     _FINDING_ADMISSION_REFUSALS,
     _IDENTITY_PROFILE,
+    _RECEIPT_ADMISSION_REFUSALS,
     DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES,
     DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
@@ -29,6 +30,7 @@ from examples.security_hardening.detector_harness import (
     DetectedScenario,
     DetectorReport,
     FindingAdmissionRefusal,
+    ReceiptAdmissionRefusal,
     SupervisorAdmissionError,
     _admit_authority_summary,
     _admit_detector_report,
@@ -116,6 +118,7 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
     assert report.victim_profile == "identity_approval"
     assert report.scorer_name == "identity-approval-scorer"
     assert report.declared_finding_count == 0
+    assert report.receipt_admission_refusal is None
     assert report.finding_admission_refusal is None
     assert report.refusal_reason is None
 
@@ -178,6 +181,12 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
             finding_admission_refusal="scope_drift",
             scored=True,
         )
+    with pytest.raises(ValidationError, match="cannot carry receipt_admission_refusal"):
+        DetectorReport(
+            **_report_fields(),
+            receipt_admission_refusal="scope_drift",
+            scored=True,
+        )
     with pytest.raises(
         ValidationError,
         match="requires finding_bundle_completeness_gate_passed=True",
@@ -200,6 +209,11 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
 def test_finding_admission_refusal_vocabulary_matches_literal() -> None:
     assert set(get_args(FindingAdmissionRefusal)) == set(_FINDING_ADMISSION_REFUSALS)
     assert len(_FINDING_ADMISSION_REFUSALS) == len(set(_FINDING_ADMISSION_REFUSALS))
+
+
+def test_receipt_admission_refusal_vocabulary_matches_literal() -> None:
+    assert set(get_args(ReceiptAdmissionRefusal)) == set(_RECEIPT_ADMISSION_REFUSALS)
+    assert len(_RECEIPT_ADMISSION_REFUSALS) == len(set(_RECEIPT_ADMISSION_REFUSALS))
 
 
 def test_score_detector_input_emits_identity_finding() -> None:
@@ -255,6 +269,7 @@ def test_receipt_scope_gated_scorer_turns_off_run_drop_into_refusal() -> None:
     assert gated_report.scored is False
     assert gated_report.declared_finding_count == 0
     assert gated_bundle.findings == ()
+    assert gated_report.receipt_admission_refusal == "scope_drift"
     assert gated_report.refusal_reason is not None
     assert "detector receipt scope gate refused input" in gated_report.refusal_reason
     assert "mismatched_run_id_receipt_ids=('authority-receipt-req-attack',)" in (
@@ -286,6 +301,7 @@ def test_receipt_id_uniqueness_gated_scorer_turns_duplicate_ids_into_refusal() -
     assert gated_report.scored is False
     assert gated_report.declared_finding_count == 0
     assert gated_bundle.findings == ()
+    assert gated_report.receipt_admission_refusal == "duplicate_receipt_id"
     assert gated_report.refusal_reason is not None
     assert "detector receipt ID uniqueness gate refused input" in gated_report.refusal_reason
     assert "duplicate_receipt_ids=('authority-receipt-req-attack',)" in (
@@ -317,6 +333,7 @@ def test_receipt_id_uniqueness_gate_runs_before_receipt_scope() -> None:
 
     assert report.scored is False
     assert finding_bundle.findings == ()
+    assert report.receipt_admission_refusal == "duplicate_receipt_id"
     assert report.refusal_reason is not None
     assert "detector receipt ID uniqueness gate refused input" in report.refusal_reason
     assert "detector receipt scope gate refused input" not in report.refusal_reason
@@ -349,6 +366,7 @@ def test_receipt_source_alignment_gated_scorer_turns_mislabeled_rows_into_refusa
     assert gated_report.scored is False
     assert gated_report.declared_finding_count == 0
     assert gated_bundle.findings == ()
+    assert gated_report.receipt_admission_refusal == "receipt_source_mismatch"
     assert gated_report.refusal_reason is not None
     assert "detector receipt source alignment gate refused input" in (
         gated_report.refusal_reason
@@ -383,6 +401,7 @@ def test_receipt_id_uniqueness_gate_runs_before_receipt_source_alignment() -> No
 
     assert report.scored is False
     assert finding_bundle.findings == ()
+    assert report.receipt_admission_refusal == "duplicate_receipt_id"
     assert report.refusal_reason is not None
     assert "detector receipt ID uniqueness gate refused input" in report.refusal_reason
     assert "detector receipt source alignment gate refused input" not in report.refusal_reason
@@ -413,6 +432,7 @@ def test_receipt_source_alignment_gate_runs_before_receipt_scope() -> None:
 
     assert report.scored is False
     assert finding_bundle.findings == ()
+    assert report.receipt_admission_refusal == "receipt_source_mismatch"
     assert report.refusal_reason is not None
     assert "detector receipt source alignment gate refused input" in report.refusal_reason
     assert "detector receipt scope gate refused input" not in report.refusal_reason
@@ -483,6 +503,7 @@ def test_evidence_ref_membership_gated_scorer_refuses_invented_refs() -> None:
     assert report.scored is False
     assert report.declared_finding_count == 0
     assert finding_bundle.findings == ()
+    assert report.receipt_admission_refusal is None
     assert report.refusal_reason is not None
     assert "detector evidence ref membership gate refused scorer output" in report.refusal_reason
     assert "unknown_evidence_refs=('invented-evidence-id',)" in report.refusal_reason
@@ -729,6 +750,7 @@ def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_
     assert result.detector.receipt_count == 0
     assert result.detector.declared_receipt_count == 0
     assert result.detector.declared_finding_count == 1
+    assert result.detector.receipt_admission_refusal is None
     assert len(result.findings) == 1
 
 
@@ -786,6 +808,7 @@ def test_detected_authorized_scenario_uses_authority_receipt_and_emits_no_findin
     assert result.detector.receipt_bundle_completeness_signals == ()
     assert result.detector.receipt_bundle_completeness_gate_passed is True
     assert result.detector.declared_finding_count == 0
+    assert result.detector.receipt_admission_refusal is None
     assert result.findings == ()
 
 
@@ -804,6 +827,7 @@ def test_detected_authorized_stale_receipt_scope_refuses_before_policy() -> None
     assert result.detector.declared_receipt_count == 1
     assert result.detector.scored is False
     assert result.detector.declared_finding_count == 0
+    assert result.detector.receipt_admission_refusal == "scope_drift"
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt scope gate refused input" in result.detector.refusal_reason
@@ -829,6 +853,7 @@ def test_detected_authorized_duplicate_receipt_id_refuses_before_scope_or_policy
     assert result.detector.declared_receipt_count == 2
     assert result.detector.scored is False
     assert result.detector.declared_finding_count == 0
+    assert result.detector.receipt_admission_refusal == "duplicate_receipt_id"
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt ID uniqueness gate refused input" in (
@@ -857,6 +882,7 @@ def test_detected_authorized_mislabeled_receipt_source_refuses_before_scope_or_p
     assert result.detector.declared_receipt_count == 1
     assert result.detector.scored is False
     assert result.detector.declared_finding_count == 0
+    assert result.detector.receipt_admission_refusal == "receipt_source_mismatch"
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt source alignment gate refused input" in (
@@ -1082,6 +1108,7 @@ def test_supervisor_refuses_malformed_detector_report_payload() -> None:
     assert admitted.run_id == "run-current"
     assert admitted.scored is False
     assert admitted.declared_finding_count is None
+    assert admitted.receipt_admission_refusal is None
     assert admitted.finding_admission_refusal is None
     assert admitted.refusal_reason is not None
     assert "supervisor detector report parse admission refused output" in (
@@ -1110,6 +1137,28 @@ def test_supervisor_clears_child_supplied_finding_admission_refusal() -> None:
 
     assert admitted.scored is False
     assert admitted.finding_admission_refusal is None
+    assert admitted.refusal_reason == "child-supplied refusal"
+
+
+def test_supervisor_preserves_detector_supplied_receipt_admission_refusal() -> None:
+    report = DetectorReport(
+        **_report_fields(),
+        run_id="run-current",
+        receipt_admission_refusal="scope_drift",
+        scored=False,
+        refusal_reason="child-supplied refusal",
+    )
+
+    admitted = _admit_detector_report(
+        report.model_dump_json(),
+        profile=_IDENTITY_PROFILE,
+        input_id="detector-input-1",
+        expected_run_id="run-current",
+        max_report_bytes=DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.receipt_admission_refusal == "scope_drift"
     assert admitted.refusal_reason == "child-supplied refusal"
 
 
@@ -1572,6 +1621,7 @@ def test_detected_truncated_receipt_bundle_refuses_before_scope_or_policy() -> N
     assert result.detector.receipt_count == 0
     assert result.detector.declared_receipt_count is None
     assert result.detector.scored is False
+    assert result.detector.receipt_admission_refusal is None
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt bundle completeness gate refused input" in (
@@ -1601,6 +1651,7 @@ def test_detected_receipt_count_mismatch_refuses_before_scope_or_policy() -> Non
     assert result.detector.receipt_count == 0
     assert result.detector.declared_receipt_count == 1
     assert result.detector.scored is False
+    assert result.detector.receipt_admission_refusal is None
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt bundle completeness gate refused input" in (
@@ -1621,6 +1672,7 @@ def test_detected_scenario_refuses_detector_report_over_parse_admission_budget()
 
     assert result.detector_returncode == 0
     assert result.detector.scored is False
+    assert result.detector.receipt_admission_refusal is None
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor detector report parse admission refused output" in (
@@ -1637,6 +1689,7 @@ def test_detected_scenario_refuses_malformed_detector_report_payload() -> None:
 
     assert result.detector_returncode == 0
     assert result.detector.scored is False
+    assert result.detector.receipt_admission_refusal is None
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "invalid DetectorReport payload" in result.detector.refusal_reason

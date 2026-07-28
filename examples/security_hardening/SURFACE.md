@@ -166,6 +166,8 @@ A clean result means only that none of the supplied copies contradicted the requ
 
 The `detector_harness.py` example shows one application-owned integration: when an authority receipt pipe is wired, it wraps the identity scorer with the supervisor-selected `run_id` and converts visible scope drift into an example-local refusal before policy runs. That placement does not make receipt scope automatic for `DetectorInput`, and the demo refusal string includes raw run and receipt identifiers that a real deployment may need to redact before crossing a process boundary.
 
+The example harness also carries one example-local `receipt_admission_refusal` report field for the three post-completeness detector-side receipt wrappers: `duplicate_receipt_id`, `receipt_source_mismatch`, and `scope_drift`. That field is detector-supplied and unverified; the supervisor deliberately does not clear it when admitting a parseable report, unlike the supervisor-owned `finding_admission_refusal` field described below. It is observability for the example detector path, not evidence that a trusted boundary verified the reported stage.
+
 ## Finding ID Uniqueness Validation
 
 `validate_finding_id_uniqueness()` is an opt-in consumer helper for one narrow problem: keeping one supplied finding iterable free of repeated `finding_id` values before aggregation, storage, or review. It materializes the iterable once, preserves order, and reports each repeated identifier once in first-repeat order. `require_valid_finding_id_uniqueness()` turns that visible ambiguity into a fail-closed boundary for callers that want one.

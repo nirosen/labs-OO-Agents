@@ -41,6 +41,10 @@ ID-uniqueness gate runs only after those checks pass, and the required-ref gate
 runs last. For current finding-admission failures, the supervisor clears any
 child-supplied value and sets one example-local ``finding_admission_refusal``
 field so consumers need not parse refusal text to identify the failed stage.
+For the three post-completeness receipt gates, the detector can also attach one
+example-local ``receipt_admission_refusal`` field. That value is detector
+supplied and unverified; the supervisor deliberately preserves rather than
+clears it when admitting a parseable report.
 The supervisor also admits victim and authority summary payloads through their own
 bounded parse checks and rejects visible victim scenario drift before
 assembling ``DetectedScenario``. The stdout bounds are parse-admission checks
@@ -87,7 +91,10 @@ from examples.security_hardening.data_export import (
 from examples.security_hardening.data_export import (
     scenario_config as data_export_scenario_config,
 )
-from examples.security_hardening.detector_policy import UnscoreableDetectorInputError
+from examples.security_hardening.detector_policy import (
+    ReceiptAdmissionRefusal,
+    UnscoreableDetectorInputError,
+)
 from examples.security_hardening.effect_collector import (
     _VICTIM_FAULTS,
     VictimFault,
@@ -215,6 +222,11 @@ SubprocessOutputFault = Literal[
 ]
 SupervisorAdmissionRole = Literal["victim", "authority"]
 SupervisorAdmissionReason = Literal["payload_too_large", "invalid_payload", "scenario_mismatch"]
+_RECEIPT_ADMISSION_REFUSALS: tuple[ReceiptAdmissionRefusal, ...] = (
+    "duplicate_receipt_id",
+    "receipt_source_mismatch",
+    "scope_drift",
+)
 FindingAdmissionRefusal = Literal[
     "count_mismatch",
     "scope_drift",
@@ -300,6 +312,7 @@ class DetectorReport(BaseModel):
     receipt_count: int = Field(default=0, ge=0)
     declared_receipt_count: int | None = Field(default=None, ge=0)
     declared_finding_count: int | None = Field(default=None, ge=0)
+    receipt_admission_refusal: ReceiptAdmissionRefusal | None = None
     finding_admission_refusal: FindingAdmissionRefusal | None = None
     scored: bool
     refusal_reason: str | None = None
@@ -357,6 +370,11 @@ class DetectorReport(BaseModel):
                 "finding_bundle_completeness_gate_passed cannot be true when "
                 "finding_bundle_completeness_signals is non-empty"
             )
+        if self.receipt_admission_refusal is not None:
+            if self.receipt_admission_refusal not in _RECEIPT_ADMISSION_REFUSALS:
+                raise ValueError("receipt_admission_refusal must be a known refusal")
+            if self.scored:
+                raise ValueError("scored detector report cannot carry receipt_admission_refusal")
         if self.finding_admission_refusal is not None:
             if self.finding_admission_refusal not in _FINDING_ADMISSION_REFUSALS:
                 raise ValueError("finding_admission_refusal must be a known refusal")
@@ -511,6 +529,7 @@ def score_detector_input(
             DetectorReport(
                 **report_fields,
                 declared_finding_count=0,
+                receipt_admission_refusal=exc.receipt_admission_refusal,
                 scored=False,
                 refusal_reason=str(exc),
             ),
@@ -557,7 +576,8 @@ def receipt_scope_gated_scorer(
             )
         except ReceiptScopeError as exc:
             raise UnscoreableDetectorInputError(
-                f"detector receipt scope gate refused input: {exc}"
+                f"detector receipt scope gate refused input: {exc}",
+                receipt_admission_refusal="scope_drift",
             ) from exc
         # Keep scorer-owned refusals distinct from receipt-scope refusals.
         return scorer(detector_input)
@@ -587,7 +607,8 @@ def receipt_id_uniqueness_gated_scorer(scorer: DetectorScorer) -> DetectorScorer
             )
         except ReceiptIdUniquenessError as exc:
             raise UnscoreableDetectorInputError(
-                f"detector receipt ID uniqueness gate refused input: {exc}"
+                f"detector receipt ID uniqueness gate refused input: {exc}",
+                receipt_admission_refusal="duplicate_receipt_id",
             ) from exc
         return scorer(detector_input)
 
@@ -624,7 +645,8 @@ def receipt_source_alignment_gated_scorer(
             )
         except ReceiptSourceAlignmentError as exc:
             raise UnscoreableDetectorInputError(
-                f"detector receipt source alignment gate refused input: {exc}"
+                f"detector receipt source alignment gate refused input: {exc}",
+                receipt_admission_refusal="receipt_source_mismatch",
             ) from exc
         return scorer(detector_input)
 
@@ -1013,6 +1035,9 @@ def _admit_detector_report(
                 "invalid DetectorReport payload"
             ),
         )
+    # `finding_admission_refusal` is supervisor-owned. The detector-supplied
+    # `receipt_admission_refusal` is deliberately preserved for observability
+    # only; this admission path does not verify it.
     report = _clear_supervisor_finding_admission_refusal(report)
     if report.run_id != expected_run_id:
         return _supervisor_refuse_parsed_report(
