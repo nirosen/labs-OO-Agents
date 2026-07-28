@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
 from tempfile import TemporaryFile
 
 import pytest
@@ -17,6 +18,7 @@ from examples.security_hardening.data_export import EXPORT_EFFECT_TYPE
 from examples.security_hardening.detector_harness import (
     _IDENTITY_PROFILE,
     DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES,
+    DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     DEFAULT_DETECTOR_REPORT_MAX_BYTES,
     DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
@@ -25,10 +27,12 @@ from examples.security_hardening.detector_harness import (
     SupervisorAdmissionError,
     _admit_authority_summary,
     _admit_detector_report,
+    _admit_finding_bundle,
     _admit_victim_summary,
     _validate_detector_fault,
     _validate_max_authority_summary_bytes,
     _validate_max_detector_report_bytes,
+    _validate_max_finding_bundle_bytes,
     _validate_max_victim_summary_bytes,
     _validate_subprocess_output_fault,
     receipt_scope_gated_scorer,
@@ -46,8 +50,12 @@ from nooa.security import (
     DetectorInput,
     EffectRecord,
     FdEffectSink,
+    FindingBundle,
     ReceiptBundle,
     SecurityReceipt,
+    read_finding_bundle,
+    require_complete_finding_bundle,
+    write_finding_bundle,
     write_receipt_bundle,
 )
 
@@ -77,9 +85,15 @@ def _report_fields(**updates: object) -> dict[str, object]:
         "victim_profile": "identity_approval",
         "scorer_name": "identity-approval-scorer",
         "detector_input_id": "detector-input-1",
+        "declared_finding_count": 0,
     }
     fields.update(updates)
     return fields
+
+
+def _finding_bundle_bytes(bundle: FindingBundle, *, terminated: bool = True) -> bytes:
+    suffix = "\n" if terminated else ""
+    return (bundle.model_dump_json() + suffix).encode("utf-8")
 
 
 def test_detector_report_is_strict_and_self_consistent() -> None:
@@ -89,10 +103,10 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
         scored=True,
     )
 
-    assert report.schema_version == "nooa-detector-harness-example-v3"
+    assert report.schema_version == "nooa-detector-harness-example-v4"
     assert report.victim_profile == "identity_approval"
     assert report.scorer_name == "identity-approval-scorer"
-    assert report.findings == ()
+    assert report.declared_finding_count == 0
     assert report.refusal_reason is None
 
     with pytest.raises(ValidationError):
@@ -129,6 +143,24 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
             receipt_bundle_completeness_gate_passed=True,
             scored=True,
         )
+    with pytest.raises(ValidationError, match="finding_bundle_completeness_signals"):
+        DetectorReport(
+            **_report_fields(),
+            finding_bundle_completeness_signals=("truncated", "truncated"),
+            scored=True,
+        )
+    with pytest.raises(ValidationError, match="finding_bundle_completeness_gate_passed"):
+        DetectorReport(
+            **_report_fields(),
+            finding_bundle_completeness_signals=("truncated",),
+            finding_bundle_completeness_gate_passed=True,
+            scored=True,
+        )
+    with pytest.raises(ValidationError, match="requires declared_finding_count"):
+        DetectorReport(
+            **_report_fields(declared_finding_count=None),
+            scored=True,
+        )
     with pytest.raises(ValidationError, match="requires refusal_reason"):
         DetectorReport(**_report_fields(), scored=False)
     with pytest.raises(ValidationError, match="scorer_name must match victim_profile"):
@@ -141,7 +173,7 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
 def test_score_detector_input_emits_identity_finding() -> None:
     detector_input = _scoreable_input()
 
-    report = score_detector_input(detector_input)
+    report, finding_bundle = score_detector_input(detector_input)
 
     assert report.detector_input_id == detector_input.input_id
     assert report.run_id == detector_input.run_id
@@ -155,7 +187,9 @@ def test_score_detector_input_emits_identity_finding() -> None:
     assert report.receipt_coverage == "asserted_complete"
     assert report.receipt_count == 0
     assert report.declared_receipt_count is None
-    assert report.findings[0].evidence_refs == (
+    assert report.declared_finding_count == 1
+    assert finding_bundle.producer == "identity-approval-scorer"
+    assert finding_bundle.findings[0].evidence_refs == (
         detector_input.input_id,
         detector_input.effects[0].id,
     )
@@ -174,8 +208,8 @@ def test_receipt_scope_gated_scorer_turns_off_run_drop_into_refusal() -> None:
     )
     detector_input = _scoreable_input(receipts=(stale_receipt,))
 
-    direct_report = score_detector_input(detector_input)
-    gated_report = score_detector_input(
+    direct_report, direct_bundle = score_detector_input(detector_input)
+    gated_report, gated_bundle = score_detector_input(
         detector_input,
         scorer=receipt_scope_gated_scorer(
             detect_grants_without_approval,
@@ -184,9 +218,11 @@ def test_receipt_scope_gated_scorer_turns_off_run_drop_into_refusal() -> None:
     )
 
     assert direct_report.scored is True
-    assert len(direct_report.findings) == 1
+    assert direct_report.declared_finding_count == 1
+    assert len(direct_bundle.findings) == 1
     assert gated_report.scored is False
-    assert gated_report.findings == ()
+    assert gated_report.declared_finding_count == 0
+    assert gated_bundle.findings == ()
     assert gated_report.refusal_reason is not None
     assert "detector receipt scope gate refused input" in gated_report.refusal_reason
     assert "mismatched_run_id_receipt_ids=('authority-receipt-req-attack',)" in (
@@ -210,7 +246,11 @@ def test_score_fd_keeps_receipt_free_profile_on_direct_scorer_path() -> None:
         declared_receipt_count=1,
         receipts=(stale_receipt,),
     )
-    with TemporaryFile() as effect_fh, TemporaryFile() as receipt_fh:
+    with (
+        TemporaryFile() as effect_fh,
+        TemporaryFile() as receipt_fh,
+        TemporaryFile() as finding_fh,
+    ):
         sink = FdEffectSink(
             effect_fh.fileno(),
             schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
@@ -231,14 +271,18 @@ def test_score_fd_keeps_receipt_free_profile_on_direct_scorer_path() -> None:
         report = score_fd(
             os.dup(effect_fh.fileno()),
             os.dup(receipt_fh.fileno()),
+            os.dup(finding_fh.fileno()),
             profile_name="data_export",
             run_id="data-export-demo/export_vulnerable_attack",
             input_id="detector-input-export_vulnerable_attack",
         )
+        finding_fh.seek(0)
+        finding_bundle = require_complete_finding_bundle(read_finding_bundle(finding_fh))
 
     assert report.scored is True
     assert report.refusal_reason is None
-    assert len(report.findings) == 1
+    assert report.declared_finding_count == 1
+    assert len(finding_bundle.findings) == 1
 
 
 @pytest.mark.parametrize(
@@ -259,10 +303,11 @@ def test_score_detector_input_reports_policy_refusal(
     detector_input: DetectorInput,
     expected_reason: str,
 ) -> None:
-    report = score_detector_input(detector_input)
+    report, finding_bundle = score_detector_input(detector_input)
 
     assert report.scored is False
-    assert report.findings == ()
+    assert report.declared_finding_count == 0
+    assert finding_bundle.findings == ()
     assert report.refusal_reason is not None
     assert expected_reason in report.refusal_reason
 
@@ -297,7 +342,8 @@ def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_
     assert result.detector.receipt_coverage == "asserted_complete"
     assert result.detector.receipt_count == 0
     assert result.detector.declared_receipt_count == 0
-    assert len(result.detector.findings) == 1
+    assert result.detector.declared_finding_count == 1
+    assert len(result.findings) == 1
 
 
 def test_detected_authorized_scenario_uses_authority_receipt_and_emits_no_finding() -> None:
@@ -316,7 +362,8 @@ def test_detected_authorized_scenario_uses_authority_receipt_and_emits_no_findin
     assert result.detector.declared_receipt_count == 1
     assert result.detector.receipt_bundle_completeness_signals == ()
     assert result.detector.receipt_bundle_completeness_gate_passed is True
-    assert result.detector.findings == ()
+    assert result.detector.declared_finding_count == 0
+    assert result.findings == ()
 
 
 def test_detected_authorized_stale_receipt_scope_refuses_before_policy() -> None:
@@ -333,7 +380,8 @@ def test_detected_authorized_stale_receipt_scope_refuses_before_policy() -> None
     assert result.detector.receipt_count == 1
     assert result.detector.declared_receipt_count == 1
     assert result.detector.scored is False
-    assert result.detector.findings == ()
+    assert result.detector.declared_finding_count == 0
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt scope gate refused input" in result.detector.refusal_reason
     assert "mismatched_run_id_receipt_ids=('authority-receipt-req-approved',)" in (
@@ -367,14 +415,61 @@ def test_detected_invalid_finding_scope_refuses_at_supervisor_boundary(
     assert result.authority is not None
     assert result.detector.run_id == "identity-approval-demo/vulnerable_attack"
     assert result.detector.scored is False
-    assert result.detector.findings == ()
+    assert result.detector.declared_finding_count is None
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor finding scope gate refused output" in result.detector.refusal_reason
     assert expected_reason in result.detector.refusal_reason
 
 
-@pytest.mark.parametrize("detector_fault", ["blank_finding_run_id", "stale_finding_run_id"])
-def test_finding_scope_faults_reject_zero_finding_scenarios(detector_fault: str) -> None:
+@pytest.mark.parametrize(
+    ("detector_fault", "expected_signals", "expected_gate", "expected_reason"),
+    [
+        (
+            "truncate_finding_document",
+            ("truncated",),
+            False,
+            "supervisor finding bundle completeness gate refused output",
+        ),
+        (
+            "drop_finding_count_mismatch",
+            (),
+            True,
+            "supervisor finding bundle count gate refused output",
+        ),
+    ],
+)
+def test_detected_finding_bundle_faults_refuse_before_scope(
+    detector_fault: str,
+    expected_signals: tuple[str, ...],
+    expected_gate: bool,
+    expected_reason: str,
+) -> None:
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        detector_fault=detector_fault,  # type: ignore[arg-type]
+    )
+
+    assert result.detector.scored is False
+    assert result.detector.finding_bundle_completeness_signals == expected_signals
+    assert result.detector.finding_bundle_completeness_gate_passed is expected_gate
+    assert result.detector.declared_finding_count is None
+    assert result.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert expected_reason in result.detector.refusal_reason
+    assert "supervisor finding scope gate refused output" not in result.detector.refusal_reason
+
+
+@pytest.mark.parametrize(
+    "detector_fault",
+    [
+        "blank_finding_run_id",
+        "stale_finding_run_id",
+        "truncate_finding_document",
+        "drop_finding_count_mismatch",
+    ],
+)
+def test_detector_finding_faults_reject_zero_finding_scenarios(detector_fault: str) -> None:
     with pytest.raises(RuntimeError, match="requires at least one detector finding"):
         run_detected_scenario(
             "hardened_authorized",
@@ -387,7 +482,6 @@ def test_supervisor_refuses_detector_report_scope_before_finding_scope() -> None
         **_report_fields(),
         run_id="run-stale",
         scored=True,
-        findings=(),
     )
 
     admitted = _admit_detector_report(
@@ -400,7 +494,7 @@ def test_supervisor_refuses_detector_report_scope_before_finding_scope() -> None
 
     assert admitted.run_id == "run-stale"
     assert admitted.scored is False
-    assert admitted.findings == ()
+    assert admitted.declared_finding_count is None
     assert admitted.refusal_reason is not None
     assert "supervisor detector report scope gate refused output" in admitted.refusal_reason
     assert "reported_run_id='run-stale'" in admitted.refusal_reason
@@ -417,12 +511,120 @@ def test_supervisor_refuses_malformed_detector_report_payload() -> None:
 
     assert admitted.run_id == "run-current"
     assert admitted.scored is False
-    assert admitted.findings == ()
+    assert admitted.declared_finding_count is None
     assert admitted.refusal_reason is not None
     assert "supervisor detector report parse admission refused output" in (
         admitted.refusal_reason
     )
     assert "invalid DetectorReport payload" in admitted.refusal_reason
+
+
+def test_supervisor_admits_complete_finding_bundle_after_report_count_check() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+    payload = BytesIO()
+    write_finding_bundle(payload, finding_bundle)
+    payload.seek(0)
+
+    admitted, findings = _admit_finding_bundle(
+        payload,
+        report=report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is True
+    assert admitted.finding_bundle_completeness_signals == ()
+    assert admitted.finding_bundle_completeness_gate_passed is True
+    assert admitted.declared_finding_count == 1
+    assert findings == finding_bundle.findings
+
+
+def test_supervisor_refuses_truncated_finding_document_before_scope() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(_finding_bundle_bytes(finding_bundle, terminated=False)),
+        report=report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.finding_bundle_completeness_signals == ("truncated",)
+    assert admitted.finding_bundle_completeness_gate_passed is False
+    assert admitted.declared_finding_count is None
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding bundle completeness gate refused output" in admitted.refusal_reason
+    assert "truncated=True" in admitted.refusal_reason
+    assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
+
+
+def test_supervisor_refuses_finding_count_mismatch_before_scope() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(_finding_bundle_bytes(FindingBundle(producer=finding_bundle.producer))),
+        report=report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.finding_bundle_completeness_signals == ()
+    assert admitted.finding_bundle_completeness_gate_passed is True
+    assert admitted.declared_finding_count is None
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding bundle count gate refused output" in admitted.refusal_reason
+    assert "declared_finding_count=1" in admitted.refusal_reason
+    assert "finding_count=0" in admitted.refusal_reason
+    assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
+
+
+def test_supervisor_refuses_refused_report_with_finding_rows_after_scope() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+    refused_report = DetectorReport.model_validate(
+        {
+            **report.model_dump(mode="python"),
+            "scored": False,
+            "refusal_reason": "policy refused",
+        }
+    )
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(_finding_bundle_bytes(finding_bundle)),
+        report=refused_report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.finding_bundle_completeness_gate_passed is True
+    assert admitted.declared_finding_count is None
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding bundle coherence gate refused output" in admitted.refusal_reason
+
+
+def test_supervisor_refuses_malformed_finding_bundle_payload() -> None:
+    report, _finding_bundle = score_detector_input(_scoreable_input())
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(b"{\n"),
+        report=report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.finding_bundle_completeness_signals == ()
+    assert admitted.finding_bundle_completeness_gate_passed is False
+    assert admitted.declared_finding_count is None
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding bundle parse admission refused output" in admitted.refusal_reason
+    assert "invalid FindingBundle payload" in admitted.refusal_reason
 
 
 def test_supervisor_admits_victim_summary_and_refuses_visible_scenario_drift() -> None:
@@ -559,7 +761,7 @@ def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:
         "missing_stream_end",
     )
     assert result.detector.effect_egress_completeness_gate_passed is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "effect_egress_completeness_gate_passed=True" in result.detector.refusal_reason
 
@@ -581,7 +783,7 @@ def test_detected_truncated_receipt_bundle_refuses_before_scope_or_policy() -> N
     assert result.detector.receipt_count == 0
     assert result.detector.declared_receipt_count is None
     assert result.detector.scored is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt bundle completeness gate refused input" in (
         result.detector.refusal_reason
@@ -610,7 +812,7 @@ def test_detected_receipt_count_mismatch_refuses_before_scope_or_policy() -> Non
     assert result.detector.receipt_count == 0
     assert result.detector.declared_receipt_count == 1
     assert result.detector.scored is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt bundle completeness gate refused input" in (
         result.detector.refusal_reason
@@ -630,7 +832,7 @@ def test_detected_scenario_refuses_detector_report_over_parse_admission_budget()
 
     assert result.detector_returncode == 0
     assert result.detector.scored is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor detector report parse admission refused output" in (
         result.detector.refusal_reason
@@ -646,9 +848,25 @@ def test_detected_scenario_refuses_malformed_detector_report_payload() -> None:
 
     assert result.detector_returncode == 0
     assert result.detector.scored is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "invalid DetectorReport payload" in result.detector.refusal_reason
+
+
+def test_detected_scenario_refuses_finding_bundle_over_parse_admission_budget() -> None:
+    result = run_detected_scenario("vulnerable_attack", max_finding_bundle_bytes=1)
+
+    assert result.detector_returncode == 0
+    assert result.detector.scored is False
+    assert result.detector.finding_bundle_completeness_signals == ()
+    assert result.detector.finding_bundle_completeness_gate_passed is False
+    assert result.detector.declared_finding_count is None
+    assert result.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "supervisor finding bundle parse admission refused output" in (
+        result.detector.refusal_reason
+    )
+    assert "max_bundle_bytes=1" in result.detector.refusal_reason
 
 
 @pytest.mark.parametrize(
@@ -740,6 +958,8 @@ def test_validate_max_detector_report_bytes_rejects_invalid_values(
 @pytest.mark.parametrize(
     ("validator", "value", "error_type"),
     [
+        (_validate_max_finding_bundle_bytes, 0, ValueError),
+        (_validate_max_finding_bundle_bytes, True, TypeError),
         (_validate_max_victim_summary_bytes, 0, ValueError),
         (_validate_max_victim_summary_bytes, True, TypeError),
         (_validate_max_authority_summary_bytes, -1, ValueError),
@@ -776,7 +996,7 @@ def test_detected_exit_between_frames_refuses_missing_stream_end() -> None:
     assert result.detector.scored is False
     assert result.detector.effect_egress_completeness_signals == ("missing_stream_end",)
     assert result.detector.effect_egress_completeness_gate_passed is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "effect_egress_completeness_gate_passed=True" in result.detector.refusal_reason
 
@@ -792,7 +1012,7 @@ def test_detected_sequence_gap_refuses_orderly_v2_stream() -> None:
     assert result.detector.scored is False
     assert result.detector.effect_egress_completeness_signals == ("first_sequence_error",)
     assert result.detector.effect_egress_completeness_gate_passed is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "identity approval scorer" in result.detector.refusal_reason
 
@@ -814,14 +1034,16 @@ def test_detected_record_count_mismatch_refuses_empty_false_negative() -> None:
     assert result.detector.scored is False
     assert result.detector.effect_egress_completeness_signals == ("record_count_mismatch",)
     assert result.detector.effect_egress_completeness_gate_passed is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "identity approval scorer" in result.detector.refusal_reason
 
     same_effects_without_signal = _scoreable_input(effects=collected.collector.records)
-    would_be_clean_report = score_detector_input(same_effects_without_signal)
+    would_be_clean_report, would_be_clean_bundle = score_detector_input(
+        same_effects_without_signal
+    )
     assert would_be_clean_report.scored is True
-    assert would_be_clean_report.findings == ()
+    assert would_be_clean_bundle.findings == ()
 
 
 def test_detected_scenario_fails_closed_when_authority_exits_before_receipt_document() -> None:
@@ -864,6 +1086,7 @@ def test_detected_scenario_rejects_authority_state_for_receipt_free_profile() ->
                 victim_profile="data_export",
                 scorer_name="data-export-scorer",
                 detector_input_id="detector-input-export",
+                declared_finding_count=0,
                 scored=True,
             ),
             victim_returncode=3,
@@ -893,6 +1116,15 @@ def test_default_detector_report_parse_budget_is_large_enough_for_clean_report()
     report = run_detected_scenario("vulnerable_attack").detector
 
     assert len(report.model_dump_json().encode("utf-8")) < DEFAULT_DETECTOR_REPORT_MAX_BYTES
+
+
+def test_default_finding_bundle_parse_budget_is_large_enough_for_clean_bundle() -> None:
+    _report, finding_bundle = score_detector_input(_scoreable_input())
+
+    assert (
+        len(_finding_bundle_bytes(finding_bundle))
+        < DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES
+    )
 
 
 def test_default_summary_parse_budgets_are_large_enough_for_clean_outputs() -> None:

@@ -15,6 +15,7 @@ flowchart LR
     B --> G
     G --> P["caller-owned scorer"]
     P --> F["SecurityFinding"]
+    F --> FB["FindingBundle<br/>read_finding_bundle()"]
 ```
 
 ## Transport Types
@@ -26,8 +27,9 @@ flowchart LR
 | `ReceiptBundle` | One LF-terminated aggregate receipt document with caller assertions and a writer-declared receipt count. | Producer authentication, collection completeness proof, run-scope validity, or receipt semantics. |
 | `DetectorInput` | Collector-facing effects, public egress diagnostics, receipt copies, and caller assertions passed to detector policy. | Detector logic, verdicts, thresholds, or a trusted boundary. |
 | `SecurityFinding` | Caller-owned finding records with opaque evidence references. | Severity, remediation, enforcement, or proof that evidence is genuine. |
+| `FindingBundle` | One LF-terminated aggregate finding document with a caller-supplied producer label and finding rows. | Verdicts, severity, enforcement, detector coverage, row-producer alignment, or evidence-reference validity. |
 
-All five types are portable shapes. Frozen field bindings do not make nested values tamper-resistant, and equal `run_id` values do not prove trusted provenance.
+All six types are portable shapes. Frozen field bindings do not make nested values tamper-resistant, and equal `run_id` values do not prove trusted provenance.
 
 The checked transport vectors in `tests/security/fixtures/security_transport_conformance_v1.json` pin the current compact UTF-8 JSON bytes for representative `SecurityReceipt`, `SecurityFinding`, and `DetectorInput` instances, then validate those bytes back through the public models. They are regression references for the current `-v1` shapes, not authenticity proofs, total field-space coverage, or policy semantics.
 
@@ -61,6 +63,38 @@ The public receipt-bundle completeness signals are ordered:
 | `receipt_count_mismatch` | `declared_receipt_count` differs from the receipt copies parsed from the document. |
 
 A clean result means only that the reader saw one terminated document with a matching declared count. The writer can still omit receipts before declaring a truthful count, forge a source label, or emit semantically false receipt copies. The bundle gate does not authenticate bytes, prove collection coverage, establish run scope, enforce receipt-id uniqueness, correlate receipts to effects, or make an empty clean bundle evidence that no receipts exist.
+
+## Finding Bundle Contract
+
+`write_finding_bundle()` writes one LF-terminated UTF-8 JSON document. `read_finding_bundle()` parses at most one bounded document line, leaves later bytes unread, and returns `FindingBundleReadResult`; `require_complete_finding_bundle()` turns reader-visible truncation into `FindingBundleIncompleteError` before downstream code consumes finding rows.
+
+Finding-bundle version classification is public from its first version: readers can apply `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN` with `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` to reproduce the malformed-vs-unsupported split in `read_finding_bundle()`. The pattern names well-formed version tokens only; it does not promise support for every matching version.
+
+```mermaid
+flowchart LR
+    F["SecurityFinding rows"] --> W["write_finding_bundle()"]
+    W --> P["finding file or pipe"]
+    P --> D["read_finding_bundle()"]
+    D --> G["FindingBundleReadResult"]
+    G -- "no signals" --> Q["require_complete_finding_bundle()"]
+    Q --> S["scope validation or review"]
+    G -. "truncated" .-> X["caller refusal"]
+```
+
+The bundle reader exposes two local resource budgets:
+
+| Budget | Meaning |
+| --- | --- |
+| `max_bundle_bytes` | Maximum bytes for one LF-terminated finding document, including its terminator. |
+| `max_findings` | Maximum finding rows admitted after bounded document parsing. |
+
+The public finding-bundle completeness signals are ordered:
+
+| Signal | Meaning |
+| --- | --- |
+| `truncated` | EOF arrived before the required LF document terminator. |
+
+A clean result means only that the reader saw one terminated document with the supplied rows. The writer can still omit findings, forge a bundle producer label, emit semantically false rows, or disagree with row-level `SecurityFinding.producer`; `FindingBundle.producer` does not constrain row-level producers. The bundle gate does not authenticate bytes, prove detector coverage, establish run scope, enforce finding-id uniqueness, dereference evidence refs, assign severity or verdict, or make an empty clean bundle evidence that nothing was found.
 
 ## Receipt Scope Validation
 
@@ -105,13 +139,16 @@ flowchart LR
 A clean result means only that none of the supplied finding rows contradicted the requested scope. Directly constructing `FindingScopeValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate finding producers, verify detector coverage, check finding-id uniqueness, dereference evidence refs, inspect application attributes, assign severity or verdict, or prove that an empty bundle is complete.
 
 The `detector_harness.py` example shows one application-owned consumer: after
-the detector subprocess emits a `DetectorReport`, the supervisor admits only a
-bounded report payload to JSON parsing, checks the report `run_id`, and then
-uses `validate_finding_scope()` against the supervisor-selected scope before it
-accepts the detector output as scored. A visible mismatch becomes an
-example-local `scored=False` refusal. The `max_detector_report_bytes` option is a
-parse-admission bound after `subprocess.communicate()` already collected
-stdout; it is not a pre-read memory limit or detector authentication boundary.
+the detector subprocess emits `DetectorReport` metadata and a separate
+`FindingBundle`, the supervisor admits only a bounded report payload to JSON
+parsing, checks the report `run_id`, requires a complete finding document,
+cross-checks `declared_finding_count`, and then uses
+`validate_finding_scope()` against the supervisor-selected scope before it
+accepts rows into `DetectedScenario.findings`. A visible mismatch becomes an
+example-local `scored=False` refusal. The `max_detector_report_bytes` option is
+a parse-admission bound after `subprocess.communicate()` already collected
+stdout; `max_finding_bundle_bytes` bounds the separate document read from the
+supervisor-owned temporary file. Neither is a detector authentication boundary.
 The current harness also admits victim and authority summary payloads through
 example-local bounded parse checks before it builds `DetectedScenario`, and it
 rejects visible victim `scenario` drift against the supervisor-selected
@@ -242,6 +279,16 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `read_receipt_bundle` | Reader author | Parse one bounded receipt bundle document. |
 | `require_complete_receipt_bundle` | Reader author | Fail closed on public receipt-bundle completeness signals. |
 | `receipt_bundle_completeness_signals` | Reader author | Return canonical receipt-bundle diagnostics. |
+| `FindingBundle` | Transport author | Aggregate LF-terminated finding document shape. |
+| `FindingBundleReadResult` | Reader author | Parsed finding bundle plus reader-visible document diagnostics. |
+| `FindingBundleCompletenessSignal` | Reader author | Public finding-bundle completeness-signal type alias. |
+| `FindingBundleInputTooLargeError` | Reader author | Finding-bundle byte or count budget refusal. |
+| `FindingBundleIncompleteError` | Reader author | Parsed finding bundle failed the completeness gate. |
+| `UnsupportedFindingBundleVersionError` | Reader author | Well-formed unsupported finding-bundle version. |
+| `write_finding_bundle` | Writer author | Emit one bounded LF-terminated finding bundle document. |
+| `read_finding_bundle` | Reader author | Parse one bounded finding bundle document. |
+| `require_complete_finding_bundle` | Reader author | Fail closed on public finding-bundle completeness signals. |
+| `finding_bundle_completeness_signals` | Reader author | Return canonical finding-bundle diagnostics. |
 | `ReceiptScopeValidation` | Collector author | Materialized receipt bundle plus visible run-scope diagnostics. |
 | `ReceiptScopeSignal` | Collector author | Public run-scope diagnostic type alias. |
 | `ReceiptScopeError` | Collector author | Fail-closed run-scope refusal. |
@@ -286,6 +333,8 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES` | Conformance implementer | Default whole-stream byte budget. |
 | `DEFAULT_RECEIPT_BUNDLE_MAX_BYTES` | Conformance implementer | Default receipt-bundle byte budget. |
 | `DEFAULT_RECEIPT_BUNDLE_MAX_RECEIPTS` | Conformance implementer | Default receipt-bundle count budget. |
+| `DEFAULT_FINDING_BUNDLE_MAX_BYTES` | Conformance implementer | Default finding-bundle byte budget. |
+| `DEFAULT_FINDING_BUNDLE_MAX_FINDINGS` | Conformance implementer | Default finding-bundle count budget. |
 | `EFFECT_EGRESS_COMPLETENESS_SIGNALS` | Conformance implementer | Canonical completeness-signal order. |
 | `EFFECT_EGRESS_FRAME_KEYS` | Conformance implementer | Record-frame key set. |
 | `EFFECT_EGRESS_RECORD_EVENT_TYPE` | Conformance implementer | Record payload event discriminator. |
@@ -304,6 +353,12 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `RECEIPT_BUNDLE_COMPLETENESS_SIGNALS` | Conformance implementer | Canonical receipt-bundle completeness-signal order. |
 | `RECEIPT_BUNDLE_KEYS` | Conformance implementer | Exact receipt-bundle document key set. |
 | `RECEIPT_BUNDLE_SCHEMA_VERSION` | Conformance implementer | Receipt-bundle schema version token. |
+| `MAX_FINDING_BUNDLE_JSON_INTEGER` | Conformance implementer | Largest portable finding-bundle JSON integer. |
+| `FINDING_BUNDLE_COMPLETENESS_SIGNALS` | Conformance implementer | Canonical finding-bundle completeness-signal order. |
+| `FINDING_BUNDLE_KEYS` | Conformance implementer | Exact finding-bundle document key set. |
+| `FINDING_BUNDLE_SCHEMA_VERSION` | Conformance implementer | Finding-bundle schema version token. |
+| `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN` | Conformance implementer | Future finding-bundle version token pattern. |
+| `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE` | Conformance implementer | Whole-token finding-bundle pattern match rule. |
 | `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
 | `FINDING_SCOPE_SIGNALS` | Conformance implementer | Canonical finding run-scope diagnostic order. |
 <!-- SECURITY_EXPORT_INDEX_END -->
@@ -314,6 +369,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - Same-process event stores, descriptors, subprocesses under one user, and unsandboxed supervisors are not trusted boundaries.
 - V2 stream-end frames distinguish declared completion from stream cessation only. They do not authenticate records, prove omitted effects did not happen, or make count agreement sufficient evidence.
 - Receipt-bundle termination and count agreement distinguish visible transport degradation only. They do not authenticate producers, prove omitted receipts did not happen, or make count agreement sufficient evidence.
+- Finding-bundle termination distinguishes visible transport degradation only. It does not authenticate producers, prove omitted findings did not happen, or make an empty clean bundle evidence that nothing was found.
 - Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
 - Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values in the supplied rows only; NOOA still does not authenticate finding producers, verify detector coverage, or dereference evidence refs.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.

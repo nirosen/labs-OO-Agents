@@ -126,4 +126,4 @@ def test_joint_readme_matrix_reproduces_detector_paths() -> None:
         assert result.victim_profile == row.profile
         assert result.detector.effect_egress_completeness_signals == row.signals
         assert result.detector.scored is row.scored
-        assert len(result.detector.findings) == row.findings
+        assert len(result.findings) == row.findings

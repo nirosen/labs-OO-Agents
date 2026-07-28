@@ -62,6 +62,38 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Finding Bundle Handoff
+
+> Branch: `codex/security-finding-bundle-handoff`
+
+This slice moves detector findings out of the example-local `DetectorReport` JSON and onto a public `FindingBundle` transport. The detector still emits one stdout report, but that report now carries only `declared_finding_count`; the actual `SecurityFinding` rows are written as one bounded LF-terminated bundle through a dedicated inherited descriptor backed by a supervisor-owned temporary file. The supervisor admits both channels, requires a complete bundle, cross-checks the declared count, validates finding run scope against its selected `run_id`, and only then exposes admitted rows on `DetectedScenario.findings`.
+
+```mermaid
+flowchart LR
+    S["supervisor-selected run_id"] --> R["report admission<br/>+ report run_id"]
+    D["detector subprocess"] --> O["DetectorReport stdout<br/>declared_finding_count"]
+    D --> W["write_finding_bundle()<br/>LF-terminated JSON"]
+    O --> R
+    W --> T["supervisor-owned<br/>temporary file"]
+    T --> B["read_finding_bundle()<br/>max_finding_bundle_bytes"]
+    R --> C["count + coherence gates"]
+    B --> C
+    C --> V["validate_finding_scope()"]
+    V -- "accepted" --> A["DetectedScenario.findings"]
+    B -. "invalid / over-bound / truncated" .-> X["scored=False"]
+    C -. "count mismatch / refused report rows" .-> X
+    V -. "missing / stale run_id" .-> X
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `FindingBundle`, `FindingBundleReadResult`, `FindingBundleIncompleteError`, `FindingBundleInputTooLargeError`, `UnsupportedFindingBundleVersionError`, canonical `FINDING_BUNDLE_COMPLETENESS_SIGNALS`, public finding-bundle version pattern constants, bounded `read_finding_bundle()` / `write_finding_bundle()`, `require_complete_finding_bundle()`, example-local report/schema V4 handoff, `truncate_finding_document` / `drop_finding_count_mismatch`, and `max_finding_bundle_bytes` |
+| Security claim | The example supervisor can distinguish one complete LF-terminated finding document from visible truncation, reject count drift between report metadata and finding rows, and refuse off-scope rows before downstream scenario consumers accept them. |
+| Non-claim | A clean `FindingBundle` is not a verdict, severity model, enforcement action, detector-coverage proof, finding-id uniqueness guarantee, or evidence-reference validator. An empty clean bundle is not evidence that nothing was found. The bundle-level `producer` assertion does not constrain row-level `SecurityFinding.producer`, and the same-user temporary-file channel is not an authentication, sandboxing, or privilege boundary. |
+| Base slice | `codex/security-supervisor-output-admission` |
+| Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_findings.py`, `tests/security/test_detector_harness.py`, `tests/security/test_data_export_example.py`, `tests/security/test_joint_readme.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_findings.py tests/security/test_detector_harness.py tests/security/test_data_export_example.py tests/security/test_surface_guide.py tests/security/test_joint_readme.py`; `pytest tests/security`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/findings.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Supervisor Output Admission
 
 > Branch: `codex/security-supervisor-output-admission`
@@ -75,7 +107,7 @@ flowchart LR
     D["detector stdout"] --> DA["detector report admission<br/>max_detector_report_bytes"]
     VA -- "valid + scenario match" --> S["DetectedScenario"]
     AA -- "valid" --> S
-    DA -- "valid + scope clean" --> S
+    DA -- "valid + report scope clean" --> S
     VA -. "over-bound / invalid / scenario drift" .-> X["SupervisorAdmissionError"]
     AA -. "over-bound / invalid" .-> X
     DA -. "over-bound / invalid / scope drift" .-> R["DetectorReport<br/>scored=False"]
@@ -94,14 +126,15 @@ flowchart LR
 
 > Branch: `codex/security-finding-scope-gate`
 
-This slice brings the opt-in finding scope helper onto the current receipt-bundle base and wires its first real consumer at the supervisor side of the detector-report handoff. Before the supervisor accepts a detector subprocess report into `DetectedScenario`, it admits only a bounded report payload to parsing, checks the report `run_id`, then requires every emitted `SecurityFinding` row to carry the supervisor-selected scope. The example `blank_finding_run_id` and `stale_finding_run_id` detector faults now become `scored=False` instead of accepted off-scope finding rows; both fail explicitly if a chosen scenario produces no finding to corrupt.
+This slice brings the opt-in finding scope helper onto the current receipt-bundle base and wires its first real consumer at the supervisor side of the detector handoff. On the current branch, the later Finding Bundle Handoff above moves rows out of `DetectorReport` JSON: the supervisor admits the report metadata, reads the separate `FindingBundle`, then requires every emitted `SecurityFinding` row to carry the supervisor-selected scope. The example `blank_finding_run_id` and `stale_finding_run_id` detector faults now become `scored=False` instead of accepted off-scope finding rows; both fail explicitly if a chosen scenario produces no finding to corrupt.
 
 ```mermaid
 flowchart LR
     S["supervisor-selected run_id"] --> A["report parse admission<br/>max_detector_report_bytes"]
-    D["detector subprocess<br/>DetectorReport JSON"] --> A
+    D["detector subprocess<br/>DetectorReport metadata"] --> A
     A --> R["report run_id check"]
-    R --> V["validate_finding_scope()"]
+    B["FindingBundle rows"] --> V["validate_finding_scope()"]
+    R --> V
     V -- "clean finding scope" --> O["DetectedScenario"]
     R -. "report scope mismatch" .-> X["scored=False"]
     V -. "missing_run_id / run_id_mismatch" .-> X

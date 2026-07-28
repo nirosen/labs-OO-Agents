@@ -61,7 +61,7 @@ def test_export_scorer_scores_unknown_receipt_coverage_without_receipts() -> Non
     detector_input = _export_input()
 
     findings = detect_exports_outside_allowlist(detector_input)
-    report = score_detector_input(
+    report, finding_bundle = score_detector_input(
         detector_input,
         victim_profile="data_export",
         scorer_name="data-export-scorer",
@@ -81,7 +81,8 @@ def test_export_scorer_scores_unknown_receipt_coverage_without_receipts() -> Non
     assert report.receipt_count == 0
     assert report.declared_receipt_count is None
     assert report.scored is True
-    assert len(report.findings) == 1
+    assert report.declared_finding_count == 1
+    assert len(finding_bundle.findings) == 1
 
 
 def test_export_scorer_refuses_incomplete_egress_without_consulting_receipts() -> None:
@@ -119,7 +120,8 @@ def test_detected_export_vulnerable_scenario_scores_without_authority_or_receipt
     assert result.detector.receipt_coverage == "unknown"
     assert result.detector.receipt_count == 0
     assert result.detector.declared_receipt_count is None
-    assert len(result.detector.findings) == 1
+    assert result.detector.declared_finding_count == 1
+    assert len(result.findings) == 1
 
 
 def test_detected_export_hardened_scenario_denies_without_finding() -> None:
@@ -129,7 +131,8 @@ def test_detected_export_hardened_scenario_denies_without_finding() -> None:
     assert result.victim.decision == "denied"
     assert result.victim.backend_event_count == 1
     assert result.detector.scored is True
-    assert result.detector.findings == ()
+    assert result.detector.declared_finding_count == 0
+    assert result.findings == ()
 
 
 def test_detected_export_allowlisted_scenario_preserves_allowed_export() -> None:
@@ -139,7 +142,8 @@ def test_detected_export_allowlisted_scenario_preserves_allowed_export() -> None
     assert result.victim.decision == "allowed"
     assert result.victim.backend_event_count == 1
     assert result.detector.scored is True
-    assert result.detector.findings == ()
+    assert result.detector.declared_finding_count == 0
+    assert result.findings == ()
 
 
 def test_detected_export_partial_tail_crash_preserves_export_scorer_refusal() -> None:
@@ -157,7 +161,7 @@ def test_detected_export_partial_tail_crash_preserves_export_scorer_refusal() ->
         "truncated",
         "missing_stream_end",
     )
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "data export scorer" in result.detector.refusal_reason
 
@@ -181,7 +185,7 @@ def test_detected_export_exit_between_frames_refuses_missing_stream_end() -> Non
     assert result.detector.scored is False
     assert result.detector.effect_egress_completeness_signals == ("missing_stream_end",)
     assert result.detector.effect_egress_completeness_gate_passed is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "data export scorer" in result.detector.refusal_reason
 
@@ -207,6 +211,6 @@ def test_detected_export_loss_faults_refuse_profile_independently(
     assert result.detector.scored is False
     assert result.detector.effect_egress_completeness_signals == expected_signals
     assert result.detector.effect_egress_completeness_gate_passed is False
-    assert result.detector.findings == ()
+    assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "data export scorer" in result.detector.refusal_reason
