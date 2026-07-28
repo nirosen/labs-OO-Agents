@@ -160,7 +160,17 @@ def test_finding_bundle_conformance_fixture_matches_public_contract() -> None:
         and b"\xff" in _vector_payload(vector)
         for vector in fixture["reader_vectors"]
     )
-    assert {"extra_key", "nan_constant", "overflow_float", "invalid_utf8"} <= set(reader_names)
+    assert {
+        "bom_prefix",
+        "outer_whitespace",
+        "non_object",
+        "missing_keys",
+        "extra_key",
+        "nan_constant",
+        "overflow_float",
+        "lone_surrogate",
+        "invalid_utf8",
+    } <= set(reader_names)
     version_vectors = [
         vector for vector in fixture["reader_vectors"] if "schema_version" in vector["expect"]
     ]
