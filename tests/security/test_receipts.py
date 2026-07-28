@@ -16,11 +16,14 @@ from nooa.runtime.middleware import ExecutePythonContext
 from nooa.security import (
     MAX_RECEIPT_BUNDLE_JSON_INTEGER,
     RECEIPT_BUNDLE_COMPLETENESS_SIGNALS,
+    RECEIPT_ID_UNIQUENESS_SIGNALS,
     RECEIPT_SCOPE_SIGNALS,
     ReceiptBundle,
     ReceiptBundleIncompleteError,
     ReceiptBundleInputTooLargeError,
     ReceiptBundleReadResult,
+    ReceiptIdUniquenessError,
+    ReceiptIdUniquenessValidation,
     ReceiptScopeError,
     ReceiptScopeValidation,
     SecurityReceipt,
@@ -28,9 +31,12 @@ from nooa.security import (
     install_effect_recorder,
     read_receipt_bundle,
     receipt_bundle_completeness_signals,
+    receipt_id_uniqueness_signals,
     receipt_scope_signals,
     require_complete_receipt_bundle,
+    require_valid_receipt_id_uniqueness,
     require_valid_receipt_scope,
+    validate_receipt_id_uniqueness,
     validate_receipt_scope,
     write_receipt_bundle,
 )
@@ -397,6 +403,81 @@ def test_receipt_bundle_helpers_reject_invalid_inputs_and_clean_error() -> None:
         ReceiptBundleIncompleteError(clean)
     with pytest.raises(ValueError, match="without a bundle must be truncated"):
         ReceiptBundleReadResult(bundle=None)
+
+
+def test_validate_receipt_id_uniqueness_materializes_once_and_preserves_order() -> None:
+    source = iter(
+        (
+            _receipt(receipt_id="audit-1"),
+            _receipt(receipt_id="audit-2"),
+        )
+    )
+
+    validation = validate_receipt_id_uniqueness(source)
+
+    assert tuple(source) == ()
+    assert [receipt.receipt_id for receipt in validation.receipts] == ["audit-1", "audit-2"]
+    assert validation.duplicate_receipt_ids == ()
+    assert receipt_id_uniqueness_signals(validation) == ()
+    assert require_valid_receipt_id_uniqueness(validation) is validation.receipts
+
+
+def test_validate_receipt_id_uniqueness_reports_duplicates_once_in_first_repeat_order() -> None:
+    validation = validate_receipt_id_uniqueness(
+        (
+            _receipt(receipt_id="audit-a"),
+            _receipt(receipt_id="audit-b"),
+            _receipt(receipt_id="audit-a"),
+            _receipt(receipt_id="audit-a"),
+            _receipt(receipt_id="audit-b"),
+        )
+    )
+
+    assert validation.duplicate_receipt_ids == ("audit-a", "audit-b")
+    assert receipt_id_uniqueness_signals(validation) == ("duplicate_receipt_id",)
+    assert RECEIPT_ID_UNIQUENESS_SIGNALS == ("duplicate_receipt_id",)
+
+
+def test_require_valid_receipt_id_uniqueness_raises_structured_error() -> None:
+    validation = validate_receipt_id_uniqueness(
+        (
+            _receipt(receipt_id="audit-a"),
+            _receipt(receipt_id="audit-a"),
+        )
+    )
+
+    with pytest.raises(ReceiptIdUniquenessError) as exc_info:
+        require_valid_receipt_id_uniqueness(validation)
+
+    error = exc_info.value
+    assert error.reasons == ("duplicate_receipt_id",)
+    assert error.duplicate_receipt_ids == ("audit-a",)
+    assert not isinstance(error, ValueError)
+
+
+def test_empty_receipt_id_uniqueness_passes_without_claiming_coverage() -> None:
+    validation = validate_receipt_id_uniqueness(())
+
+    assert validation.receipts == ()
+    assert receipt_id_uniqueness_signals(validation) == ()
+    assert require_valid_receipt_id_uniqueness(validation) == ()
+
+
+@pytest.mark.parametrize("receipts", ["not-receipts", b"not-receipts", [object()]])
+def test_validate_receipt_id_uniqueness_rejects_non_receipt_inputs(receipts: object) -> None:
+    with pytest.raises(TypeError, match="SecurityReceipt"):
+        validate_receipt_id_uniqueness(receipts)  # type: ignore[arg-type]
+
+
+def test_receipt_id_uniqueness_helpers_reject_non_validation_inputs_and_clean_error() -> None:
+    with pytest.raises(TypeError, match="expected ReceiptIdUniquenessValidation"):
+        receipt_id_uniqueness_signals("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected ReceiptIdUniquenessValidation"):
+        require_valid_receipt_id_uniqueness("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected ReceiptIdUniquenessValidation"):
+        ReceiptIdUniquenessError("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires at least one uniqueness signal"):
+        ReceiptIdUniquenessError(ReceiptIdUniquenessValidation(receipts=()))
 
 
 def test_validate_receipt_scope_materializes_once_and_preserves_order() -> None:

@@ -40,6 +40,7 @@ _AUTHORITY_FAULTS = (
     "none",
     "exit_before_receipt",
     "stale_receipt_run_id",
+    "duplicate_receipt_id",
     "truncate_receipt_document",
     "drop_receipt_count_mismatch",
 )
@@ -48,6 +49,7 @@ AuthorityFault = Literal[
     "none",
     "exit_before_receipt",
     "stale_receipt_run_id",
+    "duplicate_receipt_id",
     "truncate_receipt_document",
     "drop_receipt_count_mismatch",
 ]
@@ -211,12 +213,17 @@ def issue_fd(
 
     receipt_run_id = f"{run_id}/stale" if fault == "stale_receipt_run_id" else run_id
     receipts = _receipts_for_response(request, response, run_id=receipt_run_id)
-    transported_receipts = () if fault == "drop_receipt_count_mismatch" else receipts
+    transported_receipts = _transport_receipts_for_fault(receipts, fault=fault)
+    declared_receipt_count = (
+        len(receipts)
+        if fault == "drop_receipt_count_mismatch"
+        else len(transported_receipts)
+    )
     receipt_bundle = _validate_authority_receipt_bundle(
         ReceiptBundle(
             receipt_source=_AUTHORITY_SOURCE,
             receipt_coverage="asserted_complete",
-            declared_receipt_count=len(receipts),
+            declared_receipt_count=declared_receipt_count,
             receipts=transported_receipts,
         )
     )
@@ -232,6 +239,23 @@ def issue_fd(
         receipt_count=len(receipts),
         receipt_ids=tuple(receipt.receipt_id for receipt in receipts),
     )
+
+
+def _transport_receipts_for_fault(
+    receipts: tuple[SecurityReceipt, ...],
+    *,
+    fault: AuthorityFault,
+) -> tuple[SecurityReceipt, ...]:
+    """Apply one receipt-bundle output fault after authority issuance."""
+    if fault == "drop_receipt_count_mismatch":
+        return ()
+    if fault == "duplicate_receipt_id":
+        if not receipts:
+            raise ValueError(f"{fault} requires at least one authority receipt")
+        first, *remaining = receipts
+        duplicate = SecurityReceipt.model_validate(first.model_dump(mode="python"))
+        return (first, duplicate, *remaining)
+    return receipts
 
 
 def _receipts_for_response(
