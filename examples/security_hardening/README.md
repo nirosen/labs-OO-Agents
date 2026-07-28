@@ -10,6 +10,26 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Finding Identity Validation Follow-On
+
+`codex/security-finding-id-uniqueness` adds the public opt-in `FindingIdentityValidation` helper and wires it into the example supervisor after finding-bundle completeness, count coherence, report coherence, and finding-scope checks. One `duplicate_finding_id` fault duplicates a scored row while keeping `declared_finding_count` coherent, so the supervisor reaches the new intrinsic row-ID gate instead of confusing the case with transport or scope drift.
+
+```mermaid
+flowchart LR
+    B["admitted FindingBundle rows"] --> S["finding scope gate"]
+    S -- "clean" --> I["validate_finding_identity()"]
+    I -- "distinct finding_id values" --> O["DetectedScenario.findings"]
+    I -. "duplicate_finding_id" .-> X["scored=False"]
+```
+
+Run the duplicate-ID fault:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault duplicate_finding_id
+```
+
+A clean identity result means only that no two admitted rows in one `FindingBundle` shared a `finding_id`. It does not authenticate rows, producers, or identifiers; prove that distinct identifiers denote distinct findings, or that a duplicate identifier denotes a dishonest producer rather than a scorer bug; establish uniqueness across bundles, runs, or producers; dereference or correlate identifiers against any external system; prove detector coverage or that omitted findings do not exist; or make the same-user detector subprocess a trust boundary.
+
 ## Receipt Bundle Version Contract Follow-On
 
 `codex/security-receipt-bundle-version-contract` publishes the version-token rule that `read_receipt_bundle()` already uses internally. A compatible reader can now apply `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN` with `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` to distinguish a malformed token from a well-formed but unsupported future receipt-bundle version without reverse-engineering a private regex.

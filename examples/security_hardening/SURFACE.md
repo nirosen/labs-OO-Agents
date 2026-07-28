@@ -124,6 +124,25 @@ A clean result means only that none of the supplied copies contradicted the requ
 
 The `detector_harness.py` example shows one application-owned integration: when an authority receipt pipe is wired, it wraps the identity scorer with the supervisor-selected `run_id` and converts visible scope drift into an example-local refusal before policy runs. That placement does not make receipt scope automatic for `DetectorInput`, and the demo refusal string includes raw run and receipt identifiers that a real deployment may need to redact before crossing a process boundary.
 
+## Finding Identity Validation
+
+`validate_finding_identity()` is an opt-in consumer helper for one narrow problem: keeping one supplied finding iterable free of repeated `finding_id` values before aggregation, storage, or review. It materializes the iterable once, preserves order, and reports each repeated identifier once in first-repeat order. `require_valid_finding_identity()` turns that visible ambiguity into a fail-closed boundary for callers that want one.
+
+```mermaid
+flowchart LR
+    F["SecurityFinding rows"] --> V["validate_finding_identity()"]
+    V --> C["FindingIdentityValidation"]
+    C -- "no signals" --> Q["require_valid_finding_identity()"]
+    Q --> A["aggregation or review"]
+    C -. "duplicate_finding_id" .-> X["caller refusal"]
+```
+
+| Helper fact | Meaning |
+| --- | --- |
+| `duplicate_finding_id` | At least one supplied `finding_id` appeared more than once in the same materialized iterable. |
+
+A clean result means only that the supplied rows carried distinct `finding_id` values within one materialized iterable. Directly constructing `FindingIdentityValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate rows, producers, or identifiers; prove that distinct identifiers denote distinct findings; establish uniqueness across bundles, runs, or producers; dereference or correlate identifiers against any external system; prove detector coverage or that omitted findings do not exist; or make the same-user detector subprocess a trust boundary.
+
 ## Finding Scope Validation
 
 `validate_finding_scope()` is an opt-in consumer helper for one narrow problem: keeping supplied finding rows scoped to one caller-selected `expected_run_id` before aggregation, storage, or review. It materializes the iterable once, preserves order, and reports only blank or mismatched `run_id` values. `require_valid_finding_scope()` turns those visible diagnostics into a fail-closed boundary for callers that want one.
@@ -150,13 +169,14 @@ the detector subprocess emits `DetectorReport` metadata and a separate
 parsing, checks the report `run_id`, requires a complete finding document,
 cross-checks `declared_finding_count`, and then uses
 `validate_finding_scope()` against the supervisor-selected scope before it
-accepts rows into `DetectedScenario.findings`. A visible mismatch becomes an
-example-local `scored=False` refusal; the parsed report keeps its
-detector-declared count as diagnostic metadata while no rows are admitted. The
-`max_detector_report_bytes` option is a parse-admission bound after
-`subprocess.communicate()` already collected stdout; `max_finding_bundle_bytes`
-bounds the separate document read from the supervisor-owned temporary file.
-Neither is a detector authentication boundary.
+checks report coherence, applies `validate_finding_identity()` to the admitted
+rows, and accepts only clean rows into `DetectedScenario.findings`. A visible
+scope mismatch or repeated `finding_id` becomes an example-local `scored=False`
+refusal; the parsed report keeps its detector-declared count as diagnostic
+metadata while no rows are admitted. The `max_detector_report_bytes` option is
+a parse-admission bound after `subprocess.communicate()` already collected
+stdout; `max_finding_bundle_bytes` bounds the separate document read from the
+supervisor-owned temporary file. Neither is a detector authentication boundary.
 The current harness also admits victim and authority summary payloads through
 example-local bounded parse checks before it builds `DetectedScenario`, and it
 rejects visible victim `scenario` drift against the supervisor-selected
@@ -302,6 +322,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `ReceiptScopeError` | Collector author | Fail-closed run-scope refusal. |
 | `DetectorInput` | Detector author | Detector-facing evidence bundle. |
 | `SecurityFinding` | Detector author | Caller-owned finding shape. |
+| `FindingIdentityValidation` | Finding consumer | Materialized finding iterable plus visible repeated-ID diagnostics. |
+| `FindingIdentitySignal` | Finding consumer | Public repeated-ID diagnostic type alias. |
+| `FindingIdentityError` | Finding consumer | Fail-closed repeated-ID refusal. |
 | `FindingScopeValidation` | Finding consumer | Materialized finding iterable plus visible run-scope diagnostics. |
 | `FindingScopeSignal` | Finding consumer | Public run-scope diagnostic type alias. |
 | `FindingScopeError` | Finding consumer | Fail-closed run-scope refusal. |
@@ -335,6 +358,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `validate_finding_scope` | Finding consumer | Materialize one finding iterable and diagnose visible run-scope drift. |
 | `require_valid_finding_scope` | Finding consumer | Fail closed on public finding run-scope signals. |
 | `finding_scope_signals` | Finding consumer | Return canonical finding run-scope diagnostics. |
+| `validate_finding_identity` | Finding consumer | Materialize one finding iterable and diagnose repeated IDs. |
+| `require_valid_finding_identity` | Finding consumer | Fail closed on public finding-ID diagnostics. |
+| `finding_identity_signals` | Finding consumer | Return canonical finding-ID diagnostics. |
 | `detector_input_from_egress` | Detector author | Build one detector handoff bundle from parsed egress. |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | Conformance implementer | Default per-frame byte budget. |
 | `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` | Conformance implementer | Default retained-record budget. |
@@ -369,6 +395,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `FINDING_BUNDLE_SCHEMA_VERSION` | Conformance implementer | Finding-bundle schema version token. |
 | `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN` | Conformance implementer | Future finding-bundle version token pattern. |
 | `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE` | Conformance implementer | Whole-token finding-bundle pattern match rule. |
+| `FINDING_IDENTITY_SIGNALS` | Conformance implementer | Canonical finding-ID diagnostic order. |
 | `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
 | `FINDING_SCOPE_SIGNALS` | Conformance implementer | Canonical finding run-scope diagnostic order. |
 <!-- SECURITY_EXPORT_INDEX_END -->
@@ -381,7 +408,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - Receipt-bundle termination and count agreement distinguish visible transport degradation only. They do not authenticate producers, prove omitted receipts did not happen, or make count agreement sufficient evidence.
 - Finding-bundle termination distinguishes visible transport degradation only. It does not authenticate producers, prove omitted findings did not happen, or make an empty clean bundle evidence that nothing was found.
 - Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
-- Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values in the supplied rows only; NOOA still does not authenticate finding producers, verify detector coverage, or dereference evidence refs.
+- Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values, and `validate_finding_identity()` can reject repeated `finding_id` values within one supplied iterable only; NOOA still does not authenticate finding producers, verify detector coverage, establish uniqueness across bundles, or dereference evidence refs.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.
 - Collector byte and record budgets are resource backstops, not authenticity or authorization guarantees.
 - Framework guard-shaped records are labels for mapped outcomes, not proof of exception origin or vulnerability.

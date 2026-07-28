@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Finding Identity Validation
+
+> Branch: `codex/security-finding-id-uniqueness`
+
+This slice adds one opt-in public helper for an intrinsic property of supplied finding rows: whether one materialized iterable reuses a `finding_id`. The example supervisor now runs that gate after it has admitted a complete, count-coherent, scope-clean finding bundle and before it exposes rows on `DetectedScenario.findings`. The new `duplicate_finding_id` fault keeps `declared_finding_count` coherent at `2`, so the refusal proves the identity gate is independent of bundle completeness, count, and run-scope diagnostics.
+
+```mermaid
+flowchart LR
+    B["admitted FindingBundle rows"] --> S["validate_finding_scope()"]
+    S -- "scope clean" --> I["validate_finding_identity()"]
+    I -- "distinct finding_id values" --> A["DetectedScenario.findings"]
+    I -. "duplicate_finding_id" .-> X["scored=False"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `FindingIdentityValidation`, `FindingIdentitySignal`, `FindingIdentityError`, canonical `FINDING_IDENTITY_SIGNALS`, `validate_finding_identity()`, `require_valid_finding_identity()`, `finding_identity_signals()`, example-local `duplicate_finding_id` fault, and supervisor-side refusal after existing bundle and scope gates |
+| Security claim | Applications can opt into a fail-closed check that one supplied finding iterable does not reuse a `finding_id`, and the example supervisor refuses a duplicate-ID bundle before downstream scenario consumers accept rows. |
+| Non-claim | A clean identity result means only that no two admitted rows in one `FindingBundle` shared a `finding_id`. It does not authenticate rows, producers, or identifiers; prove that distinct identifiers denote distinct findings, or that a duplicate identifier denotes a dishonest producer rather than a scorer bug; establish uniqueness across bundles, runs, or producers; dereference or correlate identifiers against any external system; prove detector coverage or that omitted findings do not exist; or make the same-user detector subprocess a trust boundary. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v9` |
+| Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_findings.py`, `tests/security/test_detector_harness.py`, `tests/security/test_surface_guide.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_findings.py tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/findings.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Receipt Bundle Version Contract
 
 > Branch: `codex/security-receipt-bundle-version-contract`
