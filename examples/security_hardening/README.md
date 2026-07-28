@@ -225,6 +225,7 @@ flowchart LR
     G -. "receipt run_id mismatch" .-> X
     RA -. "over-bound / invalid / report run_id mismatch" .-> X
     FG -. "blank / mismatched finding run_id" .-> X
+    X --> O
     VA -. "over-bound / invalid / scenario drift" .-> Y["SupervisorAdmissionError"]
     AA -. "over-bound / invalid" .-> Y
 ```
