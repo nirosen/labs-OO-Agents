@@ -1,0 +1,312 @@
+{
+  "schema_version": "nooa-finding-bundle-conformance-v1",
+  "wire_schema_version": "nooa-finding-bundle-v1",
+  "wire_schema_version_pattern": "nooa-finding-bundle-v[1-9][0-9]*",
+  "wire_schema_version_pattern_match_mode": "full",
+  "bundle_keys": [
+    "schema_version",
+    "producer",
+    "findings"
+  ],
+  "finding_keys": [
+    "schema_version",
+    "finding_id",
+    "finding_type",
+    "producer",
+    "run_id",
+    "target",
+    "evidence_refs",
+    "attributes"
+  ],
+  "completeness_signals": [
+    "truncated"
+  ],
+  "max_json_integer": 9007199254740991,
+  "default_max_bundle_bytes": 1048576,
+  "default_max_findings": 1048576,
+  "max_bundle_bytes_includes_terminating_lf": true,
+  "findings": {
+    "finding_a": {
+      "schema_version": "nooa-finding-v1",
+      "finding_id": "finding-a",
+      "finding_type": "authorization.missing_receipt",
+      "producer": "identity-scorer",
+      "run_id": "assessment-1",
+      "target": "contractor@prod-db",
+      "evidence_refs": [
+        "detector-input-1",
+        "effect-1"
+      ],
+      "attributes": {
+        "rule": "require_approval_token",
+        "matched": true
+      }
+    },
+    "finding_payload_encoding": {
+      "schema_version": "nooa-finding-v1",
+      "finding_id": "finding-encoding",
+      "finding_type": "export.caf\u00e9-\u6f22",
+      "producer": "detector-caf\u00e9-\u6f22",
+      "run_id": "assessment-encoding",
+      "target": "s3://caf\u00e9-\u6f22",
+      "evidence_refs": [
+        "input-caf\u00e9-\u6f22",
+        "effect-caf\u00e9-\u6f22"
+      ],
+      "attributes": {
+        "ratio": 0.1,
+        "big": 9007199254740991,
+        "nested": {
+          "label": "caf\u00e9-\u6f22"
+        }
+      }
+    }
+  },
+  "writer_vectors": [
+    {
+      "name": "empty_bundle",
+      "bundle_kwargs": {
+        "producer": ""
+      },
+      "finding_refs": [],
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "single_finding",
+      "bundle_kwargs": {
+        "producer": "identity-scorer"
+      },
+      "finding_refs": [
+        "finding_a"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"identity-scorer\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-a\",\"finding_type\":\"authorization.missing_receipt\",\"producer\":\"identity-scorer\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"evidence_refs\":[\"detector-input-1\",\"effect-1\"],\"attributes\":{\"rule\":\"require_approval_token\",\"matched\":true}}]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "payload_encoding",
+      "bundle_kwargs": {
+        "producer": "detector-caf\u00e9-\u6f22"
+      },
+      "finding_refs": [
+        "finding_payload_encoding"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"detector-caf\u00e9-\u6f22\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-encoding\",\"finding_type\":\"export.caf\u00e9-\u6f22\",\"producer\":\"detector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"evidence_refs\":[\"input-caf\u00e9-\u6f22\",\"effect-caf\u00e9-\u6f22\"],\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "multi_finding",
+      "bundle_kwargs": {
+        "producer": "mixed-detector"
+      },
+      "finding_refs": [
+        "finding_a",
+        "finding_payload_encoding"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"mixed-detector\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-a\",\"finding_type\":\"authorization.missing_receipt\",\"producer\":\"identity-scorer\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"evidence_refs\":[\"detector-input-1\",\"effect-1\"],\"attributes\":{\"rule\":\"require_approval_token\",\"matched\":true}},{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-encoding\",\"finding_type\":\"export.caf\u00e9-\u6f22\",\"producer\":\"detector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"evidence_refs\":[\"input-caf\u00e9-\u6f22\",\"effect-caf\u00e9-\u6f22\"],\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    }
+  ],
+  "reader_vectors": [
+    {
+      "name": "internal_json_whitespace",
+      "bundle_kwargs": {
+        "producer": ""
+      },
+      "finding_refs": [],
+      "payload_utf8": "{\"schema_version\" : \"nooa-finding-bundle-v1\" , \"producer\" : \"\" , \"findings\" : []}\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "exact_document_byte_budget",
+      "max_bundle_bytes": 72,
+      "bundle_kwargs": {
+        "producer": ""
+      },
+      "finding_refs": [],
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "later_document_unread",
+      "bundle_kwargs": {
+        "producer": ""
+      },
+      "finding_refs": [],
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[]}\n{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"identity-scorer\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-a\",\"finding_type\":\"authorization.missing_receipt\",\"producer\":\"identity-scorer\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"evidence_refs\":[\"detector-input-1\",\"effect-1\"],\"attributes\":{\"rule\":\"require_approval_token\",\"matched\":true}}]}\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": [],
+        "remaining_payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"identity-scorer\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-a\",\"finding_type\":\"authorization.missing_receipt\",\"producer\":\"identity-scorer\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"evidence_refs\":[\"detector-input-1\",\"effect-1\"],\"attributes\":{\"rule\":\"require_approval_token\",\"matched\":true}}]}\n"
+      }
+    },
+    {
+      "name": "one_byte_under_document_budget",
+      "max_bundle_bytes": 71,
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "input_too_large_error",
+        "limit_name": "max_bundle_bytes",
+        "limit_value": 71
+      }
+    },
+    {
+      "name": "finding_count_budget",
+      "max_findings": 1,
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"mixed-detector\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-a\",\"finding_type\":\"authorization.missing_receipt\",\"producer\":\"identity-scorer\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"evidence_refs\":[\"detector-input-1\",\"effect-1\"],\"attributes\":{\"rule\":\"require_approval_token\",\"matched\":true}},{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-encoding\",\"finding_type\":\"export.caf\u00e9-\u6f22\",\"producer\":\"detector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"evidence_refs\":[\"input-caf\u00e9-\u6f22\",\"effect-caf\u00e9-\u6f22\"],\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "outcome": "input_too_large_error",
+        "limit_name": "max_findings",
+        "limit_value": 1
+      }
+    },
+    {
+      "name": "exact_finding_count_budget",
+      "max_findings": 2,
+      "bundle_kwargs": {
+        "producer": "mixed-detector"
+      },
+      "finding_refs": [
+        "finding_a",
+        "finding_payload_encoding"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"mixed-detector\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-a\",\"finding_type\":\"authorization.missing_receipt\",\"producer\":\"identity-scorer\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"evidence_refs\":[\"detector-input-1\",\"effect-1\"],\"attributes\":{\"rule\":\"require_approval_token\",\"matched\":true}},{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"finding-encoding\",\"finding_type\":\"export.caf\u00e9-\u6f22\",\"producer\":\"detector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"evidence_refs\":[\"input-caf\u00e9-\u6f22\",\"effect-caf\u00e9-\u6f22\"],\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "truncated_document",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[]}",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": false,
+        "truncated": true,
+        "completeness_signals": [
+          "truncated"
+        ]
+      }
+    },
+    {
+      "name": "empty_stream",
+      "payload_utf8": "",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": false,
+        "truncated": true,
+        "completeness_signals": [
+          "truncated"
+        ]
+      }
+    },
+    {
+      "name": "invalid_finding_id",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"\",\"finding_type\":\"t\",\"producer\":\"p\",\"run_id\":\"\",\"target\":\"\",\"evidence_refs\":[],\"attributes\":{}}]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "extra_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[],\"extra\":\"not-allowed\"}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "duplicate_key",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"a\",\"producer\":\"b\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "nan_constant",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"f\",\"finding_type\":\"t\",\"producer\":\"p\",\"run_id\":\"\",\"target\":\"\",\"evidence_refs\":[],\"attributes\":{\"score\":NaN}}]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "overflow_float",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"f\",\"finding_type\":\"t\",\"producer\":\"p\",\"run_id\":\"\",\"target\":\"\",\"evidence_refs\":[],\"attributes\":{\"score\":1e999}}]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "unsafe_int",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"f\",\"finding_type\":\"t\",\"producer\":\"p\",\"run_id\":\"\",\"target\":\"\",\"evidence_refs\":[],\"attributes\":{\"score\":9007199254740992}}]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "invalid_utf8",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6Im5vb2EtZmluZGluZy1idW5kbGUtdjEiLCJwcm9kdWNlciI6Iv8iLCJmaW5kaW5ncyI6W119Cg==",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "future_version",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v2\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "unsupported_version_error",
+        "schema_version": "nooa-finding-bundle-v2"
+      }
+    },
+    {
+      "name": "future_version_double_digit",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v10\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "unsupported_version_error",
+        "schema_version": "nooa-finding-bundle-v10"
+      }
+    },
+    {
+      "name": "zero_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v0\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "prerelease_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v2-beta\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "prefixed_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":\"xnooa-finding-bundle-v2\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    }
+  ]
+}
