@@ -34,6 +34,12 @@ FINDING_ID_UNIQUENESS_SIGNALS: tuple[FindingIdUniquenessSignal, ...] = (
     "duplicate_finding_id",
 )
 
+FindingEvidenceRefSignal = Literal["unknown_evidence_ref"]
+# Tuple order is public because FindingEvidenceRefError.reasons preserves it.
+FINDING_EVIDENCE_REF_SIGNALS: tuple[FindingEvidenceRefSignal, ...] = (
+    "unknown_evidence_ref",
+)
+
 FindingScopeSignal = Literal["missing_run_id", "run_id_mismatch"]
 # Tuple order is public because FindingScopeError.reasons preserves it.
 FINDING_SCOPE_SIGNALS: tuple[FindingScopeSignal, ...] = (
@@ -444,6 +450,173 @@ def require_valid_finding_id_uniqueness(
         )
     if finding_id_uniqueness_signals(validation):
         raise FindingIdUniquenessError(validation)
+    return validation.findings
+
+
+@dataclass(frozen=True)
+class FindingEvidenceRefValidation:
+    """Evidence-reference membership diagnostics for one finding iterable.
+
+    This result preserves the input order in ``findings`` and reports only
+    evidence references not present in one caller-supplied
+    ``allowed_evidence_ids`` iterable. It does not authenticate findings,
+    evidence identifiers, or the allowed set; dereference identifiers against
+    any external system; prove that present references support a finding;
+    require that a finding cite any evidence at all; or prove detector
+    coverage.
+
+    ``allowed_evidence_ids`` is stored in first-seen unique order after exact
+    string comparison. Case, whitespace, and Unicode normalization remain
+    caller policy. A clean empty result means only that no supplied finding
+    referenced an ID outside the supplied set.
+
+    Direct construction only asserts these diagnostic fields; it does not
+    perform the check that :func:`validate_finding_evidence_ref_membership`
+    performs.
+    """
+
+    findings: tuple[SecurityFinding, ...]
+    allowed_evidence_ids: tuple[str, ...]
+    unknown_evidence_refs: tuple[str, ...] = ()
+    unknown_evidence_ref_finding_ids: tuple[str, ...] = ()
+
+
+class FindingEvidenceRefError(RuntimeError):
+    """Raised when supplied findings reference IDs outside one supplied set.
+
+    This error reports only diagnostics visible in a
+    :class:`FindingEvidenceRefValidation`. It does not establish finding or
+    evidence authenticity, detector coverage, or semantic correctness.
+    """
+
+    def __init__(self, validation: FindingEvidenceRefValidation) -> None:
+        if not isinstance(validation, FindingEvidenceRefValidation):
+            raise TypeError(
+                "FindingEvidenceRefError expected FindingEvidenceRefValidation, "
+                f"got {type(validation).__name__}"
+            )
+        reasons = finding_evidence_ref_signals(validation)
+        if not reasons:
+            raise ValueError(
+                "FindingEvidenceRefError requires at least one evidence-ref signal"
+            )
+        self.unknown_evidence_refs = validation.unknown_evidence_refs
+        self.unknown_evidence_ref_finding_ids = validation.unknown_evidence_ref_finding_ids
+        self.allowed_evidence_id_count = len(validation.allowed_evidence_ids)
+        self.reasons = reasons
+        super().__init__(
+            "finding rows reference evidence IDs outside the allowed set: "
+            f"unknown_evidence_refs={validation.unknown_evidence_refs!r}, "
+            "unknown_evidence_ref_finding_ids="
+            f"{validation.unknown_evidence_ref_finding_ids!r}, "
+            f"allowed_evidence_id_count={self.allowed_evidence_id_count!r}"
+        )
+
+
+def finding_evidence_ref_signals(
+    validation: FindingEvidenceRefValidation,
+) -> tuple[FindingEvidenceRefSignal, ...]:
+    """Return canonical evidence-reference diagnostics for one finding iterable."""
+    if not isinstance(validation, FindingEvidenceRefValidation):
+        raise TypeError(
+            "finding_evidence_ref_signals expected FindingEvidenceRefValidation, "
+            f"got {type(validation).__name__}"
+        )
+    signals: list[FindingEvidenceRefSignal] = []
+    if validation.unknown_evidence_refs:
+        signals.append("unknown_evidence_ref")
+    return tuple(signals)
+
+
+def validate_finding_evidence_ref_membership(
+    findings: Iterable[SecurityFinding],
+    *,
+    allowed_evidence_ids: Iterable[str],
+) -> FindingEvidenceRefValidation:
+    """Materialize findings and report references outside one supplied ID set.
+
+    ``findings`` and ``allowed_evidence_ids`` are each consumed once. Findings
+    preserve input order; allowed IDs are stored in first-seen unique order and
+    compared exactly as supplied. The tuple returned by
+    :func:`require_valid_finding_evidence_ref_membership` is the materialized
+    finding tuple when no evidence-reference signal is present.
+
+    The helper checks only whether each supplied ``evidence_ref`` is present in
+    one caller-supplied allowed-ID iterable. It does not authenticate findings,
+    producers, identifiers, or the allowed set; dereference identifiers;
+    establish that present references support the finding; require evidence to
+    exist; or prove detector coverage.
+    """
+    if isinstance(findings, (str, bytes, bytearray)) or not isinstance(findings, Iterable):
+        raise TypeError(
+            "validate_finding_evidence_ref_membership expected iterable of "
+            f"SecurityFinding, got {type(findings).__name__}"
+        )
+    if isinstance(allowed_evidence_ids, (str, bytes, bytearray)) or not isinstance(
+        allowed_evidence_ids, Iterable
+    ):
+        raise TypeError(
+            "validate_finding_evidence_ref_membership expected iterable of str "
+            f"allowed_evidence_ids, got {type(allowed_evidence_ids).__name__}"
+        )
+
+    materialized = tuple(findings)
+    for index, finding in enumerate(materialized):
+        if not isinstance(finding, SecurityFinding):
+            raise TypeError(
+                "validate_finding_evidence_ref_membership expected SecurityFinding at "
+                f"index {index}, got {type(finding).__name__}"
+            )
+
+    allowed_ids = tuple(allowed_evidence_ids)
+    for index, evidence_id in enumerate(allowed_ids):
+        if not isinstance(evidence_id, str):
+            raise TypeError(
+                "validate_finding_evidence_ref_membership expected str "
+                f"allowed_evidence_ids at index {index}, got {type(evidence_id).__name__}"
+            )
+        if not evidence_id:
+            raise ValueError(
+                "validate_finding_evidence_ref_membership requires non-empty "
+                f"allowed_evidence_ids at index {index}"
+            )
+
+    canonical_allowed_ids = tuple(dict.fromkeys(allowed_ids))
+    allowed_id_set = set(canonical_allowed_ids)
+    unknown_refs: list[str] = []
+    reported_unknown_refs: set[str] = set()
+    unknown_ref_finding_ids: list[str] = []
+    for finding in materialized:
+        finding_has_unknown_ref = False
+        for evidence_ref in finding.evidence_refs:
+            if evidence_ref in allowed_id_set:
+                continue
+            finding_has_unknown_ref = True
+            if evidence_ref not in reported_unknown_refs:
+                unknown_refs.append(evidence_ref)
+                reported_unknown_refs.add(evidence_ref)
+        if finding_has_unknown_ref:
+            unknown_ref_finding_ids.append(finding.finding_id)
+
+    return FindingEvidenceRefValidation(
+        findings=materialized,
+        allowed_evidence_ids=canonical_allowed_ids,
+        unknown_evidence_refs=tuple(unknown_refs),
+        unknown_evidence_ref_finding_ids=tuple(unknown_ref_finding_ids),
+    )
+
+
+def require_valid_finding_evidence_ref_membership(
+    validation: FindingEvidenceRefValidation,
+) -> tuple[SecurityFinding, ...]:
+    """Return supplied findings or fail closed on references outside one ID set."""
+    if not isinstance(validation, FindingEvidenceRefValidation):
+        raise TypeError(
+            "require_valid_finding_evidence_ref_membership expected "
+            f"FindingEvidenceRefValidation, got {type(validation).__name__}"
+        )
+    if finding_evidence_ref_signals(validation):
+        raise FindingEvidenceRefError(validation)
     return validation.findings
 
 

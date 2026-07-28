@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Finding Evidence-Ref Membership
+
+> Branch: `codex/security-finding-evidence-ref-membership`
+
+This slice adds one opt-in public helper for a narrow scorer-conformance question: whether each supplied `SecurityFinding.evidence_refs` value appears in one caller-supplied `allowed_evidence_ids` iterable. The example harness wraps each profile scorer inside the detector process, builds that allowed set from the current `DetectorInput.input_id`, effect IDs, and receipt IDs, and refuses scorer output that invents a reference before it emits the finding bundle.
+
+```mermaid
+flowchart LR
+    D["DetectorInput IDs"] --> V["validate_finding_evidence_ref_membership()"]
+    F["scorer SecurityFinding rows"] --> V
+    V -- "all refs in supplied set" --> B["FindingBundle"]
+    V -. "unknown_evidence_ref" .-> X["detector-side refusal"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `FindingEvidenceRefValidation`, `FindingEvidenceRefSignal`, `FindingEvidenceRefError`, canonical `FINDING_EVIDENCE_REF_SIGNALS`, `validate_finding_evidence_ref_membership()`, `require_valid_finding_evidence_ref_membership()`, `finding_evidence_ref_signals()`, and example-local `evidence_ref_membership_gated_scorer()` |
+| Security claim | Applications can opt into an exact membership check that supplied finding references stay within one caller-supplied ID set, and the example detector refuses a scorer that cites an ID outside the current `DetectorInput` before bundle emission. |
+| Non-claim | This does not authenticate findings, scorers, evidence IDs, or the allowed set; dereference evidence; prove that present references support a finding; require any evidence ref to exist; prove detector coverage; enforce a supervisor-selected required ref; normalize case, whitespace, or Unicode; or survive a hostile detector process that bypasses the wrapper. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v11` |
+| Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_findings.py`, `tests/security/test_detector_harness.py`, `tests/security/test_surface_guide.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_findings.py tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/findings.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Finding Admission Diagnostics
 
 > Branch: `codex/security-finding-admission-diagnostics`

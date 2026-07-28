@@ -143,6 +143,28 @@ flowchart LR
 
 A clean result means only that the supplied rows carried distinct `finding_id` values within one materialized iterable. Directly constructing `FindingIdUniquenessValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate rows, producers, or identifiers; prove that distinct identifiers denote distinct findings; establish uniqueness across bundles, runs, or producers; dereference or correlate identifiers against any external system; prove detector coverage or that omitted findings do not exist; or make the same-user detector subprocess a trust boundary.
 
+## Finding Evidence-Ref Membership
+
+`validate_finding_evidence_ref_membership()` is an opt-in consumer helper for one narrow problem: keeping supplied finding rows from citing evidence IDs outside one caller-supplied `allowed_evidence_ids` iterable. It materializes both iterables once, preserves finding order, stores allowed IDs in first-seen unique order, compares exact strings without normalization, and reports unknown references plus the finding IDs that carried them. `require_valid_finding_evidence_ref_membership()` turns that visible mismatch into a fail-closed boundary for callers that want one.
+
+```mermaid
+flowchart LR
+    F["SecurityFinding rows"] --> V["validate_finding_evidence_ref_membership()"]
+    A["allowed_evidence_ids"] --> V
+    V --> C["FindingEvidenceRefValidation"]
+    C -- "no signals" --> Q["require_valid_finding_evidence_ref_membership()"]
+    Q --> D["aggregation or review"]
+    C -. "unknown_evidence_ref" .-> X["caller refusal"]
+```
+
+| Helper fact | Meaning |
+| --- | --- |
+| `unknown_evidence_ref` | At least one supplied finding cited an evidence ref absent from the supplied allowed-ID set. |
+
+A clean result means only that every supplied non-empty `evidence_ref` matched one exact string in the supplied allowed-ID set. Directly constructing `FindingEvidenceRefValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate findings, producers, identifiers, or the allowed set; dereference identifiers against any external system; prove that present references support a finding; require findings to cite evidence; prove detector coverage; establish cross-bundle meaning; normalize strings; or make the same-user detector subprocess a trust boundary.
+
+The `detector_harness.py` example shows one application-owned integration: each profile scorer is wrapped inside the detector process with `evidence_ref_membership_gated_scorer()`, which derives its allowed set from the current `DetectorInput.input_id`, effect IDs, and receipt IDs before the finding bundle is written. That placement checks scorer conformance only. A hostile detector can bypass the wrapper, and the supervisor does not yet retain the full evidence-ID set needed to repeat the same membership check independently. A different future supervisor-side required-ref gate could ask whether every admitted finding cites the supervisor-selected `input_id`; that is not the same question as membership and is intentionally out of scope here.
+
 ## Finding Scope Validation
 
 `validate_finding_scope()` is an opt-in consumer helper for one narrow problem: keeping supplied finding rows scoped to one caller-selected `expected_run_id` before aggregation, storage, or review. It materializes the iterable once, preserves order, and reports only blank or mismatched `run_id` values. `require_valid_finding_scope()` turns those visible diagnostics into a fail-closed boundary for callers that want one.
@@ -327,6 +349,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `FindingIdUniquenessValidation` | Finding consumer | Materialized finding iterable plus visible repeated-ID diagnostics. |
 | `FindingIdUniquenessSignal` | Finding consumer | Public repeated-ID diagnostic type alias. |
 | `FindingIdUniquenessError` | Finding consumer | Fail-closed repeated-ID refusal. |
+| `FindingEvidenceRefValidation` | Finding consumer | Materialized finding iterable plus visible evidence-ref membership diagnostics. |
+| `FindingEvidenceRefSignal` | Finding consumer | Public evidence-ref membership diagnostic type alias. |
+| `FindingEvidenceRefError` | Finding consumer | Fail-closed evidence-ref membership refusal. |
 | `FindingScopeValidation` | Finding consumer | Materialized finding iterable plus visible run-scope diagnostics. |
 | `FindingScopeSignal` | Finding consumer | Public run-scope diagnostic type alias. |
 | `FindingScopeError` | Finding consumer | Fail-closed run-scope refusal. |
@@ -363,6 +388,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `validate_finding_id_uniqueness` | Finding consumer | Materialize one finding iterable and diagnose repeated IDs. |
 | `require_valid_finding_id_uniqueness` | Finding consumer | Fail closed on public finding-ID diagnostics. |
 | `finding_id_uniqueness_signals` | Finding consumer | Return canonical finding-ID diagnostics. |
+| `validate_finding_evidence_ref_membership` | Finding consumer | Materialize one finding iterable and diagnose refs outside one supplied ID set. |
+| `require_valid_finding_evidence_ref_membership` | Finding consumer | Fail closed on public finding evidence-ref diagnostics. |
+| `finding_evidence_ref_signals` | Finding consumer | Return canonical finding evidence-ref diagnostics. |
 | `detector_input_from_egress` | Detector author | Build one detector handoff bundle from parsed egress. |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | Conformance implementer | Default per-frame byte budget. |
 | `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` | Conformance implementer | Default retained-record budget. |
@@ -397,6 +425,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `FINDING_BUNDLE_SCHEMA_VERSION` | Conformance implementer | Finding-bundle schema version token. |
 | `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN` | Conformance implementer | Future finding-bundle version token pattern. |
 | `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE` | Conformance implementer | Whole-token finding-bundle pattern match rule. |
+| `FINDING_EVIDENCE_REF_SIGNALS` | Conformance implementer | Canonical finding evidence-ref diagnostic order. |
 | `FINDING_ID_UNIQUENESS_SIGNALS` | Conformance implementer | Canonical finding-ID diagnostic order. |
 | `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
 | `FINDING_SCOPE_SIGNALS` | Conformance implementer | Canonical finding run-scope diagnostic order. |
@@ -410,7 +439,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - Receipt-bundle termination and count agreement distinguish visible transport degradation only. They do not authenticate producers, prove omitted receipts did not happen, or make count agreement sufficient evidence.
 - Finding-bundle termination distinguishes visible transport degradation only. It does not authenticate producers, prove omitted findings did not happen, or make an empty clean bundle evidence that nothing was found.
 - Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
-- Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values, and `validate_finding_id_uniqueness()` can reject repeated `finding_id` values within one supplied iterable only; NOOA still does not authenticate finding producers, verify detector coverage, establish uniqueness across bundles, or dereference evidence refs.
+- Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values, `validate_finding_id_uniqueness()` can reject repeated `finding_id` values within one supplied iterable, and `validate_finding_evidence_ref_membership()` can reject refs outside one caller-supplied allowed-ID set only; NOOA still does not authenticate finding producers, verify detector coverage, establish uniqueness across bundles, dereference evidence refs, or prove that present references support a finding.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.
 - Collector byte and record budgets are resource backstops, not authenticity or authorization guarantees.
 - Framework guard-shaped records are labels for mapped outcomes, not proof of exception origin or vulnerability.

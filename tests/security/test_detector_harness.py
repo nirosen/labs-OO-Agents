@@ -39,6 +39,7 @@ from examples.security_hardening.detector_harness import (
     _validate_max_finding_bundle_bytes,
     _validate_max_victim_summary_bytes,
     _validate_subprocess_output_fault,
+    evidence_ref_membership_gated_scorer,
     receipt_scope_gated_scorer,
     run_detected_scenario,
     score_detector_input,
@@ -256,6 +257,79 @@ def test_receipt_scope_gated_scorer_turns_off_run_drop_into_refusal() -> None:
     assert "mismatched_run_id_receipt_ids=('authority-receipt-req-attack',)" in (
         gated_report.refusal_reason
     )
+
+
+def test_evidence_ref_membership_gated_scorer_accepts_current_input_ids() -> None:
+    receipt = SecurityReceipt(
+        receipt_id="authority-receipt-req-attack",
+        receipt_type="identity.approval",
+        source="approval-authority",
+        run_id="identity-approval-demo/vulnerable_attack",
+        target="contractor@prod-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+    detector_input = _scoreable_input(receipts=(receipt,))
+
+    def scorer(input_: DetectorInput) -> tuple[SecurityFinding, ...]:
+        return (
+            SecurityFinding(
+                finding_id="finding-allowed-refs",
+                finding_type="authorization.missing_receipt",
+                producer="identity-approval-scorer",
+                run_id=input_.run_id,
+                target="contractor@prod-db",
+                evidence_refs=(
+                    input_.input_id,
+                    input_.effects[0].id,
+                    input_.receipts[0].receipt_id,
+                ),
+            ),
+        )
+
+    report, finding_bundle = score_detector_input(
+        detector_input,
+        scorer=evidence_ref_membership_gated_scorer(scorer),
+    )
+
+    assert report.scored is True
+    assert report.declared_finding_count == 1
+    assert finding_bundle.findings[0].evidence_refs == (
+        detector_input.input_id,
+        detector_input.effects[0].id,
+        receipt.receipt_id,
+    )
+
+
+def test_evidence_ref_membership_gated_scorer_refuses_invented_refs() -> None:
+    detector_input = _scoreable_input()
+
+    def scorer(input_: DetectorInput) -> tuple[SecurityFinding, ...]:
+        return (
+            SecurityFinding(
+                finding_id="finding-invented-ref",
+                finding_type="authorization.missing_receipt",
+                producer="identity-approval-scorer",
+                run_id=input_.run_id,
+                target="contractor@prod-db",
+                evidence_refs=(input_.input_id, "invented-evidence-id"),
+            ),
+        )
+
+    report, finding_bundle = score_detector_input(
+        detector_input,
+        scorer=evidence_ref_membership_gated_scorer(scorer),
+    )
+
+    assert report.scored is False
+    assert report.declared_finding_count == 0
+    assert finding_bundle.findings == ()
+    assert report.refusal_reason is not None
+    assert "detector evidence ref membership gate refused scorer output" in report.refusal_reason
+    assert "unknown_evidence_refs=('invented-evidence-id',)" in report.refusal_reason
+    assert "unknown_evidence_ref_finding_ids=('finding-invented-ref',)" in report.refusal_reason
+    assert "allowed_evidence_id_count=2" in report.refusal_reason
+    assert detector_input.effects[0].id not in report.refusal_reason
 
 
 def test_score_fd_keeps_receipt_free_profile_on_direct_scorer_path() -> None:
