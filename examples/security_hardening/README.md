@@ -2,6 +2,10 @@
 
 This offline example shows how the security review slices compose around one identity-changing agent method. It starts after untrusted content has influenced a victim agent to call `grant_access`, then separates observed effect telemetry, a deterministic application-owned defender recipe, backend receipt collection, a detector-facing `DetectorInput` handoff, and application-local finding generation. Each scenario assigns one `run_id` to its detector input, out-of-band receipts, and findings so this narrow scorer can ignore a stale receipt from another run.
 
+For the short architect-facing explanation of how this example relates to
+agents-lab, Garak, and the longer-term hardening roadmap, see
+[`ARCHITECT_OVERVIEW.md`](ARCHITECT_OVERVIEW.md).
+
 For the consolidated export map, V1/V2 egress rules, minimal integration, and canonical trust-boundary statements, see [`SURFACE.md`](SURFACE.md).
 
 ## Reading Order

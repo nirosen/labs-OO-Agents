@@ -569,6 +569,10 @@ flowchart LR
 
 > Branch: `codex/security-hardening-e2e-detector-pipeline-v17`
 
+For an architect-facing overview of the cross-repo security story, including
+how this branch relates to agents-lab and Garak, see
+[`examples/security_hardening/ARCHITECT_OVERVIEW.md`](examples/security_hardening/ARCHITECT_OVERVIEW.md).
+
 This is the current presentation branch for the security path assembled across the smaller review slices. It adds no runtime behavior beyond those slices. A maintainer can now review one cumulative path with two victim families, application-owned defender and backend policy, V2 collector-facing egress, public LF-terminated receipt and finding bundle transports, published version-token classification contracts for both bundle types, out-of-process detector scoring, reader-visible refusal on incomplete or inconsistent effect, receipt, and finding streams, an example-local receipt-ID uniqueness gate before receipt source alignment and identity policy, an example-local receipt source-alignment gate before receipt scope and identity policy, an example-local receipt scope gate before identity policy, example-local structured receipt-admission refusal stages for those three detector-side receipt gates, detector-side evidence-ref membership checks against the current `DetectorInput` before finding bundle emission, supervisor-side report input-ID admission, finding bundle admission, finding scope validation, finding-ID uniqueness validation, required evidence-ref presence against the supervisor-selected `input_id`, example-local structured finding-admission refusal stages before scenario consumers accept rows, and example-local row-identifier redaction for the six current row-validation gates that already expose those structured stages, bounded parse admission for every child stdout payload consumed by the example, a checked surface guide for the public `nooa.security` exports, and checked conformance vectors for both bundle boundaries. `SURFACE.md` owns the export map, transport rules, minimal integration, and canonical boundaries; this section owns the runnable composition and checked scenario matrix.
 
 ```mermaid
