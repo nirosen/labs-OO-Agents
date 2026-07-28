@@ -34,6 +34,8 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario vu
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --subprocess-output-fault stale_victim_scenario
 ```
 
+Unlike `victim_fault`, `authority_fault`, and `detector_fault`, which configure child behavior, `subprocess_output_fault` mutates already-collected stdout supervisor-side after `communicate()` and the returncode checks so the example can exercise the admission boundary against lying-child-shaped payloads.
+
 This is example hardening, not child authentication. All three payloads remain subprocess-controlled; a well-formed lie still passes these shape and scope checks. The three byte limits are parse-admission checks after `communicate()` already collected stdout, not pre-read memory limits, and `DetectorReport`, `VictimSummary`, `AuthoritySummary`, and `DetectedScenario` remain example artifacts rather than stable NOOA transport schemas.
 
 ## Finding Scope Gate Follow-On

@@ -674,6 +674,31 @@ def test_detected_scenario_refuses_invalid_child_summaries(
     assert exc_info.value.reason == reason
 
 
+def test_stale_victim_scenario_fault_requires_a_successful_victim_summary() -> None:
+    with pytest.raises(
+        ValueError,
+        match="stale_victim_scenario requires a successful victim summary",
+    ):
+        run_detected_scenario(
+            "vulnerable_attack",
+            victim_fault="partial_tail_crash",
+            subprocess_output_fault="stale_victim_scenario",
+        )
+
+
+def test_victim_scenario_admission_is_profile_independent() -> None:
+    with pytest.raises(SupervisorAdmissionError) as exc_info:
+        run_detected_scenario(
+            "export_vulnerable_attack",
+            subprocess_output_fault="stale_victim_scenario",
+        )
+
+    assert exc_info.value.role == "victim"
+    assert exc_info.value.reason == "scenario_mismatch"
+    assert exc_info.value.expected_scenario == "export_vulnerable_attack"
+    assert exc_info.value.reported_scenario == "export_vulnerable_attack-stale"
+
+
 @pytest.mark.parametrize(
     ("kwargs", "role", "limit_name"),
     [

@@ -275,7 +275,9 @@ class SupervisorAdmissionError(RuntimeError):
 
     The error carries only supervisor-visible parse-admission facts. It does
     not authenticate the child process, prove summary truth, or turn an echoed
-    field into trusted provenance.
+    field into trusted provenance. Detector report admission does not raise
+    this error because ``DetectorReport`` already has its own ``scored=False``
+    refusal channel.
     """
 
     def __init__(
