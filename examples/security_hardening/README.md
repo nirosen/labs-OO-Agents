@@ -10,6 +10,28 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Refusal Text Redaction Follow-On
+
+`codex/security-refusal-text-redaction` keeps this slice example-local. The harness now builds non-identifying refusal text for the six row-validation gates that already expose structured stage diagnostics: receipt ID uniqueness, receipt source alignment, receipt scope, finding scope, finding ID uniqueness, and required evidence-ref presence. The stage prefix, canonical reasons, caller-selected expectation when one exists, and a `redacted_id_count` remain visible; inspected receipt and finding row IDs do not.
+
+```mermaid
+flowchart LR
+    R["receipt row gates"] --> F["_redacted_row_refusal_detail()"]
+    G["finding row gates"] --> F
+    F --> O["refusal_reason<br/>reasons + redacted_id_count"]
+    E["core error __str__"] -. "unchanged" .-> F
+    S["stderr / arbitrary detector text"] -. "out of scope" .-> O
+```
+
+Run one detector-side and one supervisor-side example:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault stale_receipt_run_id
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault duplicate_finding_id
+```
+
+This is narrower than sanitization. Core error messages still contain identifiers for callers that log them directly, subprocess stderr and tracebacks are untouched, detector-side refusal text is redacted by the detector and not verified by the supervisor, and caller-supplied expectations such as `expected_run_id` remain in the harness output for diagnosability. V11 and V16 make this viable because consumers can now read the finding and receipt refusal stages from structured fields instead of recovering them from raw row identifiers.
+
 ## Receipt Admission Diagnostics Follow-On
 
 `codex/security-receipt-admission-diagnostics` adds no public `nooa.security` API. The example-local `DetectorReport` now carries one detector-supplied `receipt_admission_refusal` field for the three post-completeness receipt wrappers already in the identity-approval path. The wrapper that refuses the input sets the field before the detector emits its report, and the supervisor preserves the value when it admits a parseable report.
@@ -94,7 +116,7 @@ Run the new supervisor-visible finding fault:
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault drop_required_evidence_ref
 ```
 
-This is a visible anchor-presence gate, not provenance or authenticity. A detector receives the supervisor-selected `input_id` and can echo it mechanically; the helper does not prove the finding derives from that input, that any cited ref resolves to real evidence, that other refs are sufficient, or that detector coverage is complete. The example refusal string includes raw input and finding identifiers that a real deployment may need to redact.
+This is a visible anchor-presence gate, not provenance or authenticity. A detector receives the supervisor-selected `input_id` and can echo it mechanically; the helper does not prove the finding derives from that input, that any cited ref resolves to real evidence, that other refs are sufficient, or that detector coverage is complete. The current harness keeps that caller-supplied `input_id` in the refusal text for diagnosability but no longer includes inspected finding row IDs there; core error strings remain unchanged.
 
 ## Finding Evidence-Ref Membership Follow-On
 
@@ -325,7 +347,7 @@ Run the new stale-receipt fault:
 uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault stale_receipt_run_id
 ```
 
-This follow-on converts one silent off-run drop into a visible refusal. It does not authenticate the receipt source, prove coverage, make `DetectorInput` enforce scope automatically, or protect the refusal text itself; this demo includes raw run and receipt identifiers in the refusal reason, so a real deployment must decide whether that text is allowed to cross its detector boundary.
+This follow-on converts one silent off-run drop into a visible refusal. It does not authenticate the receipt source, prove coverage, make `DetectorInput` enforce scope automatically, or protect arbitrary refusal text; the current harness keeps the caller-supplied scope expectation but no longer includes inspected receipt row IDs in this refusal reason. Core error strings and arbitrary detector-authored text remain unchanged.
 
 ## Receipt Scope Validation Follow-On
 

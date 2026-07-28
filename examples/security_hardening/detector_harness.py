@@ -45,6 +45,11 @@ For the three post-completeness receipt gates, the detector can also attach one
 example-local ``receipt_admission_refusal`` field. That value is detector
 supplied and unverified; the supervisor deliberately preserves rather than
 clears it when admitting a parseable report.
+For the six current row-validation refusal sites that already have structured
+stage diagnostics, this example omits inspected row identifiers from the
+refusal text it constructs and keeps only canonical reasons plus a
+redacted-identifier count. Core error strings, subprocess stderr, and
+arbitrary detector-authored refusal text remain unchanged.
 The supervisor also admits victim and authority summary payloads through their own
 bounded parse checks and rejects visible victim scenario drift before
 assembling ``DetectedScenario``. The stdout bounds are parse-admission checks
@@ -548,6 +553,11 @@ def score_detector_input(
     )
 
 
+def _redacted_row_refusal_detail(*, reasons: tuple[str, ...], redacted_id_count: int) -> str:
+    """Render one non-identifying summary for a row-validation refusal."""
+    return f"reasons={reasons!r}, redacted_id_count={redacted_id_count}"
+
+
 def receipt_scope_gated_scorer(
     scorer: DetectorScorer,
     *,
@@ -575,8 +585,20 @@ def receipt_scope_gated_scorer(
                 )
             )
         except ReceiptScopeError as exc:
+            redacted_detail = _redacted_row_refusal_detail(
+                reasons=exc.reasons,
+                redacted_id_count=len(
+                    {
+                        *exc.missing_run_id_receipt_ids,
+                        *exc.mismatched_run_id_receipt_ids,
+                    }
+                ),
+            )
             raise UnscoreableDetectorInputError(
-                f"detector receipt scope gate refused input: {exc}",
+                "detector receipt scope gate refused input: "
+                "receipt bundle does not match expected run scope: "
+                f"expected_run_id={exc.expected_run_id!r}, "
+                f"{redacted_detail}",
                 receipt_admission_refusal="scope_drift",
             ) from exc
         # Keep scorer-owned refusals distinct from receipt-scope refusals.
@@ -606,8 +628,14 @@ def receipt_id_uniqueness_gated_scorer(scorer: DetectorScorer) -> DetectorScorer
                 validate_receipt_id_uniqueness(detector_input.receipts)
             )
         except ReceiptIdUniquenessError as exc:
+            redacted_detail = _redacted_row_refusal_detail(
+                reasons=exc.reasons,
+                redacted_id_count=len(exc.duplicate_receipt_ids),
+            )
             raise UnscoreableDetectorInputError(
-                f"detector receipt ID uniqueness gate refused input: {exc}",
+                "detector receipt ID uniqueness gate refused input: "
+                "receipt rows reuse receipt_id values: "
+                f"{redacted_detail}",
                 receipt_admission_refusal="duplicate_receipt_id",
             ) from exc
         return scorer(detector_input)
@@ -644,8 +672,15 @@ def receipt_source_alignment_gated_scorer(
                 )
             )
         except ReceiptSourceAlignmentError as exc:
+            redacted_detail = _redacted_row_refusal_detail(
+                reasons=exc.reasons,
+                redacted_id_count=len(exc.mismatched_source_receipt_ids),
+            )
             raise UnscoreableDetectorInputError(
-                f"detector receipt source alignment gate refused input: {exc}",
+                "detector receipt source alignment gate refused input: "
+                "receipt rows do not match expected source: "
+                f"expected_source={exc.expected_source!r}, "
+                f"{redacted_detail}",
                 receipt_admission_refusal="receipt_source_mismatch",
             ) from exc
         return scorer(detector_input)
@@ -1131,10 +1166,24 @@ def _admit_finding_bundle(
             )
         )
     except FindingScopeError as exc:
+        redacted_detail = _redacted_row_refusal_detail(
+            reasons=exc.reasons,
+            redacted_id_count=len(
+                {
+                    *exc.missing_run_id_finding_ids,
+                    *exc.mismatched_run_id_finding_ids,
+                }
+            ),
+        )
         return (
             _supervisor_refuse_parsed_report(
                 report,
-                refusal_reason=f"supervisor finding scope gate refused output: {exc}",
+                refusal_reason=(
+                    "supervisor finding scope gate refused output: "
+                    "finding rows do not match expected run scope: "
+                    f"expected_run_id={exc.expected_run_id!r}, "
+                    f"{redacted_detail}"
+                ),
                 finding_admission_refusal="scope_drift",
             ),
             (),
@@ -1156,10 +1205,18 @@ def _admit_finding_bundle(
             validate_finding_id_uniqueness(bundle.findings)
         )
     except FindingIdUniquenessError as exc:
+        redacted_detail = _redacted_row_refusal_detail(
+            reasons=exc.reasons,
+            redacted_id_count=len(exc.duplicate_finding_ids),
+        )
         return (
             _supervisor_refuse_parsed_report(
                 report,
-                refusal_reason=f"supervisor finding ID uniqueness gate refused output: {exc}",
+                refusal_reason=(
+                    "supervisor finding ID uniqueness gate refused output: "
+                    "finding rows reuse finding_id values: "
+                    f"{redacted_detail}"
+                ),
                 finding_admission_refusal="duplicate_finding_id",
             ),
             (),
@@ -1173,12 +1230,18 @@ def _admit_finding_bundle(
             )
         )
     except FindingRequiredEvidenceRefError as exc:
+        redacted_detail = _redacted_row_refusal_detail(
+            reasons=exc.reasons,
+            redacted_id_count=len(exc.missing_required_evidence_ref_finding_ids),
+        )
         return (
             _supervisor_refuse_parsed_report(
                 report,
                 refusal_reason=(
                     "supervisor finding required evidence-ref gate refused output: "
-                    f"{exc}"
+                    "finding rows omit required evidence ref: "
+                    f"required_evidence_ref={exc.required_evidence_ref!r}, "
+                    f"{redacted_detail}"
                 ),
                 finding_admission_refusal="missing_required_evidence_ref",
             ),
