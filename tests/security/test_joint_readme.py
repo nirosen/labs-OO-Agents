@@ -109,7 +109,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
-    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V13" in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V14" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -123,6 +123,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V10" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V11" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V12" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V13" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -172,7 +173,7 @@ def test_hardening_readme_orders_security_onramps() -> None:
 def test_joint_readme_matrix_reproduces_detector_paths() -> None:
     rows = _matrix_rows()
 
-    assert len(rows) == 20
+    assert len(rows) == 21
     for row in rows:
         result = run_detected_scenario(
             row.scenario,
@@ -263,3 +264,37 @@ def test_joint_readme_exposes_required_evidence_ref_refusal_stage() -> None:
             findings=0,
         ),
     )
+
+
+def test_joint_readme_exposes_receipt_id_uniqueness_refusal_stage() -> None:
+    rows = _matrix_rows()
+    duplicate_receipt_rows = tuple(
+        row for row in rows if row.authority_fault == "duplicate_receipt_id"
+    )
+
+    assert duplicate_receipt_rows == (
+        _MatrixRow(
+            scenario="hardened_authorized",
+            victim_fault="none",
+            authority_fault="duplicate_receipt_id",
+            detector_fault="none",
+            subprocess_output_fault="none",
+            profile="identity_approval",
+            effect_signals=(),
+            receipt_signals=(),
+            finding_signals=(),
+            finding_admission_refusal=None,
+            scored=False,
+            findings=0,
+        ),
+    )
+
+
+def test_joint_readme_keeps_receipt_id_uniqueness_detector_side() -> None:
+    root_text = _readme_text()
+    hardening_text = _readme_text(HARDENING_README_PATH)
+
+    assert "receipt_id_uniqueness_gated_scorer()" in root_text
+    assert "receipt ID uniqueness gate" in hardening_text
+    assert "V14 adds one detector-side row for `duplicate_receipt_id`" in root_text
+    assert "Its `Finding admission refusal` remains `None`" in root_text
