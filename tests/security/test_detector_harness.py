@@ -62,10 +62,13 @@ from nooa.security import (
     FdEffectSink,
     FindingBundle,
     ReceiptBundle,
+    ReceiptScopeError,
     SecurityFinding,
     SecurityReceipt,
     read_finding_bundle,
     require_complete_finding_bundle,
+    require_valid_receipt_scope,
+    validate_receipt_scope,
     write_finding_bundle,
     write_receipt_bundle,
 )
@@ -272,8 +275,34 @@ def test_receipt_scope_gated_scorer_turns_off_run_drop_into_refusal() -> None:
     assert gated_report.receipt_admission_refusal == "scope_drift"
     assert gated_report.refusal_reason is not None
     assert "detector receipt scope gate refused input" in gated_report.refusal_reason
-    assert "mismatched_run_id_receipt_ids=('authority-receipt-req-attack',)" in (
+    assert "expected_run_id='identity-approval-demo/vulnerable_attack'" in (
         gated_report.refusal_reason
+    )
+    assert "reasons=('run_id_mismatch',), redacted_id_count=1" in gated_report.refusal_reason
+    assert "authority-receipt-req-attack" not in gated_report.refusal_reason
+
+
+def test_core_receipt_scope_error_still_contains_row_identifiers() -> None:
+    stale_receipt = SecurityReceipt(
+        receipt_id="authority-receipt-req-attack",
+        receipt_type="identity.approval",
+        source="approval-authority",
+        run_id="identity-approval-demo/stale",
+        target="contractor@prod-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+
+    with pytest.raises(ReceiptScopeError) as exc_info:
+        require_valid_receipt_scope(
+            validate_receipt_scope(
+                (stale_receipt,),
+                expected_run_id="identity-approval-demo/vulnerable_attack",
+            )
+        )
+
+    assert "mismatched_run_id_receipt_ids=('authority-receipt-req-attack',)" in str(
+        exc_info.value
     )
 
 
@@ -304,9 +333,10 @@ def test_receipt_id_uniqueness_gated_scorer_turns_duplicate_ids_into_refusal() -
     assert gated_report.receipt_admission_refusal == "duplicate_receipt_id"
     assert gated_report.refusal_reason is not None
     assert "detector receipt ID uniqueness gate refused input" in gated_report.refusal_reason
-    assert "duplicate_receipt_ids=('authority-receipt-req-attack',)" in (
+    assert "reasons=('duplicate_receipt_id',), redacted_id_count=1" in (
         gated_report.refusal_reason
     )
+    assert "authority-receipt-req-attack" not in gated_report.refusal_reason
 
 
 def test_receipt_id_uniqueness_gate_runs_before_receipt_scope() -> None:
@@ -372,9 +402,10 @@ def test_receipt_source_alignment_gated_scorer_turns_mislabeled_rows_into_refusa
         gated_report.refusal_reason
     )
     assert "expected_source='approval-authority'" in gated_report.refusal_reason
-    assert "mismatched_source_receipt_ids=('authority-receipt-req-attack',)" in (
+    assert "reasons=('receipt_source_mismatch',), redacted_id_count=1" in (
         gated_report.refusal_reason
     )
+    assert "authority-receipt-req-attack" not in gated_report.refusal_reason
 
 
 def test_receipt_id_uniqueness_gate_runs_before_receipt_source_alignment() -> None:
@@ -831,9 +862,10 @@ def test_detected_authorized_stale_receipt_scope_refuses_before_policy() -> None
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "detector receipt scope gate refused input" in result.detector.refusal_reason
-    assert "mismatched_run_id_receipt_ids=('authority-receipt-req-approved',)" in (
+    assert "reasons=('run_id_mismatch',), redacted_id_count=1" in (
         result.detector.refusal_reason
     )
+    assert "authority-receipt-req-approved" not in result.detector.refusal_reason
 
 
 def test_detected_authorized_duplicate_receipt_id_refuses_before_scope_or_policy() -> None:
@@ -859,9 +891,10 @@ def test_detected_authorized_duplicate_receipt_id_refuses_before_scope_or_policy
     assert "detector receipt ID uniqueness gate refused input" in (
         result.detector.refusal_reason
     )
-    assert "duplicate_receipt_ids=('authority-receipt-req-approved',)" in (
+    assert "reasons=('duplicate_receipt_id',), redacted_id_count=1" in (
         result.detector.refusal_reason
     )
+    assert "authority-receipt-req-approved" not in result.detector.refusal_reason
     assert "detector receipt scope gate refused input" not in result.detector.refusal_reason
 
 
@@ -889,9 +922,10 @@ def test_detected_authorized_mislabeled_receipt_source_refuses_before_scope_or_p
         result.detector.refusal_reason
     )
     assert "expected_source='approval-authority'" in result.detector.refusal_reason
-    assert "mismatched_source_receipt_ids=('authority-receipt-req-approved',)" in (
+    assert "reasons=('receipt_source_mismatch',), redacted_id_count=1" in (
         result.detector.refusal_reason
     )
+    assert "authority-receipt-req-approved" not in result.detector.refusal_reason
     assert "detector receipt scope gate refused input" not in result.detector.refusal_reason
 
 
@@ -900,11 +934,11 @@ def test_detected_authorized_mislabeled_receipt_source_refuses_before_scope_or_p
     [
         (
             "blank_finding_run_id",
-            "missing_run_id_finding_ids=('finding-req-attack',)",
+            "reasons=('missing_run_id',), redacted_id_count=1",
         ),
         (
             "stale_finding_run_id",
-            "mismatched_run_id_finding_ids=('finding-req-attack',)",
+            "reasons=('run_id_mismatch',), redacted_id_count=1",
         ),
     ],
 )
@@ -927,6 +961,7 @@ def test_detected_invalid_finding_scope_refuses_at_supervisor_boundary(
     assert result.detector.refusal_reason is not None
     assert "supervisor finding scope gate refused output" in result.detector.refusal_reason
     assert expected_reason in result.detector.refusal_reason
+    assert "finding-req-attack" not in result.detector.refusal_reason
 
 
 def test_detected_duplicate_finding_id_refuses_at_supervisor_boundary() -> None:
@@ -946,7 +981,10 @@ def test_detected_duplicate_finding_id_refuses_at_supervisor_boundary() -> None:
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor finding ID uniqueness gate refused output" in result.detector.refusal_reason
-    assert "duplicate_finding_ids=('finding-req-attack',)" in result.detector.refusal_reason
+    assert "reasons=('duplicate_finding_id',), redacted_id_count=1" in (
+        result.detector.refusal_reason
+    )
+    assert "finding-req-attack" not in result.detector.refusal_reason
     assert "supervisor finding scope gate refused output" not in result.detector.refusal_reason
 
 
@@ -972,9 +1010,10 @@ def test_detected_missing_required_evidence_ref_refuses_at_supervisor_boundary()
     assert "required_evidence_ref='detector-input-vulnerable_attack'" in (
         result.detector.refusal_reason
     )
-    assert "missing_required_evidence_ref_finding_ids=('finding-req-attack',)" in (
+    assert "reasons=('missing_required_evidence_ref',), redacted_id_count=1" in (
         result.detector.refusal_reason
     )
+    assert "finding-req-attack" not in result.detector.refusal_reason
     assert "supervisor finding ID uniqueness gate refused output" not in (
         result.detector.refusal_reason
     )
@@ -1260,7 +1299,10 @@ def test_supervisor_refuses_duplicate_finding_ids_after_scope_and_coherence() ->
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding ID uniqueness gate refused output" in admitted.refusal_reason
-    assert "duplicate_finding_ids=('finding-req-attack',)" in admitted.refusal_reason
+    assert "reasons=('duplicate_finding_id',), redacted_id_count=1" in (
+        admitted.refusal_reason
+    )
+    assert "finding-req-attack" not in admitted.refusal_reason
     assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
 
 
@@ -1303,6 +1345,10 @@ def test_supervisor_refuses_missing_required_evidence_ref_after_id_uniqueness() 
     assert "required_evidence_ref='detector-input-vulnerable_attack'" in (
         admitted.refusal_reason
     )
+    assert "reasons=('missing_required_evidence_ref',), redacted_id_count=1" in (
+        admitted.refusal_reason
+    )
+    assert "finding-req-attack" not in admitted.refusal_reason
     assert "supervisor finding ID uniqueness gate refused output" not in admitted.refusal_reason
 
 
@@ -1382,9 +1428,10 @@ def test_supervisor_refuses_scope_before_finding_id_uniqueness() -> None:
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding scope gate refused output" in admitted.refusal_reason
-    assert "mismatched_run_id_finding_ids=('finding-req-attack', 'finding-req-attack')" in (
+    assert "reasons=('run_id_mismatch',), redacted_id_count=1" in (
         admitted.refusal_reason
     )
+    assert "finding-req-attack" not in admitted.refusal_reason
     assert "supervisor finding ID uniqueness gate refused output" not in admitted.refusal_reason
 
 
