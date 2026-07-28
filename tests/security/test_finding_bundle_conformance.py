@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,7 @@ def test_finding_bundle_conformance_fixture_matches_public_contract() -> None:
     assert (
         fixture["wire_schema_version_pattern_match_mode"]
         == FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE
+        == "full"
     )
     assert fixture["bundle_keys"] == list(FindingBundle.model_fields)
     assert frozenset(fixture["bundle_keys"]) == FINDING_BUNDLE_KEYS
@@ -91,6 +93,7 @@ def test_finding_bundle_conformance_fixture_matches_public_contract() -> None:
     assert fixture["default_max_bundle_bytes"] == DEFAULT_FINDING_BUNDLE_MAX_BYTES
     assert fixture["default_max_findings"] == DEFAULT_FINDING_BUNDLE_MAX_FINDINGS
     assert fixture["max_bundle_bytes_includes_terminating_lf"] is True
+    assert re.fullmatch(FINDING_BUNDLE_SCHEMA_VERSION_PATTERN, FINDING_BUNDLE_SCHEMA_VERSION)
 
     writer_names = [vector["name"] for vector in fixture["writer_vectors"]]
     reader_names = [vector["name"] for vector in fixture["reader_vectors"]]
@@ -158,6 +161,47 @@ def test_finding_bundle_conformance_fixture_matches_public_contract() -> None:
         for vector in fixture["reader_vectors"]
     )
     assert {"extra_key", "nan_constant", "overflow_float", "invalid_utf8"} <= set(reader_names)
+    version_vectors = [
+        vector for vector in fixture["reader_vectors"] if "schema_version" in vector["expect"]
+    ]
+    assert {
+        vector["name"] for vector in version_vectors
+    } >= {
+        "future_version",
+        "future_version_double_digit",
+        "zero_version_is_invalid",
+        "prerelease_version_is_invalid",
+        "prefixed_version_is_invalid",
+        "trailing_newline_version_is_invalid",
+        "non_string_version_is_invalid",
+    }
+    for vector in version_vectors:
+        expected = vector["expect"]
+        schema_version = expected["schema_version"]
+        payload_value = json.loads(_vector_payload(vector)[:-1].decode("utf-8"))
+        assert payload_value["schema_version"] == schema_version
+        fullmatch = (
+            isinstance(schema_version, str)
+            and re.fullmatch(FINDING_BUNDLE_SCHEMA_VERSION_PATTERN, schema_version) is not None
+        )
+        if expected["outcome"] == "unsupported_version_error":
+            assert fullmatch is True
+            assert schema_version != FINDING_BUNDLE_SCHEMA_VERSION
+        else:
+            assert expected["outcome"] == "invalid_document_error"
+            assert fullmatch is False
+
+    trailing_newline_version = next(
+        vector["expect"]["schema_version"]
+        for vector in version_vectors
+        if vector["name"] == "trailing_newline_version_is_invalid"
+    )
+    assert isinstance(trailing_newline_version, str)
+    assert re.match(
+        rf"^{FINDING_BUNDLE_SCHEMA_VERSION_PATTERN}$",
+        trailing_newline_version,
+    )
+    assert not re.fullmatch(FINDING_BUNDLE_SCHEMA_VERSION_PATTERN, trailing_newline_version)
 
     assert fixture["findings"]["finding_payload_encoding"]["attributes"] == {
         "ratio": 0.1,
