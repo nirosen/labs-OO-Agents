@@ -62,6 +62,32 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Finding Scope Gate
+
+> Branch: `codex/security-finding-scope-gate`
+
+This slice brings the opt-in finding scope helper onto the current receipt-bundle base and wires its first real consumer at the supervisor side of the detector-report handoff. Before the supervisor accepts a detector subprocess report into `DetectedScenario`, it admits only a bounded report payload to parsing, checks the report `run_id`, then requires every emitted `SecurityFinding` row to carry the supervisor-selected scope. The example `blank_finding_run_id` and `stale_finding_run_id` detector faults now become `scored=False` instead of accepted off-scope finding rows; both fail explicitly if a chosen scenario produces no finding to corrupt.
+
+```mermaid
+flowchart LR
+    S["supervisor-selected run_id"] --> A["report parse admission<br/>max_detector_report_bytes"]
+    D["detector subprocess<br/>DetectorReport JSON"] --> A
+    A --> R["report run_id check"]
+    R --> V["validate_finding_scope()"]
+    V -- "clean finding scope" --> O["DetectedScenario"]
+    R -. "report scope mismatch" .-> X["scored=False"]
+    V -. "missing_run_id / run_id_mismatch" .-> X
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `FindingScopeValidation`, `FindingScopeSignal`, `FindingScopeError`, canonical `FINDING_SCOPE_SIGNALS`, `validate_finding_scope()`, `finding_scope_signals()`, and `require_valid_finding_scope()`; an example-local supervisor report admission gate; `blank_finding_run_id` / `stale_finding_run_id`; and `max_detector_report_bytes` |
+| Security claim | The out-of-process detector example can refuse a parsed report or finding rows whose visible `run_id` disagrees with the supervisor-selected scope before downstream scenario consumers accept them. |
+| Non-claim | This does not authenticate the detector, report bytes, finding producer, or `expected_run_id`; prove detector coverage; enforce finding-id uniqueness; dereference evidence refs; assign severity or verdict; or cap memory before `communicate()` collects stdout. The demo refusal text includes raw run and finding identifiers. |
+| Base slice | `codex/security-receipt-bundle-transport` |
+| Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_findings.py`, `tests/security/test_detector_harness.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_findings.py tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `pytest`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/findings.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Receipt Bundle Conformance Vectors
 
 > Branch: `codex/security-receipt-bundle-conformance-vectors`
