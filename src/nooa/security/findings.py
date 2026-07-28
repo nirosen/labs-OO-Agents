@@ -28,9 +28,9 @@ MAX_FINDING_BUNDLE_JSON_INTEGER: int = (1 << 53) - 1
 DEFAULT_FINDING_BUNDLE_MAX_BYTES: int = 1024 * 1024
 DEFAULT_FINDING_BUNDLE_MAX_FINDINGS: int = 1 << 20
 
-FindingIdentitySignal = Literal["duplicate_finding_id"]
-# Tuple order is public because FindingIdentityError.reasons preserves it.
-FINDING_IDENTITY_SIGNALS: tuple[FindingIdentitySignal, ...] = (
+FindingIdUniquenessSignal = Literal["duplicate_finding_id"]
+# Tuple order is public because FindingIdUniquenessError.reasons preserves it.
+FINDING_ID_UNIQUENESS_SIGNALS: tuple[FindingIdUniquenessSignal, ...] = (
     "duplicate_finding_id",
 )
 
@@ -324,8 +324,8 @@ def finding_bundle_completeness_signals(
 
 
 @dataclass(frozen=True)
-class FindingIdentityValidation:
-    """Identity diagnostics for one materialized finding iterable.
+class FindingIdUniquenessValidation:
+    """Identifier-uniqueness diagnostics for one materialized finding iterable.
 
     This result preserves the input order in ``findings`` and reports only
     repeated ``finding_id`` values inside one supplied iterable. It does not
@@ -339,30 +339,32 @@ class FindingIdentityValidation:
     coverage was complete.
 
     Direct construction only asserts these diagnostic fields; it does not
-    perform the check that :func:`validate_finding_identity` performs.
+    perform the check that :func:`validate_finding_id_uniqueness` performs.
     """
 
     findings: tuple[SecurityFinding, ...]
     duplicate_finding_ids: tuple[str, ...] = ()
 
 
-class FindingIdentityError(RuntimeError):
+class FindingIdUniquenessError(RuntimeError):
     """Raised when supplied findings reuse one or more finding identifiers.
 
     This error reports only diagnostics visible in a
-    :class:`FindingIdentityValidation`. It does not establish finding
+    :class:`FindingIdUniquenessValidation`. It does not establish finding
     authenticity, detector coverage, or semantic correctness.
     """
 
-    def __init__(self, validation: FindingIdentityValidation) -> None:
-        if not isinstance(validation, FindingIdentityValidation):
+    def __init__(self, validation: FindingIdUniquenessValidation) -> None:
+        if not isinstance(validation, FindingIdUniquenessValidation):
             raise TypeError(
-                "FindingIdentityError expected FindingIdentityValidation, "
+                "FindingIdUniquenessError expected FindingIdUniquenessValidation, "
                 f"got {type(validation).__name__}"
             )
-        reasons = finding_identity_signals(validation)
+        reasons = finding_id_uniqueness_signals(validation)
         if not reasons:
-            raise ValueError("FindingIdentityError requires at least one identity signal")
+            raise ValueError(
+                "FindingIdUniquenessError requires at least one uniqueness signal"
+            )
         self.duplicate_finding_ids = validation.duplicate_finding_ids
         self.reasons = reasons
         super().__init__(
@@ -371,29 +373,29 @@ class FindingIdentityError(RuntimeError):
         )
 
 
-def finding_identity_signals(
-    validation: FindingIdentityValidation,
-) -> tuple[FindingIdentitySignal, ...]:
+def finding_id_uniqueness_signals(
+    validation: FindingIdUniquenessValidation,
+) -> tuple[FindingIdUniquenessSignal, ...]:
     """Return canonical identifier diagnostics for one finding iterable."""
-    if not isinstance(validation, FindingIdentityValidation):
+    if not isinstance(validation, FindingIdUniquenessValidation):
         raise TypeError(
-            "finding_identity_signals expected FindingIdentityValidation, "
+            "finding_id_uniqueness_signals expected FindingIdUniquenessValidation, "
             f"got {type(validation).__name__}"
         )
-    signals: list[FindingIdentitySignal] = []
+    signals: list[FindingIdUniquenessSignal] = []
     if validation.duplicate_finding_ids:
         signals.append("duplicate_finding_id")
     return tuple(signals)
 
 
-def validate_finding_identity(
+def validate_finding_id_uniqueness(
     findings: Iterable[SecurityFinding],
-) -> FindingIdentityValidation:
+) -> FindingIdUniquenessValidation:
     """Materialize findings and report repeated finding identifiers.
 
     ``findings`` is consumed once, preserved in input order, and stored as the
-    tuple returned by :func:`require_valid_finding_identity` when no identity
-    signal is present.
+    tuple returned by :func:`require_valid_finding_id_uniqueness` when no
+    uniqueness signal is present.
 
     The helper checks only whether the supplied rows reuse ``finding_id``
     values. It does not authenticate rows, producers, or identifiers; prove
@@ -403,7 +405,7 @@ def validate_finding_identity(
     """
     if isinstance(findings, (str, bytes, bytearray)) or not isinstance(findings, Iterable):
         raise TypeError(
-            "validate_finding_identity expected iterable of SecurityFinding, "
+            "validate_finding_id_uniqueness expected iterable of SecurityFinding, "
             f"got {type(findings).__name__}"
         )
 
@@ -411,7 +413,7 @@ def validate_finding_identity(
     for index, finding in enumerate(materialized):
         if not isinstance(finding, SecurityFinding):
             raise TypeError(
-                "validate_finding_identity expected SecurityFinding at "
+                "validate_finding_id_uniqueness expected SecurityFinding at "
                 f"index {index}, got {type(finding).__name__}"
             )
 
@@ -425,23 +427,23 @@ def validate_finding_identity(
             reported_duplicate_ids.add(finding_id)
         seen_ids.add(finding_id)
 
-    return FindingIdentityValidation(
+    return FindingIdUniquenessValidation(
         findings=materialized,
         duplicate_finding_ids=tuple(duplicate_ids),
     )
 
 
-def require_valid_finding_identity(
-    validation: FindingIdentityValidation,
+def require_valid_finding_id_uniqueness(
+    validation: FindingIdUniquenessValidation,
 ) -> tuple[SecurityFinding, ...]:
     """Return supplied findings or fail closed on repeated finding identifiers."""
-    if not isinstance(validation, FindingIdentityValidation):
+    if not isinstance(validation, FindingIdUniquenessValidation):
         raise TypeError(
-            "require_valid_finding_identity expected FindingIdentityValidation, "
+            "require_valid_finding_id_uniqueness expected FindingIdUniquenessValidation, "
             f"got {type(validation).__name__}"
         )
-    if finding_identity_signals(validation):
-        raise FindingIdentityError(validation)
+    if finding_id_uniqueness_signals(validation):
+        raise FindingIdUniquenessError(validation)
     return validation.findings
 
 
