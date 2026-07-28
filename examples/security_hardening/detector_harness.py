@@ -27,8 +27,10 @@ supervisor admits only a bounded report payload to parsing, reads one bounded
 LF-terminated finding document from a supervisor-owned temporary file,
 cross-checks ``declared_finding_count``, checks both report and finding row
 scopes against the supervisor-selected ``run_id``, and refuses repeated
-``finding_id`` values before accepting the detector output as scored. The
-supervisor also admits victim and authority summary payloads through their own
+``finding_id`` values before accepting the detector output as scored. Existing
+scope and report-coherence refusals retain precedence; the ID-uniqueness gate
+runs only after those checks pass. The supervisor also admits victim and
+authority summary payloads through their own
 bounded parse checks and rejects visible victim scenario drift before
 assembling ``DetectedScenario``. The stdout bounds are parse-admission checks
 after ``communicate()`` has already collected stdout; the finding-bundle bound
@@ -114,7 +116,7 @@ from nooa.security import (
     FindingBundleIncompleteError,
     FindingBundleInputTooLargeError,
     FindingBundleReadResult,
-    FindingIdentityError,
+    FindingIdUniquenessError,
     FindingScopeError,
     ReceiptBundleCompletenessSignal,
     ReceiptBundleIncompleteError,
@@ -135,10 +137,10 @@ from nooa.security import (
     receipt_bundle_completeness_signals,
     require_complete_finding_bundle,
     require_complete_receipt_bundle,
-    require_valid_finding_identity,
+    require_valid_finding_id_uniqueness,
     require_valid_finding_scope,
     require_valid_receipt_scope,
-    validate_finding_identity,
+    validate_finding_id_uniqueness,
     validate_finding_scope,
     validate_receipt_scope,
     write_finding_bundle,
@@ -932,12 +934,14 @@ def _admit_finding_bundle(
             (),
         )
     try:
-        require_valid_finding_identity(validate_finding_identity(bundle.findings))
-    except FindingIdentityError as exc:
+        require_valid_finding_id_uniqueness(
+            validate_finding_id_uniqueness(bundle.findings)
+        )
+    except FindingIdUniquenessError as exc:
         return (
             _supervisor_refuse_parsed_report(
                 report,
-                refusal_reason=f"supervisor finding identity gate refused output: {exc}",
+                refusal_reason=f"supervisor finding ID uniqueness gate refused output: {exc}",
             ),
             (),
         )

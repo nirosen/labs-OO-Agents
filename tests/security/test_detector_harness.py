@@ -54,6 +54,7 @@ from nooa.security import (
     FdEffectSink,
     FindingBundle,
     ReceiptBundle,
+    SecurityFinding,
     SecurityReceipt,
     read_finding_bundle,
     require_complete_finding_bundle,
@@ -476,7 +477,7 @@ def test_detected_duplicate_finding_id_refuses_at_supervisor_boundary() -> None:
     assert result.detector.declared_finding_count == 2
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
-    assert "supervisor finding identity gate refused output" in result.detector.refusal_reason
+    assert "supervisor finding ID uniqueness gate refused output" in result.detector.refusal_reason
     assert "duplicate_finding_ids=('finding-req-attack',)" in result.detector.refusal_reason
     assert "supervisor finding scope gate refused output" not in result.detector.refusal_reason
 
@@ -642,7 +643,7 @@ def test_supervisor_refuses_finding_count_mismatch_before_scope() -> None:
     assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
 
 
-def test_supervisor_refuses_duplicate_finding_ids_after_scope() -> None:
+def test_supervisor_refuses_duplicate_finding_ids_after_scope_and_coherence() -> None:
     report, finding_bundle = score_detector_input(_scoreable_input())
     duplicate_bundle = FindingBundle(
         producer=finding_bundle.producer,
@@ -668,9 +669,46 @@ def test_supervisor_refuses_duplicate_finding_ids_after_scope() -> None:
     assert admitted.declared_finding_count == 2
     assert findings == ()
     assert admitted.refusal_reason is not None
-    assert "supervisor finding identity gate refused output" in admitted.refusal_reason
+    assert "supervisor finding ID uniqueness gate refused output" in admitted.refusal_reason
     assert "duplicate_finding_ids=('finding-req-attack',)" in admitted.refusal_reason
     assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
+
+
+def test_supervisor_refuses_scope_before_finding_id_uniqueness() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+    stale_finding = SecurityFinding.model_validate(
+        {
+            **finding_bundle.findings[0].model_dump(mode="python"),
+            "run_id": "identity-approval-demo/stale",
+        }
+    )
+    duplicate_stale_bundle = FindingBundle(
+        producer=finding_bundle.producer,
+        findings=(stale_finding, stale_finding),
+    )
+    duplicate_report = DetectorReport.model_validate(
+        {
+            **report.model_dump(mode="python"),
+            "declared_finding_count": 2,
+        }
+    )
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(_finding_bundle_bytes(duplicate_stale_bundle)),
+        report=duplicate_report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.declared_finding_count == 2
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding scope gate refused output" in admitted.refusal_reason
+    assert "mismatched_run_id_finding_ids=('finding-req-attack', 'finding-req-attack')" in (
+        admitted.refusal_reason
+    )
+    assert "supervisor finding ID uniqueness gate refused output" not in admitted.refusal_reason
 
 
 def test_supervisor_refuses_refused_report_with_finding_rows_after_scope() -> None:
