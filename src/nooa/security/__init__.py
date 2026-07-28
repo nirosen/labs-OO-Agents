@@ -40,7 +40,16 @@ from nooa.security.evidence import (
     ReceiptCoverage,
     detector_input_from_egress,
 )
-from nooa.security.findings import SecurityFinding
+from nooa.security.findings import (
+    FINDING_SCOPE_SIGNALS,
+    FindingScopeError,
+    FindingScopeSignal,
+    FindingScopeValidation,
+    SecurityFinding,
+    finding_scope_signals,
+    require_valid_finding_scope,
+    validate_finding_scope,
+)
 from nooa.security.install import (
     AgentCallEffectObserver,
     EffectObservation,
@@ -100,6 +109,10 @@ __all__ = [
     "EffectRecordSinkBackend",
     "EffectSink",
     "FdEffectSink",
+    "FINDING_SCOPE_SIGNALS",
+    "FindingScopeError",
+    "FindingScopeSignal",
+    "FindingScopeValidation",
     "JsonlEffectSink",
     "RECEIPT_SCOPE_SIGNALS",
     "ReceiptCoverage",
@@ -117,6 +130,9 @@ __all__ = [
     "install_effect_sink",
     "read_effect_egress",
     "require_complete_effect_egress",
+    "finding_scope_signals",
+    "require_valid_finding_scope",
+    "validate_finding_scope",
     "receipt_scope_signals",
     "require_valid_receipt_scope",
     "validate_receipt_scope",

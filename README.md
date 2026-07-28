@@ -62,6 +62,30 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Finding Scope Validation
+
+> Branch: `codex/security-finding-scope-validation`
+
+This slice adds one opt-in core helper on top of the existing `SecurityFinding` transport shape. Applications that already selected an assessment `run_id` can materialize one supplied finding iterable, preserve its order, and fail closed on blank or mismatched finding scopes before aggregation, storage, or review. The transport model itself stays permissive: blank `run_id` values remain valid until a caller chooses to enforce one expected scope.
+
+```mermaid
+flowchart LR
+    F["SecurityFinding rows"] --> V["validate_finding_scope()<br/>expected_run_id"]
+    V --> S["FindingScopeValidation"]
+    S -- "no scope signals" --> Q["require_valid_finding_scope()"]
+    Q --> A["aggregation or review"]
+    S -. "missing_run_id<br/>run_id_mismatch" .-> X["caller refusal"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `FindingScopeValidation`, `FindingScopeSignal`, `FindingScopeError`, canonical `FINDING_SCOPE_SIGNALS`, `validate_finding_scope()`, `finding_scope_signals()`, and `require_valid_finding_scope()` |
+| Security claim | Applications can make one narrow finding handoff invariant explicit: every supplied finding row must carry the caller-selected non-empty `run_id` before downstream aggregation or review consumes it. |
+| Non-claim | Directly constructing `FindingScopeValidation` does not perform the check. This helper does not authenticate finding producers or `expected_run_id`, verify detector coverage, enforce finding-id uniqueness, dereference evidence refs, inspect application-specific finding semantics, assign severity or verdict, or make an empty clean bundle evidence that no findings exist. No example harness invokes it yet. |
+| Base slice | `codex/security-detector-receipt-scope-gate` |
+| Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `tests/security/test_findings.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_findings.py tests/security/test_surface_guide.py`; `pytest tests/security`; `pytest`; `ruff check src/nooa/security tests/security` |
+
 ## Security Review Follow-On: Detector Receipt Scope Gate
 
 > Branch: `codex/security-detector-receipt-scope-gate`

@@ -51,6 +51,26 @@ A clean result means only that none of the supplied copies contradicted the requ
 
 The `detector_harness.py` example shows one application-owned integration: when an authority receipt pipe is wired, it wraps the identity scorer with the supervisor-selected `run_id` and converts visible scope drift into an example-local refusal before policy runs. That placement does not make receipt scope automatic for `DetectorInput`, and the demo refusal string includes raw run and receipt identifiers that a real deployment may need to redact before crossing a process boundary.
 
+## Finding Scope Validation
+
+`validate_finding_scope()` is an opt-in consumer helper for one narrow problem: keeping a supplied finding bundle scoped to one caller-selected `expected_run_id` before aggregation, storage, or review. It materializes the iterable once, preserves order, and reports only blank or mismatched `run_id` values. `require_valid_finding_scope()` turns those visible diagnostics into a fail-closed boundary for callers that want one.
+
+```mermaid
+flowchart LR
+    F["SecurityFinding rows"] --> V["validate_finding_scope()<br/>expected_run_id"]
+    V --> C["FindingScopeValidation"]
+    C -- "no signals" --> Q["require_valid_finding_scope()"]
+    Q --> A["aggregation or review"]
+    C -. "missing_run_id<br/>run_id_mismatch" .-> X["caller refusal"]
+```
+
+| Helper fact | Meaning |
+| --- | --- |
+| `missing_run_id` | At least one supplied finding had an empty `run_id`. |
+| `run_id_mismatch` | At least one supplied finding had a non-empty `run_id` different from `expected_run_id`. |
+
+A clean result means only that none of the supplied finding rows contradicted the requested scope. Directly constructing `FindingScopeValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate finding producers, verify detector coverage, check finding-id uniqueness, dereference evidence refs, inspect application attributes, assign severity or verdict, or prove that an empty bundle is complete.
+
 ## Egress Contract
 
 `FdEffectSink` writes LF-delimited UTF-8 JSON frames to a borrowed blocking descriptor. `read_effect_egress()` parses those frames and returns `EffectEgressReadResult`; `require_complete_effect_egress()` turns known reader-visible degradation into `EffectEgressIncompleteError`.
@@ -170,6 +190,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `ReceiptScopeError` | Collector author | Fail-closed run-scope refusal. |
 | `DetectorInput` | Detector author | Detector-facing evidence bundle. |
 | `SecurityFinding` | Detector author | Caller-owned finding shape. |
+| `FindingScopeValidation` | Finding consumer | Materialized finding bundle plus visible run-scope diagnostics. |
+| `FindingScopeSignal` | Finding consumer | Public run-scope diagnostic type alias. |
+| `FindingScopeError` | Finding consumer | Fail-closed run-scope refusal. |
 | `ReceiptCoverage` | Detector author | Caller assertion for receipt collection coverage. |
 | `EffectObservation` | Observer author | Observer return union for zero, one, or many effects. |
 | `EffectObserver` | Observer author | `execute_python` observer callable type. |
@@ -197,6 +220,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `validate_receipt_scope` | Collector author | Materialize one receipt iterable and diagnose visible run-scope drift. |
 | `require_valid_receipt_scope` | Collector author | Fail closed on public receipt run-scope signals. |
 | `receipt_scope_signals` | Collector author | Return canonical receipt run-scope diagnostics. |
+| `validate_finding_scope` | Finding consumer | Materialize one finding iterable and diagnose visible run-scope drift. |
+| `require_valid_finding_scope` | Finding consumer | Fail closed on public finding run-scope signals. |
+| `finding_scope_signals` | Finding consumer | Return canonical finding run-scope diagnostics. |
 | `detector_input_from_egress` | Detector author | Build one detector handoff bundle from parsed egress. |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | Conformance implementer | Default per-frame byte budget. |
 | `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` | Conformance implementer | Default retained-record budget. |
@@ -216,6 +242,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `MAX_EFFECT_EGRESS_JSON_INTEGER` | Conformance implementer | Largest portable JSON integer. |
 | `MAX_EFFECT_EGRESS_SEQUENCE` | Conformance implementer | Largest accepted sequence number. |
 | `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
+| `FINDING_SCOPE_SIGNALS` | Conformance implementer | Canonical finding run-scope diagnostic order. |
 <!-- SECURITY_EXPORT_INDEX_END -->
 
 ## Consolidated Boundaries
@@ -224,6 +251,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - Same-process event stores, descriptors, subprocesses under one user, and unsandboxed supervisors are not trusted boundaries.
 - V2 stream-end frames distinguish declared completion from stream cessation only. They do not authenticate records, prove omitted effects did not happen, or make count agreement sufficient evidence.
 - Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
+- Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate finding producers, verify detector coverage, or dereference evidence refs.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.
 - Collector byte and record budgets are resource backstops, not authenticity or authorization guarantees.
 - Framework guard-shaped records are labels for mapped outcomes, not proof of exception origin or vulnerability.

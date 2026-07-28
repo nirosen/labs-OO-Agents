@@ -10,6 +10,21 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Finding Scope Validation Follow-On
+
+`codex/security-finding-scope-validation` adds one opt-in core helper for applications that already chose an assessment `run_id` and want to reject supplied finding rows that are blank-scoped or stale-scoped before they aggregate or review them. The helper materializes the finding iterable once, preserves order, and leaves detector-specific verdict, severity, and evidence-join semantics in the application layer.
+
+```mermaid
+flowchart LR
+    F["SecurityFinding rows"] --> V["validate_finding_scope()<br/>expected_run_id"]
+    V --> R["FindingScopeValidation"]
+    R -- "clean" --> Q["require_valid_finding_scope()"]
+    Q --> A["aggregation or review"]
+    R -. "missing_run_id / run_id_mismatch" .-> X["caller refuses bundle"]
+```
+
+This is a run-scope consistency helper, not a trusted detector. Directly constructing `FindingScopeValidation` asserts diagnostics; it does not perform the check. No example harness invokes it yet. The helper does not authenticate finding producers or the caller-selected scope, prove detector coverage, check finding-id uniqueness, dereference evidence refs, inspect profile semantics, assign severity or verdict, or make an empty clean bundle evidence that no findings exist.
+
 ## Detector Receipt Scope Gate Follow-On
 
 `codex/security-detector-receipt-scope-gate` wires the opt-in receipt scope helper into the example detector subprocess only when the identity profile receives an authority receipt pipe. The harness wraps the identity scorer with the supervisor-selected `run_id`, so an off-run receipt copy is refused before policy instead of disappearing inside the scorer's same-run receipt join. The receipt-free data export profile keeps its direct scorer path.
