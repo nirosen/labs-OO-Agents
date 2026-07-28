@@ -244,9 +244,9 @@ flowchart LR
 
 These vectors are interoperability regression references, not an authenticity claim. A conforming writer can still forge records or omit effects before closing, and an external writer can remain acceptable to the reader without copying NOOA's exact JSON formatting.
 
-## Security Review Joint Branch: End-to-End Detector Pipeline V8
+## Security Review Joint Branch: End-to-End Detector Pipeline V9
 
-`codex/security-hardening-e2e-detector-pipeline-v8` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress plus public receipt-bundle transport for reader-visible refusal semantics, publishes the receipt-bundle version-token classification rule for independent readers, refuses degraded receipt transport before receipt scope or identity policy runs, refuses visible stale authority receipt scope before identity policy runs, validates detector-report and finding scope at the supervisor boundary before accepting detector output, admits every parsed child stdout payload through example-local bounded checks, exercises the same detector handoff across identity approval and data export victims, and carries checked receipt-bundle conformance vectors for the transport boundary.
+`codex/security-hardening-e2e-detector-pipeline-v9` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress plus public receipt and finding bundle transports for reader-visible refusal semantics, publishes both bundle version-token classification rules for independent readers, refuses degraded receipt transport before receipt scope or identity policy runs, refuses visible stale authority receipt scope before identity policy runs, admits detector report metadata and finding rows through separate supervisor-side gates before accepting output, admits every parsed child stdout payload through example-local bounded checks, exercises the same detector handoff across identity approval and data export victims, and carries checked conformance vectors for both bundle boundaries.
 
 ```mermaid
 flowchart LR
@@ -269,12 +269,18 @@ flowchart LR
     DI --> G["receipt scope gate<br/>identity only"]
     G --> S1["identity scorer"]
     DI --> S2["export scorer"]
-    S1 --> RPT["DetectorReport JSON"]
+    S1 --> RPT["DetectorReport JSON<br/>declared_finding_count"]
     S2 --> RPT
+    S1 --> FBW["write_finding_bundle()"]
+    S2 --> FBW
+    FBW --> FFT["finding temp file"]
     VS --> VA["victim summary admission<br/>+ scenario check"]
     AS --> AA["authority summary admission"]
     RPT --> RA["detector report admission<br/>+ report run_id check"]
-    RA --> FG["finding scope gate"]
+    FFT --> FBR["read_finding_bundle()<br/>+ completeness gate"]
+    RA --> FC["finding count + coherence gates"]
+    FBR --> FC
+    FC --> FG["finding scope gate"]
     VA --> O["DetectedScenario"]
     AA --> O
     FG --> O
@@ -282,15 +288,17 @@ flowchart LR
     RR -. "truncated / receipt count mismatch" .-> X
     G -. "receipt run_id mismatch" .-> X
     RA -. "over-bound / invalid / report run_id mismatch" .-> X
+    FBR -. "truncated / invalid / over-bound" .-> X
+    FC -. "finding count mismatch / refused rows" .-> X
     FG -. "blank / mismatched finding run_id" .-> X
     X --> O
     VA -. "over-bound / invalid / scenario drift" .-> Y["SupervisorAdmissionError"]
     AA -. "over-bound / invalid" .-> Y
 ```
 
-The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v8). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes. The matrix includes only paths that return `DetectedScenario`; victim and authority summary admission faults remain exception-path coverage in `tests/security/test_detector_harness.py`. Publishing the receipt-bundle version-token rule changes no runnable scenario outcome, so V8 keeps the V7 matrix rows unchanged.
+The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v9). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes. The matrix includes only paths that return `DetectedScenario`; victim and authority summary admission faults remain exception-path coverage in `tests/security/test_detector_harness.py`. V9 adds a finding-bundle diagnostics column and rows for visible finding-document truncation and report-to-bundle count drift.
 
-This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, a valid-looking V2 terminator or receipt bundle remains only as trustworthy as the boundary that produced it, a matching future receipt-bundle version token is not a promise of parser support or safety, count agreement does not prove omitted receipts did not happen, matching receipt or finding `run_id` values are not proof of authenticity, a well-formed victim or authority summary can still lie, and the three stdout byte bounds apply only after `communicate()` has already collected stdout.
+This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, a valid-looking V2 terminator, receipt bundle, or finding bundle remains only as trustworthy as the boundary that produced it, matching future bundle version tokens are not promises of parser support or safety, count agreement does not prove omitted receipts or findings did not happen, matching receipt or finding `run_id` values are not proof of authenticity, a well-formed victim or authority summary can still lie, the three stdout byte bounds apply only after `communicate()` has already collected stdout, and the finding-bundle bound applies only when the supervisor reads its same-user temporary file.
 
 ## V2 Effect Egress Stream-End Follow-On
 
