@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from io import BytesIO
 from tempfile import TemporaryFile
 from typing import BinaryIO, get_args
@@ -330,6 +331,62 @@ def test_evidence_ref_membership_gated_scorer_refuses_invented_refs() -> None:
     assert "unknown_evidence_ref_finding_ids=('finding-invented-ref',)" in report.refusal_reason
     assert "allowed_evidence_id_count=2" in report.refusal_reason
     assert detector_input.effects[0].id not in report.refusal_reason
+
+
+def test_score_fd_applies_evidence_ref_membership_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def scorer(input_: DetectorInput) -> tuple[SecurityFinding, ...]:
+        return (
+            SecurityFinding(
+                finding_id="finding-invented-ref",
+                finding_type="authorization.missing_receipt",
+                producer="identity-approval-scorer",
+                run_id=input_.run_id,
+                target="contractor@prod-db",
+                evidence_refs=(input_.input_id, "invented-evidence-id"),
+            ),
+        )
+
+    monkeypatch.setitem(
+        detector_harness._DETECTOR_PROFILES,
+        _IDENTITY_PROFILE.name,
+        replace(_IDENTITY_PROFILE, scorer=scorer),
+    )
+
+    with TemporaryFile() as effect_fh, TemporaryFile() as finding_fh:
+        sink = FdEffectSink(
+            effect_fh.fileno(),
+            schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+        )
+        sink(
+            EffectRecord(
+                effect_type=EFFECT_TYPE,
+                target="contractor@prod-db",
+                decision="allowed",
+                attributes={"request_id": "req-attack"},
+            )
+        )
+        sink.close()
+        effect_fh.seek(0)
+
+        report = score_fd(
+            os.dup(effect_fh.fileno()),
+            None,
+            os.dup(finding_fh.fileno()),
+            profile_name=_IDENTITY_PROFILE.name,
+            run_id="identity-approval-demo/vulnerable_attack",
+            input_id="detector-input-vulnerable_attack",
+        )
+        finding_fh.seek(0)
+        finding_bundle = require_complete_finding_bundle(read_finding_bundle(finding_fh))
+
+    assert report.scored is False
+    assert report.declared_finding_count == 0
+    assert finding_bundle.findings == ()
+    assert report.refusal_reason is not None
+    assert "detector evidence ref membership gate refused scorer output" in report.refusal_reason
+    assert "unknown_evidence_refs=('invented-evidence-id',)" in report.refusal_reason
 
 
 def test_score_fd_keeps_receipt_free_profile_on_direct_scorer_path() -> None:
