@@ -10,6 +10,29 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Receipt Bundle Transport Follow-On
+
+`codex/security-receipt-bundle-transport` replaces the harness's example-local receipt JSON reader with the public `ReceiptBundle` transport. The authority emits one bounded LF-terminated bundle, the detector reads it through `read_receipt_bundle()`, and `require_complete_receipt_bundle()` refuses a truncated or declared-count-mismatched document before the example reaches receipt run-scope or profile policy.
+
+```mermaid
+flowchart LR
+    A["approval authority"] --> W["write_receipt_bundle()"]
+    W --> P["receipt pipe"]
+    P --> R["read_receipt_bundle()"]
+    R -- "clean" --> G["require_complete_receipt_bundle()"]
+    G --> S["receipt_scope_gated_scorer()"]
+    R -. "truncated / count mismatch" .-> X["DetectorReport<br/>scored=False"]
+```
+
+Run the new transport faults:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault truncate_receipt_document
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault drop_receipt_count_mismatch
+```
+
+This closes one transport ambiguity only. A clean bundle means the detector received one terminated document whose declared count matched the receipt copies in that document; it does not authenticate the authority, prove coverage, detect omitted receipts before a truthful count declaration, establish run scope, or turn same-user subprocesses into a trusted boundary.
+
 ## Detector Receipt Scope Gate Follow-On
 
 `codex/security-detector-receipt-scope-gate` wires the opt-in receipt scope helper into the example detector subprocess only when the identity profile receives an authority receipt pipe. The harness wraps the identity scorer with the supervisor-selected `run_id`, so an off-run receipt copy is refused before policy instead of disappearing inside the scorer's same-run receipt join. The receipt-free data export profile keeps its direct scorer path.

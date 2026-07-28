@@ -16,9 +16,11 @@ writer-declared completion becomes a detector refusal. When an authority
 receipt pipe is present, the example also wraps the profile scorer with one
 receipt run-scope gate keyed by the supervisor-selected ``run_id`` so a stale
 receipt copy becomes a refusal before policy runs. It does not authenticate
-pipe contents, terminators, receipt sources, or refusal text; make same-user
-subprocesses a trust boundary; provide sandboxing or attestation; prove that
-an issued token was honored; or turn detector findings into enforcement.
+pipe contents, receipt sources, or refusal text; make same-user subprocesses a
+trust boundary; provide sandboxing or attestation; prove that an issued token
+was honored; or turn detector findings into enforcement. The receipt path now
+uses the public LF-terminated bundle reader so EOF before the bundle terminator
+becomes an explicit detector refusal before run-scope or profile policy runs.
 
     uv run python -m examples.security_hardening.detector_harness demo
 """
@@ -34,7 +36,7 @@ from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import BinaryIO, Literal, Self, cast
+from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -44,7 +46,6 @@ from examples.security_hardening.approval_authority import (
     ApprovalRequestDocument,
     ApprovalResponseDocument,
     AuthorityFault,
-    AuthorityReceiptDocument,
     AuthoritySummary,
     approval_tokens_by_request_id,
     read_approval_response_document,
@@ -85,10 +86,16 @@ from examples.security_hardening.identity_approval import (
     observe_identity_grant,
 )
 from nooa.security import (
+    DEFAULT_RECEIPT_BUNDLE_MAX_BYTES,
     EFFECT_EGRESS_COMPLETENESS_SIGNALS,
     EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    RECEIPT_BUNDLE_COMPLETENESS_SIGNALS,
     DetectorInput,
     EffectEgressCompletenessSignal,
+    EffectEgressReadResult,
+    ReceiptBundleCompletenessSignal,
+    ReceiptBundleIncompleteError,
+    ReceiptBundleReadResult,
     ReceiptCoverage,
     ReceiptScopeError,
     SecurityFinding,
@@ -98,6 +105,9 @@ from nooa.security import (
     install_effect_recorder,
     install_effect_sink,
     read_effect_egress,
+    read_receipt_bundle,
+    receipt_bundle_completeness_signals,
+    require_complete_receipt_bundle,
     require_valid_receipt_scope,
     validate_receipt_scope,
 )
@@ -109,7 +119,7 @@ _DETECTED_SCENARIO_SCHEMA_VERSION: Literal["nooa-detector-scenario-example-v3"] 
     "nooa-detector-scenario-example-v3"
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DETECTOR_RECEIPT_MAX_BYTES = 1024 * 1024
+DEFAULT_DETECTOR_RECEIPT_MAX_BYTES = DEFAULT_RECEIPT_BUNDLE_MAX_BYTES
 DetectorScorer = Callable[[DetectorInput], tuple[SecurityFinding, ...]]
 
 
@@ -153,14 +163,6 @@ _DETECTOR_PROFILES = {
 }
 
 
-class DetectorReceiptInputTooLargeError(ValueError):
-    """Raised when the detector refuses an over-bound receipt document."""
-
-    def __init__(self, max_receipt_bytes: int) -> None:
-        self.max_receipt_bytes = max_receipt_bytes
-        super().__init__(f"detector receipt input exceeds max_receipt_bytes={max_receipt_bytes}")
-
-
 class DetectorReport(BaseModel):
     """Example-local result emitted by the detector subprocess.
 
@@ -180,10 +182,12 @@ class DetectorReport(BaseModel):
     run_id: str = ""
     effect_egress_completeness_signals: tuple[EffectEgressCompletenessSignal, ...] = ()
     effect_egress_completeness_gate_passed: bool = False
+    receipt_bundle_completeness_signals: tuple[ReceiptBundleCompletenessSignal, ...] = ()
+    receipt_bundle_completeness_gate_passed: bool = False
     receipt_source: str = ""
     receipt_coverage: ReceiptCoverage = "unknown"
     receipt_count: int = Field(default=0, ge=0)
-    issued_token_count: int | None = Field(default=None, ge=0)
+    declared_receipt_count: int | None = Field(default=None, ge=0)
     scored: bool
     refusal_reason: str | None = None
     findings: tuple[SecurityFinding, ...] = ()
@@ -207,8 +211,23 @@ class DetectorReport(BaseModel):
                 "effect_egress_completeness_gate_passed cannot be true when "
                 "effect_egress_completeness_signals is non-empty"
             )
-        if self.issued_token_count is not None and self.issued_token_count != self.receipt_count:
-            raise ValueError("issued_token_count must match receipt_count")
+        canonical_receipt_bundle_signals = tuple(
+            signal
+            for signal in RECEIPT_BUNDLE_COMPLETENESS_SIGNALS
+            if signal in self.receipt_bundle_completeness_signals
+        )
+        if self.receipt_bundle_completeness_signals != canonical_receipt_bundle_signals:
+            raise ValueError(
+                "receipt_bundle_completeness_signals must use canonical unique order"
+            )
+        if (
+            self.receipt_bundle_completeness_gate_passed
+            and self.receipt_bundle_completeness_signals
+        ):
+            raise ValueError(
+                "receipt_bundle_completeness_gate_passed cannot be true when "
+                "receipt_bundle_completeness_signals is non-empty"
+            )
         if self.scored and self.refusal_reason is not None:
             raise ValueError("scored detector report cannot carry refusal_reason")
         if not self.scored:
@@ -261,21 +280,6 @@ class DetectedScenario(BaseModel):
         return self
 
 
-def read_receipt_document(
-    fh: BinaryIO,
-    *,
-    max_receipt_bytes: int = DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
-) -> AuthorityReceiptDocument:
-    """Read exactly one bounded authority receipt document from a binary stream."""
-    max_receipt_bytes = _validate_max_receipt_bytes(max_receipt_bytes)
-    payload = fh.read(max_receipt_bytes + 1)
-    if not isinstance(payload, bytes):
-        raise TypeError(f"read_receipt_document expected bytes, got {type(payload).__name__}")
-    if len(payload) > max_receipt_bytes:
-        raise DetectorReceiptInputTooLargeError(max_receipt_bytes)
-    return AuthorityReceiptDocument.model_validate_json(payload)
-
-
 def score_detector_input(
     detector_input: DetectorInput,
     *,
@@ -283,7 +287,9 @@ def score_detector_input(
     scorer_name: str = _IDENTITY_PROFILE.scorer_name,
     scorer: DetectorScorer = detect_grants_without_approval,
     receipt_count: int | None = None,
-    issued_token_count: int | None = None,
+    declared_receipt_count: int | None = None,
+    receipt_bundle_completeness_signals: tuple[ReceiptBundleCompletenessSignal, ...] = (),
+    receipt_bundle_completeness_gate_passed: bool = False,
 ) -> DetectorReport:
     """Run the example-local deterministic scorer over one detector input."""
     if not isinstance(detector_input, DetectorInput):
@@ -300,10 +306,12 @@ def score_detector_input(
         "run_id": detector_input.run_id,
         "effect_egress_completeness_signals": detector_input.effect_egress_completeness_signals,
         "effect_egress_completeness_gate_passed": detector_input.effect_egress_completeness_gate_passed,
+        "receipt_bundle_completeness_signals": receipt_bundle_completeness_signals,
+        "receipt_bundle_completeness_gate_passed": receipt_bundle_completeness_gate_passed,
         "receipt_source": detector_input.receipt_source,
         "receipt_coverage": detector_input.receipt_coverage,
         "receipt_count": receipt_count,
-        "issued_token_count": issued_token_count,
+        "declared_receipt_count": declared_receipt_count,
     }
     try:
         findings = scorer(detector_input)
@@ -367,31 +375,46 @@ def score_fd(
 ) -> DetectorReport:
     """Assemble one detector input from effect and receipt descriptors, then score it."""
     profile = _profile_from_name(profile_name)
-    scorer = profile.scorer
-    receipts = ()
-    receipt_source = ""
-    receipt_coverage: ReceiptCoverage = "unknown"
-    issued_token_count: int | None = None
-    if receipt_fd is not None:
-        with os.fdopen(receipt_fd, "rb", closefd=True) as receipt_fh:
-            receipt_document = read_receipt_document(
-                receipt_fh,
-                max_receipt_bytes=max_receipt_bytes,
-            )
-        receipts = receipt_document.receipts
-        receipt_source = receipt_document.receipt_source
-        receipt_coverage = receipt_document.receipt_coverage
-        issued_token_count = receipt_document.issued_token_count
-        if profile.uses_approval_authority:
-            scorer = receipt_scope_gated_scorer(
-                profile.scorer,
-                expected_run_id=run_id,
-            )
     with os.fdopen(effect_fd, "rb", closefd=True) as effect_fh:
         egress = read_effect_egress(
             effect_fh,
             expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
         )
+    scorer = profile.scorer
+    receipts = ()
+    receipt_source = ""
+    receipt_coverage: ReceiptCoverage = "unknown"
+    declared_receipt_count: int | None = None
+    receipt_bundle_signals: tuple[ReceiptBundleCompletenessSignal, ...] = ()
+    receipt_bundle_gate_passed = False
+    if receipt_fd is not None:
+        with os.fdopen(receipt_fd, "rb", closefd=True) as receipt_fh:
+            receipt_bundle_result = read_receipt_bundle(
+                receipt_fh,
+                max_bundle_bytes=max_receipt_bytes,
+            )
+        receipt_bundle_signals = receipt_bundle_completeness_signals(receipt_bundle_result)
+        try:
+            receipt_bundle = require_complete_receipt_bundle(receipt_bundle_result)
+        except ReceiptBundleIncompleteError as exc:
+            return _receipt_bundle_refusal_report(
+                profile=profile,
+                input_id=input_id,
+                run_id=run_id,
+                egress=egress,
+                receipt_bundle_result=receipt_bundle_result,
+                refusal_reason=f"detector receipt bundle completeness gate refused input: {exc}",
+            )
+        receipts = receipt_bundle.receipts
+        receipt_source = receipt_bundle.receipt_source
+        receipt_coverage = cast(ReceiptCoverage, receipt_bundle.receipt_coverage)
+        declared_receipt_count = receipt_bundle.declared_receipt_count
+        receipt_bundle_gate_passed = True
+        if profile.uses_approval_authority:
+            scorer = receipt_scope_gated_scorer(
+                profile.scorer,
+                expected_run_id=run_id,
+            )
     detector_input = detector_input_from_egress(
         egress,
         input_id=input_id,
@@ -407,7 +430,52 @@ def score_fd(
         scorer_name=profile.scorer_name,
         scorer=scorer,
         receipt_count=len(receipts),
-        issued_token_count=issued_token_count,
+        declared_receipt_count=declared_receipt_count,
+        receipt_bundle_completeness_signals=receipt_bundle_signals,
+        receipt_bundle_completeness_gate_passed=receipt_bundle_gate_passed,
+    )
+
+
+def _receipt_bundle_refusal_report(
+    *,
+    profile: DetectorProfile,
+    input_id: str,
+    run_id: str,
+    egress: EffectEgressReadResult,
+    receipt_bundle_result: ReceiptBundleReadResult,
+    refusal_reason: str,
+) -> DetectorReport:
+    """Render one example-local refusal before receipt scope or profile policy."""
+    bundle = receipt_bundle_result.bundle
+    detector_input = detector_input_from_egress(
+        egress,
+        input_id=input_id,
+        run_id=run_id,
+        require_complete=False,
+    )
+    return DetectorReport(
+        victim_profile=profile.name,
+        scorer_name=profile.scorer_name,
+        detector_input_id=detector_input.input_id,
+        run_id=detector_input.run_id,
+        effect_egress_completeness_signals=detector_input.effect_egress_completeness_signals,
+        effect_egress_completeness_gate_passed=(
+            detector_input.effect_egress_completeness_gate_passed
+        ),
+        receipt_bundle_completeness_signals=receipt_bundle_completeness_signals(
+            receipt_bundle_result
+        ),
+        receipt_bundle_completeness_gate_passed=False,
+        receipt_source=bundle.receipt_source if bundle is not None else "",
+        receipt_coverage=(
+            cast(ReceiptCoverage, bundle.receipt_coverage) if bundle is not None else "unknown"
+        ),
+        receipt_count=len(bundle.receipts) if bundle is not None else 0,
+        declared_receipt_count=(
+            bundle.declared_receipt_count if bundle is not None else None
+        ),
+        scored=False,
+        refusal_reason=refusal_reason,
     )
 
 
@@ -775,7 +843,8 @@ def format_result(result: DetectedScenario) -> str:
             "victim_returncode",
             "authority_returncode",
             "detector_returncode",
-            "issued_tokens",
+            "authority_issued_tokens",
+            "declared_receipts",
             "scored",
             "findings",
             "refusal",
@@ -787,8 +856,13 @@ def format_result(result: DetectedScenario) -> str:
             str(result.authority_returncode) if result.authority_returncode is not None else "n/a",
             str(result.detector_returncode),
             (
-                str(result.detector.issued_token_count)
-                if result.detector.issued_token_count is not None
+                str(result.authority.issued_token_count)
+                if result.authority is not None
+                else "n/a"
+            ),
+            (
+                str(result.detector.declared_receipt_count)
+                if result.detector.declared_receipt_count is not None
                 else "n/a"
             ),
             str(result.detector.scored),
