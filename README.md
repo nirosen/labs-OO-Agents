@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Receipt Bundle Conformance Vectors
+
+> Branch: `codex/security-receipt-bundle-conformance-vectors`
+
+This slice adds no `src/nooa` runtime behavior. It adds checked LF-terminated reference vectors for the public receipt-bundle transport introduced in the previous slice. The vectors pin representative `write_receipt_bundle()` bytes, then exercise `read_receipt_bundle()` across clean, count-mismatched, internally spaced, truncated, over-bound, invalid UTF-8, malformed, and version-classified documents so reviewers can catch drift in the new wire contract without mistaking conformance for authenticity.
+
+```mermaid
+flowchart LR
+    F["receipt bundle fixture"] --> W["write_receipt_bundle()<br/>exact bytes"]
+    F --> R["read_receipt_bundle()<br/>selected outcomes"]
+    W --> B["LF JSON<br/>key order + UTF-8"]
+    R --> S["bundle / signals / errors"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `tests/security/fixtures/receipt_bundle_conformance_v1.json`, exact-byte writer checks, selected reader-outcome checks, a surface-guide reference, and README guidance |
+| Security claim | Reviewers can now detect accidental drift in the current `ReceiptBundle` writer bytes and selected reader classifications, including visible truncation and declared-count mismatch. |
+| Non-claim | The vectors do not authenticate receipts or producers, prove collection completeness, cover every malformed document, make a clean bundle trustworthy, or require independent writers to copy NOOA's exact JSON formatting when they already satisfy the accepted reader contract. |
+| Base slice | `codex/security-receipt-bundle-transport` |
+| Review files | `tests/security/fixtures/receipt_bundle_conformance_v1.json`, `tests/security/test_receipt_bundle_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_receipt_bundle_conformance.py`; `pytest tests/security`; `git diff --quiet 90995ff -- src/nooa ':(glob)examples/**/*.py'`; `pytest` |
+
 ## Security Review Follow-On: Receipt Bundle Transport
 
 > Branch: `codex/security-receipt-bundle-transport`
