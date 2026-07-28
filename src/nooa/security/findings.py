@@ -4,19 +4,38 @@
 
 from __future__ import annotations
 
+import json
+import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, BinaryIO, Literal, Never
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from pydantic_core import PydanticSerializationError
 
 EvidenceRef = Annotated[str, Field(min_length=1)]
+FINDING_BUNDLE_SCHEMA_VERSION: Literal["nooa-finding-bundle-v1"] = "nooa-finding-bundle-v1"
+FINDING_BUNDLE_SCHEMA_VERSION_PATTERN: str = r"nooa-finding-bundle-v[1-9][0-9]*"
+FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE: Literal["full"] = "full"
+FINDING_BUNDLE_KEYS: frozenset[str] = frozenset({"schema_version", "producer", "findings"})
+FindingBundleCompletenessSignal = Literal["truncated"]
+# Tuple order is public because FindingBundleIncompleteError.reasons preserves it.
+FINDING_BUNDLE_COMPLETENESS_SIGNALS: tuple[FindingBundleCompletenessSignal, ...] = (
+    "truncated",
+)
+MAX_FINDING_BUNDLE_JSON_INTEGER: int = (1 << 53) - 1
+DEFAULT_FINDING_BUNDLE_MAX_BYTES: int = 1024 * 1024
+DEFAULT_FINDING_BUNDLE_MAX_FINDINGS: int = 1 << 20
+
 FindingScopeSignal = Literal["missing_run_id", "run_id_mismatch"]
 # Tuple order is public because FindingScopeError.reasons preserves it.
 FINDING_SCOPE_SIGNALS: tuple[FindingScopeSignal, ...] = (
     "missing_run_id",
     "run_id_mismatch",
 )
+
+_FINDING_BUNDLE_SCHEMA_VERSION_RE = re.compile(FINDING_BUNDLE_SCHEMA_VERSION_PATTERN)
 
 
 class SecurityFinding(BaseModel):
@@ -76,6 +95,226 @@ class SecurityFinding(BaseModel):
         default_factory=dict,
         description="Sanitized application-defined finding details.",
     )
+
+
+class UnsupportedFindingBundleVersionError(ValueError):
+    """Raised when a reader sees a well-formed future finding bundle version."""
+
+    def __init__(self, schema_version: object) -> None:
+        self.schema_version = schema_version
+        super().__init__(f"unsupported finding bundle schema_version: {schema_version!r}")
+
+
+class FindingBundleInputTooLargeError(ValueError):
+    """Raised when a writer or reader refuses an over-bound finding bundle."""
+
+    def __init__(
+        self,
+        limit_name: Literal["max_bundle_bytes", "max_findings"],
+        limit_value: int,
+    ) -> None:
+        self.limit_name = limit_name
+        self.limit_value = limit_value
+        super().__init__(f"finding bundle exceeds {limit_name}={limit_value}")
+
+
+class FindingBundle(BaseModel):
+    """One collector-facing finding bundle document.
+
+    The bundle is a transport shape, not a verdict, severity, enforcement
+    action, detector-coverage proof, finding-id uniqueness guarantee, or
+    evidence-reference validator. ``producer`` is a caller-supplied assertion
+    about the bundle source; it does not constrain row-level
+    :attr:`SecurityFinding.producer` values or authenticate either one.
+
+    A clean empty bundle means only that the reader saw one terminated document
+    with zero supplied findings. It does not prove that nothing was found.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["nooa-finding-bundle-v1"] = Field(
+        default=FINDING_BUNDLE_SCHEMA_VERSION,
+        description="Finding bundle wire-format discriminator.",
+    )
+    producer: str = Field(
+        default="",
+        description="Sanitized identifier for the asserted finding bundle producer.",
+    )
+    findings: tuple[SecurityFinding, ...] = Field(
+        default_factory=tuple,
+        description="Application-supplied finding copies carried by the document.",
+    )
+
+
+@dataclass(frozen=True)
+class FindingBundleReadResult:
+    """Parsed finding bundle plus reader-visible document diagnostics.
+
+    ``truncated=True`` means the reader reached EOF before the first required LF
+    terminator. The reader does not parse an unterminated prefix, even when the
+    prefix is otherwise valid JSON. ``bundle`` is therefore ``None`` for
+    reader-produced truncated results. Direct construction only asserts these
+    fields; it does not perform the checks in :func:`read_finding_bundle`.
+    """
+
+    bundle: FindingBundle | None
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        if self.bundle is None and not self.truncated:
+            raise ValueError("FindingBundleReadResult without a bundle must be truncated")
+
+
+class FindingBundleIncompleteError(RuntimeError):
+    """Raised when known reader diagnostics show degraded finding transport.
+
+    This error reports only degradation visible in a
+    :class:`FindingBundleReadResult`. It does not authenticate finding bytes,
+    prove detector coverage, or establish that no omitted findings exist.
+    """
+
+    def __init__(self, result: FindingBundleReadResult) -> None:
+        if not isinstance(result, FindingBundleReadResult):
+            raise TypeError(
+                "FindingBundleIncompleteError expected FindingBundleReadResult, "
+                f"got {type(result).__name__}"
+            )
+        reasons = finding_bundle_completeness_signals(result)
+        if not reasons:
+            raise ValueError(
+                "FindingBundleIncompleteError requires at least one completeness signal"
+            )
+        self.bundle = result.bundle
+        self.truncated = result.truncated
+        self.producer = result.bundle.producer if result.bundle is not None else None
+        self.finding_count = len(result.bundle.findings) if result.bundle is not None else None
+        self.reasons = reasons
+        super().__init__(
+            "finding bundle is incomplete: "
+            f"truncated={result.truncated!r}, "
+            f"producer={self.producer!r}, "
+            f"finding_count={self.finding_count!r}"
+        )
+
+
+def write_finding_bundle(
+    fh: BinaryIO,
+    bundle: FindingBundle,
+    *,
+    max_bundle_bytes: int = DEFAULT_FINDING_BUNDLE_MAX_BYTES,
+    max_findings: int = DEFAULT_FINDING_BUNDLE_MAX_FINDINGS,
+) -> None:
+    """Write one LF-terminated finding bundle document to a binary stream.
+
+    The helper bounds one serialized document and the number of finding copies
+    it is willing to emit; those limits are resource backstops, not
+    authenticity, coverage, or verdict guarantees.
+    """
+    if type(bundle) is not FindingBundle:
+        raise TypeError(
+            "write_finding_bundle expected FindingBundle, "
+            f"got {type(bundle).__name__}"
+        )
+    max_bundle_bytes = _validate_max_bundle_bytes(max_bundle_bytes)
+    max_findings = _validate_max_findings(max_findings)
+    if len(bundle.findings) > max_findings:
+        raise FindingBundleInputTooLargeError("max_findings", max_findings)
+    for index, finding in enumerate(bundle.findings):
+        if type(finding) is not SecurityFinding:
+            raise TypeError(
+                "write_finding_bundle expected SecurityFinding at "
+                f"index {index}, got {type(finding).__name__}"
+            )
+    try:
+        for finding in bundle.findings:
+            _validate_finding_bundle_json_value_graph(finding.attributes)
+        payload_value = bundle.model_dump(mode="json")
+        _validate_finding_bundle_json_value_graph(payload_value)
+        payload = (bundle.model_dump_json() + "\n").encode("utf-8")
+    except (PydanticSerializationError, UnicodeEncodeError, ValidationError, ValueError) as exc:
+        raise TypeError(
+            f"write_finding_bundle expected JSON-safe FindingBundle, got {type(bundle).__name__}"
+        ) from exc
+    if len(payload) > max_bundle_bytes:
+        raise FindingBundleInputTooLargeError("max_bundle_bytes", max_bundle_bytes)
+    written = fh.write(payload)
+    if written != len(payload):
+        raise OSError(f"finding bundle writer wrote {written} of {len(payload)} bytes")
+    fh.flush()
+
+
+def read_finding_bundle(
+    fh: BinaryIO,
+    *,
+    max_bundle_bytes: int = DEFAULT_FINDING_BUNDLE_MAX_BYTES,
+    max_findings: int = DEFAULT_FINDING_BUNDLE_MAX_FINDINGS,
+) -> FindingBundleReadResult:
+    """Read exactly one bounded LF-terminated finding bundle document.
+
+    The reader consumes at most one document line from the stream's current
+    position and leaves any later bytes unread. Empty input and an unterminated
+    first line return ``FindingBundleReadResult(truncated=True)``. A malformed
+    terminated document raises :class:`ValueError`; a well-formed future schema
+    version raises :class:`UnsupportedFindingBundleVersionError`; and
+    over-bound input raises :class:`FindingBundleInputTooLargeError`.
+
+    ``max_bundle_bytes`` includes the required trailing LF byte. ``max_findings``
+    is an admission bound checked after the bounded JSON document has been
+    parsed; callers that need a tighter parser-memory ceiling should reduce the
+    byte budget as well.
+    """
+    max_bundle_bytes = _validate_max_bundle_bytes(max_bundle_bytes)
+    max_findings = _validate_max_findings(max_findings)
+    payload = _read_finding_bundle_binary_chunk(fh.readline(max_bundle_bytes + 1))
+    if len(payload) > max_bundle_bytes:
+        raise FindingBundleInputTooLargeError("max_bundle_bytes", max_bundle_bytes)
+    if not payload or not payload.endswith(b"\n"):
+        return FindingBundleReadResult(bundle=None, truncated=True)
+
+    bundle = _parse_finding_bundle_document(payload)
+    if len(bundle.findings) > max_findings:
+        raise FindingBundleInputTooLargeError("max_findings", max_findings)
+    return FindingBundleReadResult(bundle=bundle)
+
+
+def require_complete_finding_bundle(result: FindingBundleReadResult) -> FindingBundle:
+    """Return one parsed bundle only when received bytes show no known degradation.
+
+    A clean result means only that the reader received one LF-terminated
+    document. It does not authenticate finding bytes, prove detector coverage,
+    or establish that no omitted findings exist.
+    """
+    if not isinstance(result, FindingBundleReadResult):
+        raise TypeError(
+            "require_complete_finding_bundle expected FindingBundleReadResult, "
+            f"got {type(result).__name__}"
+        )
+    if finding_bundle_completeness_signals(result):
+        raise FindingBundleIncompleteError(result)
+    if result.bundle is None:
+        raise ValueError("complete FindingBundleReadResult requires a parsed bundle")
+    return result.bundle
+
+
+def finding_bundle_completeness_signals(
+    result: FindingBundleReadResult,
+) -> tuple[FindingBundleCompletenessSignal, ...]:
+    """Return known finding-bundle diagnostics in canonical public order.
+
+    The returned tuple describes only degradation visible in one
+    :class:`FindingBundleReadResult`. An empty tuple does not prove that the
+    producer emitted every finding or that the bytes are authentic.
+    """
+    if not isinstance(result, FindingBundleReadResult):
+        raise TypeError(
+            "finding_bundle_completeness_signals expected FindingBundleReadResult, "
+            f"got {type(result).__name__}"
+        )
+    reasons: list[FindingBundleCompletenessSignal] = []
+    if result.truncated:
+        reasons.append("truncated")
+    return tuple(reasons)
 
 
 @dataclass(frozen=True)
@@ -210,3 +449,148 @@ def require_valid_finding_scope(
     if finding_scope_signals(validation):
         raise FindingScopeError(validation)
     return validation.findings
+
+
+def _parse_finding_bundle_document(payload: bytes) -> FindingBundle:
+    """Parse one terminated finding bundle and keep future versions distinct."""
+    body = payload[:-1]
+    try:
+        if body.startswith(b"\xef\xbb\xbf") or body != body.strip():
+            raise ValueError("document has BOM or outer whitespace")
+        value = json.loads(
+            body.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_finding_bundle_json_object_pairs,
+            parse_constant=_reject_non_finite_finding_bundle_json_constant,
+            parse_float=_parse_finite_finding_bundle_json_float,
+            parse_int=_parse_safe_finding_bundle_json_int,
+        )
+        _validate_finding_bundle_json_value_graph(value)
+    except (RecursionError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("invalid finding bundle document") from exc
+
+    if isinstance(value, dict) and "schema_version" in value:
+        schema_version = value["schema_version"]
+        if (
+            schema_version != FINDING_BUNDLE_SCHEMA_VERSION
+            and isinstance(schema_version, str)
+            and _FINDING_BUNDLE_SCHEMA_VERSION_RE.fullmatch(schema_version)
+        ):
+            raise UnsupportedFindingBundleVersionError(schema_version)
+    if not isinstance(value, dict) or frozenset(value) != FINDING_BUNDLE_KEYS:
+        raise ValueError("invalid finding bundle document")
+
+    try:
+        return FindingBundle.model_validate(value)
+    except ValidationError as exc:
+        raise ValueError("invalid finding bundle document") from exc
+
+
+def _reject_duplicate_finding_bundle_json_object_pairs(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    """Reject duplicate object keys so readers cannot disagree on last-wins behavior."""
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
+
+
+def _reject_non_finite_finding_bundle_json_constant(token: str) -> Never:
+    """Reject Python's non-standard NaN and Infinity JSON extensions."""
+    raise ValueError(f"non-finite JSON constant: {token}")
+
+
+def _parse_finite_finding_bundle_json_float(token: str) -> float:
+    """Parse a JSON float while rejecting finite-looking overflow literals."""
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON float: {token}")
+    return value
+
+
+def _parse_safe_finding_bundle_json_int(token: str) -> int:
+    """Parse a JSON integer while rejecting values unsafe in IEEE-754 readers."""
+    value = int(token)
+    if abs(value) > MAX_FINDING_BUNDLE_JSON_INTEGER:
+        raise ValueError(f"JSON integer exceeds safe range: {token}")
+    return value
+
+
+def _validate_finding_bundle_json_value_graph(payload: object) -> None:
+    """Reject strings and values that make finding-bundle JSON non-portable."""
+    pending: list[tuple[object, bool]] = [(payload, False)]
+    active_container_ids: set[int] = set()
+    validated_container_ids: set[int] = set()
+    while pending:
+        value, exiting = pending.pop()
+        if exiting:
+            container_id = id(value)
+            active_container_ids.remove(container_id)
+            validated_container_ids.add(container_id)
+            continue
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if abs(value) > MAX_FINDING_BUNDLE_JSON_INTEGER:
+                raise ValueError("JSON integer exceeds safe range")
+            continue
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("JSON value contains a non-finite float")
+            continue
+        if isinstance(value, str):
+            if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+                raise ValueError("JSON string contains a lone surrogate")
+            continue
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) for key in value):
+                raise ValueError("JSON object key is not a string")
+            container_id = id(value)
+            if container_id in active_container_ids:
+                raise ValueError("JSON value graph contains a cycle")
+            if container_id in validated_container_ids:
+                continue
+            active_container_ids.add(container_id)
+            pending.append((value, True))
+            pending.extend((child, False) for child in value.keys())
+            pending.extend((child, False) for child in value.values())
+            continue
+        if isinstance(value, list):
+            container_id = id(value)
+            if container_id in active_container_ids:
+                raise ValueError("JSON value graph contains a cycle")
+            if container_id in validated_container_ids:
+                continue
+            active_container_ids.add(container_id)
+            pending.append((value, True))
+            pending.extend((child, False) for child in value)
+            continue
+        raise ValueError(f"value is not JSON-native: {type(value).__name__}")
+
+
+def _validate_max_bundle_bytes(max_bundle_bytes: int) -> int:
+    """Validate a finding-bundle byte budget."""
+    return _validate_positive_finding_bundle_int(max_bundle_bytes, name="max_bundle_bytes")
+
+
+def _validate_max_findings(max_findings: int) -> int:
+    """Validate a finding-bundle count budget."""
+    return _validate_positive_finding_bundle_int(max_findings, name="max_findings")
+
+
+def _validate_positive_finding_bundle_int(value: int, *, name: str) -> int:
+    """Validate one positive integer limit while rejecting bools explicitly."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} expected int, got {type(value).__name__}")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _read_finding_bundle_binary_chunk(chunk: object) -> bytes:
+    """Keep binary-stream type failures consistent across finding reads."""
+    if not isinstance(chunk, bytes):
+        raise TypeError(f"read_finding_bundle expected binary stream, got {type(chunk).__name__}")
+    return chunk

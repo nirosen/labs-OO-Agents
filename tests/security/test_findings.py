@@ -4,17 +4,36 @@
 
 from __future__ import annotations
 
+import json
+import re
+from io import BytesIO, StringIO
+
 import pytest
 from pydantic import ValidationError
 
 from nooa.security import (
+    FINDING_BUNDLE_COMPLETENESS_SIGNALS,
+    FINDING_BUNDLE_KEYS,
+    FINDING_BUNDLE_SCHEMA_VERSION,
+    FINDING_BUNDLE_SCHEMA_VERSION_PATTERN,
+    FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE,
     FINDING_SCOPE_SIGNALS,
+    MAX_FINDING_BUNDLE_JSON_INTEGER,
+    FindingBundle,
+    FindingBundleIncompleteError,
+    FindingBundleInputTooLargeError,
+    FindingBundleReadResult,
     FindingScopeError,
     FindingScopeValidation,
     SecurityFinding,
+    UnsupportedFindingBundleVersionError,
+    finding_bundle_completeness_signals,
     finding_scope_signals,
+    read_finding_bundle,
+    require_complete_finding_bundle,
     require_valid_finding_scope,
     validate_finding_scope,
+    write_finding_bundle,
 )
 
 
@@ -30,6 +49,19 @@ def _finding(**updates: object) -> SecurityFinding:
     }
     fields.update(updates)
     return SecurityFinding.model_validate(fields)
+
+
+def _bundle(**updates: object) -> FindingBundle:
+    fields = {
+        "producer": "identity_policy.v1",
+        "findings": (_finding(),),
+    }
+    fields.update(updates)
+    return FindingBundle.model_validate(fields)
+
+
+def _bundle_line(bundle: FindingBundle) -> bytes:
+    return (bundle.model_dump_json() + "\n").encode("utf-8")
 
 
 def test_security_finding_is_strict_json_transport() -> None:
@@ -87,6 +119,218 @@ def test_security_finding_evidence_refs_are_opaque_ids() -> None:
     )
 
     assert finding.evidence_refs == ("effect-event-1", "receipt-audit-1", "siem-event-9")
+
+
+def test_finding_bundle_is_strict_transport_and_publishes_version_contract() -> None:
+    bundle = _bundle()
+
+    assert set(bundle.model_dump(mode="json")) == FINDING_BUNDLE_KEYS
+    assert bundle.schema_version == FINDING_BUNDLE_SCHEMA_VERSION
+    assert bundle.producer == "identity_policy.v1"
+    assert bundle.findings == (_finding(),)
+    assert FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"
+    assert re.fullmatch(FINDING_BUNDLE_SCHEMA_VERSION_PATTERN, bundle.schema_version)
+
+    with pytest.raises(ValidationError):
+        _bundle(typo="not-allowed")
+    with pytest.raises(ValidationError):
+        _bundle(schema_version="nooa-finding-bundle-v2")
+
+
+def test_finding_bundle_writer_reader_round_trip_and_gate() -> None:
+    bundle = _bundle()
+    fh = BytesIO()
+
+    write_finding_bundle(fh, bundle)
+
+    assert fh.getvalue().endswith(b"\n")
+    fh.seek(0)
+    result = read_finding_bundle(fh)
+
+    assert result == FindingBundleReadResult(bundle=bundle)
+    assert finding_bundle_completeness_signals(result) == ()
+    assert require_complete_finding_bundle(result) == bundle
+
+
+def test_read_finding_bundle_consumes_only_one_document_line() -> None:
+    first = _bundle()
+    second = _bundle(
+        producer="prompt_detector.v1",
+        findings=(_finding(finding_id="finding-2", producer="prompt_detector.v1"),),
+    )
+    fh = BytesIO(_bundle_line(first) + _bundle_line(second))
+
+    assert require_complete_finding_bundle(read_finding_bundle(fh)) == first
+    assert require_complete_finding_bundle(read_finding_bundle(fh)) == second
+    assert fh.read() == b""
+
+
+def test_finding_bundle_completeness_signals_cover_truncation_only() -> None:
+    truncated = read_finding_bundle(BytesIO(_bundle().model_dump_json().encode("utf-8")))
+
+    assert FINDING_BUNDLE_COMPLETENESS_SIGNALS == ("truncated",)
+    assert truncated.bundle is None
+    assert finding_bundle_completeness_signals(truncated) == ("truncated",)
+
+    with pytest.raises(FindingBundleIncompleteError) as exc_info:
+        require_complete_finding_bundle(truncated)
+
+    error = exc_info.value
+    assert error.reasons == ("truncated",)
+    assert error.producer is None
+    assert error.finding_count is None
+    assert not isinstance(error, ValueError)
+
+
+def test_read_finding_bundle_keeps_malformed_and_future_versions_distinct() -> None:
+    with pytest.raises(ValueError, match="invalid finding bundle document"):
+        read_finding_bundle(BytesIO(b"{}\n"))
+
+    future_payload = {
+        "schema_version": "nooa-finding-bundle-v2",
+        "producer": "",
+        "findings": [],
+    }
+    with pytest.raises(UnsupportedFindingBundleVersionError) as exc_info:
+        read_finding_bundle(
+            BytesIO((json.dumps(future_payload, separators=(",", ":")) + "\n").encode("utf-8"))
+        )
+
+    assert exc_info.value.schema_version == "nooa-finding-bundle-v2"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"\xef\xbb\xbf" + _bundle_line(_bundle()), id="bom"),
+        pytest.param(b" " + _bundle_line(_bundle()), id="outer-whitespace"),
+        pytest.param(b"[]\n", id="non-dict"),
+        pytest.param(b'{"schema_version":"nooa-finding-bundle-v1"}\n', id="missing-keys"),
+        pytest.param(
+            b'{"schema_version":"nooa-finding-bundle-v1","producer":"a",'
+            b'"producer":"b","findings":[]}\n',
+            id="duplicate-key",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-finding-bundle-v1","producer":"",'
+            b'"findings":[{"schema_version":"nooa-finding-v1","finding_id":"f",'
+            b'"finding_type":"t","producer":"p","run_id":"","target":"",'
+            b'"evidence_refs":[],"attributes":{"score":NaN}}]}\n',
+            id="nan",
+        ),
+        pytest.param(
+            (
+                b'{"schema_version":"nooa-finding-bundle-v1","producer":"",'
+                b'"findings":[{"schema_version":"nooa-finding-v1","finding_id":"f",'
+                b'"finding_type":"t","producer":"p","run_id":"","target":"",'
+                b'"evidence_refs":[],"attributes":{"score":'
+                + str(MAX_FINDING_BUNDLE_JSON_INTEGER + 1).encode("ascii")
+                + b"}}]}\n"
+            ),
+            id="unsafe-int",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-finding-bundle-v1","producer":"\\ud800",'
+            b'"findings":[]}\n',
+            id="lone-surrogate",
+        ),
+    ],
+)
+def test_read_finding_bundle_rejects_nonportable_terminated_documents(payload: bytes) -> None:
+    with pytest.raises(ValueError, match="invalid finding bundle document"):
+        read_finding_bundle(BytesIO(payload))
+
+
+def test_finding_bundle_reader_and_writer_enforce_budgets() -> None:
+    bundle = _bundle()
+    payload = _bundle_line(bundle)
+    two_finding_bundle = _bundle(
+        findings=(_finding(), _finding(finding_id="finding-2")),
+    )
+    two_finding_payload = _bundle_line(two_finding_bundle)
+
+    assert read_finding_bundle(BytesIO(payload), max_bundle_bytes=len(payload)).bundle == bundle
+    with pytest.raises(FindingBundleInputTooLargeError) as bytes_exc:
+        read_finding_bundle(BytesIO(payload), max_bundle_bytes=len(payload) - 1)
+    assert bytes_exc.value.limit_name == "max_bundle_bytes"
+    assert bytes_exc.value.limit_value == len(payload) - 1
+
+    with pytest.raises(FindingBundleInputTooLargeError) as findings_exc:
+        read_finding_bundle(BytesIO(two_finding_payload), max_findings=1)
+    assert findings_exc.value.limit_name == "max_findings"
+    assert findings_exc.value.limit_value == 1
+
+    with pytest.raises(FindingBundleInputTooLargeError):
+        write_finding_bundle(BytesIO(), bundle, max_bundle_bytes=len(payload) - 1)
+    with pytest.raises(FindingBundleInputTooLargeError):
+        write_finding_bundle(BytesIO(), two_finding_bundle, max_findings=1)
+
+
+def test_write_finding_bundle_rejects_subclass_only_fields_and_short_write() -> None:
+    class ExtendedFinding(SecurityFinding):
+        extra_field: str
+
+    class ExtendedBundle(FindingBundle):
+        extra_field: str
+
+    finding = ExtendedFinding(
+        finding_id="finding-extended",
+        finding_type="authorization.missing_receipt",
+        producer="identity_policy.v1",
+        extra_field="must-not-drop",
+    )
+    with pytest.raises(TypeError, match="expected SecurityFinding at index 0"):
+        write_finding_bundle(BytesIO(), _bundle(findings=(finding,)))
+    with pytest.raises(TypeError, match="expected FindingBundle"):
+        write_finding_bundle(
+            BytesIO(),
+            ExtendedBundle(producer="identity_policy.v1", extra_field="must-not-drop"),
+        )
+
+    class ShortWriteBuffer(BytesIO):
+        def write(self, data: bytes) -> int:
+            super().write(data[:-1])
+            return len(data) - 1
+
+    with pytest.raises(OSError, match="finding bundle writer wrote"):
+        write_finding_bundle(ShortWriteBuffer(), _bundle())
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "1024"])
+def test_finding_bundle_rejects_invalid_budget_values(value: object) -> None:
+    expected_exception = (
+        TypeError if not isinstance(value, int) or isinstance(value, bool) else ValueError
+    )
+    with pytest.raises(expected_exception):
+        read_finding_bundle(
+            BytesIO(b""),
+            max_bundle_bytes=value,  # type: ignore[arg-type]
+        )
+    with pytest.raises(expected_exception):
+        write_finding_bundle(
+            BytesIO(),
+            _bundle(),
+            max_findings=value,  # type: ignore[arg-type]
+        )
+
+
+def test_finding_bundle_helpers_reject_invalid_inputs_and_clean_error() -> None:
+    clean = FindingBundleReadResult(bundle=_bundle())
+
+    with pytest.raises(TypeError, match="expected FindingBundle"):
+        write_finding_bundle(BytesIO(), "not-a-bundle")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="binary stream"):
+        read_finding_bundle(StringIO(""))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected FindingBundleReadResult"):
+        finding_bundle_completeness_signals("not-a-result")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected FindingBundleReadResult"):
+        require_complete_finding_bundle("not-a-result")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected FindingBundleReadResult"):
+        FindingBundleIncompleteError("not-a-result")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires at least one completeness signal"):
+        FindingBundleIncompleteError(clean)
+    with pytest.raises(ValueError, match="without a bundle must be truncated"):
+        FindingBundleReadResult(bundle=None)
 
 
 def test_validate_finding_scope_materializes_once_and_preserves_order() -> None:
