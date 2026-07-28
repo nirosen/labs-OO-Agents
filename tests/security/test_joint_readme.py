@@ -118,7 +118,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
-    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V16" in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V17" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -135,6 +135,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V13" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V14" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V15" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V16" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -363,3 +364,16 @@ def test_joint_readme_exposes_current_receipt_admission_refusal_stages() -> None
         for row in rows
         if row.authority_fault in expected
     } == expected
+
+
+def test_joint_readme_documents_refusal_text_redaction_without_matrix_churn() -> None:
+    root_text = _readme_text()
+    hardening_text = _readme_text(HARDENING_README_PATH)
+
+    assert "V17 adds no row or column" in root_text
+    assert "22 rows and 13 columns" in root_text
+    assert "`refusal_reason` is not a matrix field" in root_text
+    assert "six row-validation gates that already expose structured" in root_text
+    assert "evidence-membership refusal text remains outside this redaction" in root_text
+    assert "reasons + redacted_id_count" in root_text
+    assert "reasons + redacted_id_count" in hardening_text
