@@ -120,6 +120,7 @@ from nooa.security import (
     ReceiptCoverage,
     ReceiptScopeError,
     SecurityFinding,
+    UnsupportedFindingBundleVersionError,
     detector_input_from_egress,
     finding_bundle_completeness_signals,
     framework_guard_observer,
@@ -407,10 +408,7 @@ class DetectedScenario(BaseModel):
             raise ValueError("detected scenario requires a successful detector subprocess")
         if not self.detector.scored and self.findings:
             raise ValueError("refused detector scenario cannot carry findings")
-        if (
-            self.detector.declared_finding_count is not None
-            and self.detector.declared_finding_count != len(self.findings)
-        ):
+        if self.detector.scored and self.detector.declared_finding_count != len(self.findings):
             raise ValueError("declared_finding_count must match admitted findings")
         return self
 
@@ -842,6 +840,14 @@ def _admit_finding_bundle(
             ),
             (),
         )
+    except UnsupportedFindingBundleVersionError as exc:
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=f"supervisor finding bundle parse admission refused output: {exc}",
+            ),
+            (),
+        )
     except ValueError:
         return (
             _supervisor_refuse_parsed_report(
@@ -927,12 +933,11 @@ def _supervisor_refuse_parsed_report(
     *,
     refusal_reason: str,
 ) -> DetectorReport:
-    """Preserve parsed report diagnostics while clearing unaccepted finding count."""
+    """Preserve parsed report diagnostics while marking its finding rows unaccepted."""
     return DetectorReport.model_validate(
         {
             **report.model_dump(mode="python"),
             "scored": False,
-            "declared_finding_count": None,
             "refusal_reason": refusal_reason,
         }
     )

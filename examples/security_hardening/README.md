@@ -26,7 +26,7 @@ This is a conformance contract, not a trust claim. The pattern does not authenti
 
 ## Finding Bundle Handoff Follow-On
 
-`codex/security-finding-bundle-handoff` adds the public `FindingBundle` transport and moves detector rows out of the example-local `DetectorReport` JSON. The detector emits report metadata on stdout with `declared_finding_count`, writes one LF-terminated bundle through a dedicated inherited descriptor backed by a supervisor-owned temporary file, and the supervisor accepts rows only after bundle completeness, cross-channel count, and finding-scope gates all pass.
+`codex/security-finding-bundle-handoff` adds the public `FindingBundle` transport and moves detector rows out of the example-local `DetectorReport` JSON. The detector emits report metadata on stdout with `declared_finding_count`, writes one LF-terminated bundle through a dedicated inherited descriptor backed by a supervisor-owned temporary file, and the supervisor accepts rows only after bundle completeness, cross-channel count, and finding-scope gates all pass. A refused parsed report keeps its detector-declared count as diagnostic metadata even though `DetectedScenario.findings` stays empty.
 
 ```mermaid
 flowchart LR

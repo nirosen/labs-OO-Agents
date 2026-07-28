@@ -149,10 +149,12 @@ parsing, checks the report `run_id`, requires a complete finding document,
 cross-checks `declared_finding_count`, and then uses
 `validate_finding_scope()` against the supervisor-selected scope before it
 accepts rows into `DetectedScenario.findings`. A visible mismatch becomes an
-example-local `scored=False` refusal. The `max_detector_report_bytes` option is
-a parse-admission bound after `subprocess.communicate()` already collected
-stdout; `max_finding_bundle_bytes` bounds the separate document read from the
-supervisor-owned temporary file. Neither is a detector authentication boundary.
+example-local `scored=False` refusal; the parsed report keeps its
+detector-declared count as diagnostic metadata while no rows are admitted. The
+`max_detector_report_bytes` option is a parse-admission bound after
+`subprocess.communicate()` already collected stdout; `max_finding_bundle_bytes`
+bounds the separate document read from the supervisor-owned temporary file.
+Neither is a detector authentication boundary.
 The current harness also admits victim and authority summary payloads through
 example-local bounded parse checks before it builds `DetectedScenario`, and it
 rejects visible victim `scenario` drift against the supervisor-selected
