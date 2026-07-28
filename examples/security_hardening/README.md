@@ -10,6 +10,31 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Finding Scope Gate Follow-On
+
+`codex/security-finding-scope-gate` adds the opt-in finding scope helper and uses it at the supervisor side of the detector-report handoff. The detector still emits an ordinary `DetectorReport`; before `run_detected_scenario()` accepts that report, the supervisor admits only a bounded payload to parsing, checks the report `run_id`, and refuses blank-scoped or stale-scoped `SecurityFinding` rows against the supervisor-selected scope.
+
+```mermaid
+flowchart LR
+    S["supervisor-selected run_id"] --> A["report parse admission"]
+    D["detector report JSON"] --> A
+    A --> R["report run_id check"]
+    R --> V["validate_finding_scope()"]
+    V -- "clean" --> Q["DetectedScenario"]
+    R -. "mismatch" .-> X["scored=False"]
+    V -. "missing / mismatch" .-> X
+```
+
+Run the new detector fault:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault stale_finding_run_id
+```
+
+`blank_finding_run_id` exercises the other visible scope signal on the same finding-producing scenario. Both finding faults require a scored report with at least one finding; the harness fails explicitly instead of silently ignoring them on a zero-finding scenario.
+
+This is a visible scope-consistency gate, not a trusted detector. Directly constructing `FindingScopeValidation` asserts diagnostics; it does not perform the check. The supervisor-side `max_detector_report_bytes` option bounds only payload admitted to parsing after `communicate()` already collected stdout, so it is not a pre-read memory limit. The helper and example do not authenticate finding producers or the caller-selected scope, prove detector coverage, check finding-id uniqueness, dereference evidence refs, assign severity or verdict, or make an empty clean bundle evidence that no findings exist.
+
 ## Receipt Bundle Transport Follow-On
 
 `codex/security-receipt-bundle-transport` replaces the harness's example-local receipt JSON reader with the public `ReceiptBundle` transport. The authority emits one bounded LF-terminated bundle, the detector reads it through `read_receipt_bundle()`, and `require_complete_receipt_bundle()` refuses a truncated or declared-count-mismatched document before the example reaches receipt run-scope or profile policy.

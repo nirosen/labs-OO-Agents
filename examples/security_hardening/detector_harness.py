@@ -21,6 +21,12 @@ trust boundary; provide sandboxing or attestation; prove that an issued token
 was honored; or turn detector findings into enforcement. The receipt path now
 uses the public LF-terminated bundle reader so EOF before the bundle terminator
 becomes an explicit detector refusal before run-scope or profile policy runs.
+After the detector subprocess emits its report, the supervisor admits only a
+bounded report payload to parsing and checks both the report scope and finding
+row scopes against the supervisor-selected ``run_id`` before accepting the
+detector output as scored. That bound is a parse-admission check after
+``communicate()`` has already collected stdout; it is not a pre-read memory
+limit.
 
     uv run python -m examples.security_hardening.detector_harness demo
 """
@@ -93,6 +99,7 @@ from nooa.security import (
     DetectorInput,
     EffectEgressCompletenessSignal,
     EffectEgressReadResult,
+    FindingScopeError,
     ReceiptBundleCompletenessSignal,
     ReceiptBundleIncompleteError,
     ReceiptBundleReadResult,
@@ -108,7 +115,9 @@ from nooa.security import (
     read_receipt_bundle,
     receipt_bundle_completeness_signals,
     require_complete_receipt_bundle,
+    require_valid_finding_scope,
     require_valid_receipt_scope,
+    validate_finding_scope,
     validate_receipt_scope,
 )
 
@@ -120,6 +129,9 @@ _DETECTED_SCENARIO_SCHEMA_VERSION: Literal["nooa-detector-scenario-example-v3"] 
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DETECTOR_RECEIPT_MAX_BYTES = DEFAULT_RECEIPT_BUNDLE_MAX_BYTES
+DEFAULT_DETECTOR_REPORT_MAX_BYTES = 1024 * 1024
+_DETECTOR_FAULTS = ("none", "blank_finding_run_id", "stale_finding_run_id")
+DetectorFault = Literal["none", "blank_finding_run_id", "stale_finding_run_id"]
 DetectorScorer = Callable[[DetectorInput], tuple[SecurityFinding, ...]]
 
 
@@ -372,9 +384,11 @@ def score_fd(
     run_id: str,
     input_id: str,
     max_receipt_bytes: int = DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
+    fault: DetectorFault = "none",
 ) -> DetectorReport:
     """Assemble one detector input from effect and receipt descriptors, then score it."""
     profile = _profile_from_name(profile_name)
+    fault = _validate_detector_fault(fault)
     with os.fdopen(effect_fd, "rb", closefd=True) as effect_fh:
         egress = read_effect_egress(
             effect_fh,
@@ -424,7 +438,7 @@ def score_fd(
         receipt_coverage=receipt_coverage,
         require_complete=False,
     )
-    return score_detector_input(
+    report = score_detector_input(
         detector_input,
         victim_profile=profile.name,
         scorer_name=profile.scorer_name,
@@ -434,6 +448,7 @@ def score_fd(
         receipt_bundle_completeness_signals=receipt_bundle_signals,
         receipt_bundle_completeness_gate_passed=receipt_bundle_gate_passed,
     )
+    return _inject_detector_fault(report, fault=fault, run_id=run_id)
 
 
 def _receipt_bundle_refusal_report(
@@ -474,6 +489,122 @@ def _receipt_bundle_refusal_report(
         declared_receipt_count=(
             bundle.declared_receipt_count if bundle is not None else None
         ),
+        scored=False,
+        refusal_reason=refusal_reason,
+    )
+
+
+def _inject_detector_fault(
+    report: DetectorReport,
+    *,
+    fault: DetectorFault,
+    run_id: str,
+) -> DetectorReport:
+    """Apply one example-only detector output fault after scoring."""
+    if fault == "none":
+        return report
+    if not report.scored:
+        raise ValueError(f"{fault} requires a scored detector report")
+    if not report.findings:
+        raise ValueError(f"{fault} requires at least one detector finding")
+    if fault in {"blank_finding_run_id", "stale_finding_run_id"}:
+        first, *remaining = report.findings
+        faulted_finding = SecurityFinding.model_validate(
+            {
+                **first.model_dump(mode="python"),
+                "run_id": "" if fault == "blank_finding_run_id" else f"{run_id}/stale",
+            }
+        )
+        return DetectorReport.model_validate(
+            {
+                **report.model_dump(mode="python"),
+                "findings": (faulted_finding, *remaining),
+            }
+        )
+    raise AssertionError(f"unhandled detector fault: {fault}")
+
+
+def _admit_detector_report(
+    payload: str,
+    *,
+    profile: DetectorProfile,
+    input_id: str,
+    expected_run_id: str,
+    max_report_bytes: int,
+) -> DetectorReport:
+    """Parse one detector report and fail closed on visible output-scope drift.
+
+    ``max_report_bytes`` bounds only the payload admitted to JSON parsing. The
+    supervisor already holds ``payload`` because ``subprocess.communicate()``
+    collected it before this helper runs.
+    """
+    max_report_bytes = _validate_max_detector_report_bytes(max_report_bytes)
+    payload_bytes = payload.encode("utf-8")
+    if len(payload_bytes) > max_report_bytes:
+        return _supervisor_refusal_report(
+            profile=profile,
+            input_id=input_id,
+            run_id=expected_run_id,
+            refusal_reason=(
+                "supervisor detector report parse admission refused output: "
+                f"payload_bytes={len(payload_bytes)} exceeds "
+                f"max_detector_report_bytes={max_report_bytes}"
+            ),
+        )
+
+    report = DetectorReport.model_validate_json(payload)
+    if report.run_id != expected_run_id:
+        return _supervisor_refuse_parsed_report(
+            report,
+            refusal_reason=(
+                "supervisor detector report scope gate refused output: "
+                f"expected_run_id={expected_run_id!r}, reported_run_id={report.run_id!r}"
+            ),
+        )
+    try:
+        require_valid_finding_scope(
+            validate_finding_scope(
+                report.findings,
+                expected_run_id=expected_run_id,
+            )
+        )
+    except FindingScopeError as exc:
+        return _supervisor_refuse_parsed_report(
+            report,
+            refusal_reason=f"supervisor finding scope gate refused output: {exc}",
+        )
+    return report
+
+
+def _supervisor_refuse_parsed_report(
+    report: DetectorReport,
+    *,
+    refusal_reason: str,
+) -> DetectorReport:
+    """Preserve parsed report diagnostics while clearing unaccepted findings."""
+    return DetectorReport.model_validate(
+        {
+            **report.model_dump(mode="python"),
+            "scored": False,
+            "findings": (),
+            "refusal_reason": refusal_reason,
+        }
+    )
+
+
+def _supervisor_refusal_report(
+    *,
+    profile: DetectorProfile,
+    input_id: str,
+    run_id: str,
+    refusal_reason: str,
+) -> DetectorReport:
+    """Create one minimal refusal when detector stdout is not admitted to parsing."""
+    return DetectorReport(
+        victim_profile=profile.name,
+        scorer_name=profile.scorer_name,
+        detector_input_id=input_id,
+        run_id=run_id,
         scored=False,
         refusal_reason=refusal_reason,
     )
@@ -643,18 +774,24 @@ def run_detected_scenario(
     *,
     victim_fault: VictimFault = "none",
     authority_fault: AuthorityFault = "none",
+    detector_fault: DetectorFault = "none",
     emit_guard_effect: bool = False,
     max_receipt_bytes: int = DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     max_authority_document_bytes: int = DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES,
+    max_detector_report_bytes: int = DEFAULT_DETECTOR_REPORT_MAX_BYTES,
     timeout: float = 10.0,
 ) -> DetectedScenario:
     """Run one configured victim profile and detector over supervisor-owned pipes."""
     profile = _profile_for_scenario(scenario)
     victim_fault = _validate_victim_fault(victim_fault)
     authority_fault = _validate_authority_fault(authority_fault)
+    detector_fault = _validate_detector_fault(detector_fault)
     max_receipt_bytes = _validate_max_receipt_bytes(max_receipt_bytes)
     max_authority_document_bytes = _validate_max_authority_document_bytes(
         max_authority_document_bytes
+    )
+    max_detector_report_bytes = _validate_max_detector_report_bytes(
+        max_detector_report_bytes
     )
     if not profile.uses_approval_authority and authority_fault != "none":
         raise ValueError(f"{profile.name} profile does not use an approval authority")
@@ -703,6 +840,7 @@ def run_detected_scenario(
             run_id=run_id,
             input_id=input_id,
             max_receipt_bytes=max_receipt_bytes,
+            fault=detector_fault,
         )
         victim_args = [
             "victim",
@@ -823,11 +961,18 @@ def run_detected_scenario(
     authority_summary = (
         AuthoritySummary.model_validate_json(authority_stdout) if authority is not None else None
     )
+    detector_report = _admit_detector_report(
+        detector_stdout,
+        profile=profile,
+        input_id=input_id,
+        expected_run_id=run_id,
+        max_report_bytes=max_detector_report_bytes,
+    )
     return DetectedScenario(
         victim_profile=profile.name,
         victim=victim_summary,
         authority=authority_summary,
-        detector=DetectorReport.model_validate_json(detector_stdout),
+        detector=detector_report,
         victim_returncode=victim.returncode,
         authority_returncode=authority.returncode if authority is not None else None,
         detector_returncode=detector.returncode,
@@ -914,6 +1059,7 @@ def _spawn_detector_subprocess(
     run_id: str,
     input_id: str,
     max_receipt_bytes: int,
+    fault: DetectorFault,
 ) -> subprocess.Popen[str]:
     """Launch this module in detector mode with explicit inherited descriptors."""
     args = [
@@ -928,6 +1074,8 @@ def _spawn_detector_subprocess(
         input_id,
         "--max-receipt-bytes",
         str(max_receipt_bytes),
+        "--fault",
+        fault,
     ]
     pass_fds = [effect_fd]
     if receipt_fd is not None:
@@ -996,6 +1144,12 @@ def _validate_authority_fault(fault: str) -> AuthorityFault:
     raise ValueError(f"unsupported authority fault: {fault}")
 
 
+def _validate_detector_fault(fault: str) -> DetectorFault:
+    if fault in _DETECTOR_FAULTS:
+        return cast(DetectorFault, fault)
+    raise ValueError(f"unsupported detector fault: {fault}")
+
+
 def _profile_from_name(profile_name: str) -> DetectorProfile:
     """Return one configured detector profile by stable example-local name."""
     try:
@@ -1043,6 +1197,18 @@ def _validate_max_authority_document_bytes(max_document_bytes: int) -> int:
     return max_document_bytes
 
 
+def _validate_max_detector_report_bytes(max_report_bytes: int) -> int:
+    """Validate one positive strict integer detector report parse budget."""
+    if not isinstance(max_report_bytes, int) or isinstance(max_report_bytes, bool):
+        raise TypeError(
+            "detector harness expected int max_detector_report_bytes, "
+            f"got {type(max_report_bytes).__name__}"
+        )
+    if max_report_bytes <= 0:
+        raise ValueError("detector harness requires max_detector_report_bytes > 0")
+    return max_report_bytes
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1064,6 +1230,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--max-receipt-bytes",
         type=int,
         default=DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
+    )
+    detector_parser.add_argument(
+        "--fault",
+        choices=_DETECTOR_FAULTS,
+        default="none",
     )
 
     victim_parser = subparsers.add_parser(
@@ -1117,6 +1288,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=_AUTHORITY_FAULTS,
         default="none",
     )
+    demo_parser.add_argument(
+        "--detector-fault",
+        choices=_DETECTOR_FAULTS,
+        default="none",
+    )
     demo_parser.add_argument("--emit-guard-effect", action="store_true")
     demo_parser.add_argument(
         "--max-receipt-bytes",
@@ -1127,6 +1303,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--max-authority-document-bytes",
         type=int,
         default=DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES,
+    )
+    demo_parser.add_argument(
+        "--max-detector-report-bytes",
+        type=int,
+        default=DEFAULT_DETECTOR_REPORT_MAX_BYTES,
     )
     demo_parser.add_argument("--timeout", type=float, default=10.0)
 
@@ -1145,6 +1326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_id=args.run_id,
                 input_id=args.input_id,
                 max_receipt_bytes=args.max_receipt_bytes,
+                fault=cast(DetectorFault, args.fault),
             ).model_dump_json()
         )
         return 0
@@ -1199,9 +1381,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.scenario,
             victim_fault=cast(VictimFault, args.victim_fault),
             authority_fault=cast(AuthorityFault, args.authority_fault),
+            detector_fault=cast(DetectorFault, args.detector_fault),
             emit_guard_effect=args.emit_guard_effect,
             max_receipt_bytes=args.max_receipt_bytes,
             max_authority_document_bytes=args.max_authority_document_bytes,
+            max_detector_report_bytes=args.max_detector_report_bytes,
             timeout=args.timeout,
         )
     except RuntimeError as exc:

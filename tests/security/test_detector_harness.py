@@ -15,9 +15,14 @@ from examples.security_hardening.approval_authority import (
 )
 from examples.security_hardening.data_export import EXPORT_EFFECT_TYPE
 from examples.security_hardening.detector_harness import (
+    _IDENTITY_PROFILE,
     DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
+    DEFAULT_DETECTOR_REPORT_MAX_BYTES,
     DetectedScenario,
     DetectorReport,
+    _admit_detector_report,
+    _validate_detector_fault,
+    _validate_max_detector_report_bytes,
     receipt_scope_gated_scorer,
     run_detected_scenario,
     score_detector_input,
@@ -328,6 +333,71 @@ def test_detected_authorized_stale_receipt_scope_refuses_before_policy() -> None
     )
 
 
+@pytest.mark.parametrize(
+    ("detector_fault", "expected_reason"),
+    [
+        (
+            "blank_finding_run_id",
+            "missing_run_id_finding_ids=('finding-req-attack',)",
+        ),
+        (
+            "stale_finding_run_id",
+            "mismatched_run_id_finding_ids=('finding-req-attack',)",
+        ),
+    ],
+)
+def test_detected_invalid_finding_scope_refuses_at_supervisor_boundary(
+    detector_fault: str,
+    expected_reason: str,
+) -> None:
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        detector_fault=detector_fault,  # type: ignore[arg-type]
+    )
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert result.detector.run_id == "identity-approval-demo/vulnerable_attack"
+    assert result.detector.scored is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "supervisor finding scope gate refused output" in result.detector.refusal_reason
+    assert expected_reason in result.detector.refusal_reason
+
+
+@pytest.mark.parametrize("detector_fault", ["blank_finding_run_id", "stale_finding_run_id"])
+def test_finding_scope_faults_reject_zero_finding_scenarios(detector_fault: str) -> None:
+    with pytest.raises(RuntimeError, match="requires at least one detector finding"):
+        run_detected_scenario(
+            "hardened_authorized",
+            detector_fault=detector_fault,  # type: ignore[arg-type]
+        )
+
+
+def test_supervisor_refuses_detector_report_scope_before_finding_scope() -> None:
+    report = DetectorReport(
+        **_report_fields(),
+        run_id="run-stale",
+        scored=True,
+        findings=(),
+    )
+
+    admitted = _admit_detector_report(
+        report.model_dump_json(),
+        profile=_IDENTITY_PROFILE,
+        input_id="detector-input-1",
+        expected_run_id="run-current",
+        max_report_bytes=DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    )
+
+    assert admitted.run_id == "run-stale"
+    assert admitted.scored is False
+    assert admitted.findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor detector report scope gate refused output" in admitted.refusal_reason
+    assert "reported_run_id='run-stale'" in admitted.refusal_reason
+
+
 def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:
     result = run_detected_scenario(
         "vulnerable_attack",
@@ -409,6 +479,42 @@ def test_detected_receipt_count_mismatch_refuses_before_scope_or_policy() -> Non
 def test_detected_scenario_fails_closed_on_oversized_receipt_document() -> None:
     with pytest.raises(RuntimeError, match="detector subprocess failed"):
         run_detected_scenario("hardened_authorized", max_receipt_bytes=1)
+
+
+def test_detected_scenario_refuses_detector_report_over_parse_admission_budget() -> None:
+    result = run_detected_scenario("vulnerable_attack", max_detector_report_bytes=1)
+
+    assert result.detector_returncode == 0
+    assert result.detector.scored is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "supervisor detector report parse admission refused output" in (
+        result.detector.refusal_reason
+    )
+    assert "max_detector_report_bytes=1" in result.detector.refusal_reason
+
+
+@pytest.mark.parametrize(
+    ("value", "error_type"),
+    [
+        (0, ValueError),
+        (-1, ValueError),
+        (True, TypeError),
+        (1.5, TypeError),
+        ("1024", TypeError),
+    ],
+)
+def test_validate_max_detector_report_bytes_rejects_invalid_values(
+    value: object,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type):
+        _validate_max_detector_report_bytes(value)  # type: ignore[arg-type]
+
+
+def test_validate_detector_fault_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="unsupported detector fault"):
+        _validate_detector_fault("not-a-fault")
 
 
 def test_detected_exit_between_frames_refuses_missing_stream_end() -> None:
@@ -533,3 +639,9 @@ def test_default_receipt_budget_is_large_enough_for_authority_document() -> None
     )
 
     assert len(payload.encode("utf-8")) < DEFAULT_DETECTOR_RECEIPT_MAX_BYTES
+
+
+def test_default_detector_report_parse_budget_is_large_enough_for_clean_report() -> None:
+    report = run_detected_scenario("vulnerable_attack").detector
+
+    assert len(report.model_dump_json().encode("utf-8")) < DEFAULT_DETECTOR_REPORT_MAX_BYTES
