@@ -17,21 +17,27 @@ from nooa.security import (
     FINDING_BUNDLE_SCHEMA_VERSION,
     FINDING_BUNDLE_SCHEMA_VERSION_PATTERN,
     FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE,
+    FINDING_IDENTITY_SIGNALS,
     FINDING_SCOPE_SIGNALS,
     MAX_FINDING_BUNDLE_JSON_INTEGER,
     FindingBundle,
     FindingBundleIncompleteError,
     FindingBundleInputTooLargeError,
     FindingBundleReadResult,
+    FindingIdentityError,
+    FindingIdentityValidation,
     FindingScopeError,
     FindingScopeValidation,
     SecurityFinding,
     UnsupportedFindingBundleVersionError,
     finding_bundle_completeness_signals,
+    finding_identity_signals,
     finding_scope_signals,
     read_finding_bundle,
     require_complete_finding_bundle,
+    require_valid_finding_identity,
     require_valid_finding_scope,
+    validate_finding_identity,
     validate_finding_scope,
     write_finding_bundle,
 )
@@ -350,6 +356,81 @@ def test_finding_bundle_helpers_reject_invalid_inputs_and_clean_error() -> None:
         FindingBundleIncompleteError(clean)
     with pytest.raises(ValueError, match="without a bundle must be truncated"):
         FindingBundleReadResult(bundle=None)
+
+
+def test_validate_finding_identity_materializes_once_and_preserves_order() -> None:
+    source = iter(
+        (
+            _finding(finding_id="finding-1"),
+            _finding(finding_id="finding-2"),
+        )
+    )
+
+    validation = validate_finding_identity(source)
+
+    assert tuple(source) == ()
+    assert [finding.finding_id for finding in validation.findings] == ["finding-1", "finding-2"]
+    assert validation.duplicate_finding_ids == ()
+    assert finding_identity_signals(validation) == ()
+    assert require_valid_finding_identity(validation) is validation.findings
+
+
+def test_validate_finding_identity_reports_duplicates_once_in_first_repeat_order() -> None:
+    validation = validate_finding_identity(
+        (
+            _finding(finding_id="finding-a"),
+            _finding(finding_id="finding-b"),
+            _finding(finding_id="finding-a"),
+            _finding(finding_id="finding-a"),
+            _finding(finding_id="finding-b"),
+        )
+    )
+
+    assert validation.duplicate_finding_ids == ("finding-a", "finding-b")
+    assert finding_identity_signals(validation) == ("duplicate_finding_id",)
+    assert FINDING_IDENTITY_SIGNALS == ("duplicate_finding_id",)
+
+
+def test_require_valid_finding_identity_raises_structured_error() -> None:
+    validation = validate_finding_identity(
+        (
+            _finding(finding_id="finding-a"),
+            _finding(finding_id="finding-a"),
+        )
+    )
+
+    with pytest.raises(FindingIdentityError) as exc_info:
+        require_valid_finding_identity(validation)
+
+    error = exc_info.value
+    assert error.reasons == ("duplicate_finding_id",)
+    assert error.duplicate_finding_ids == ("finding-a",)
+    assert not isinstance(error, ValueError)
+
+
+def test_empty_finding_identity_passes_without_claiming_coverage() -> None:
+    validation = validate_finding_identity(())
+
+    assert validation.findings == ()
+    assert finding_identity_signals(validation) == ()
+    assert require_valid_finding_identity(validation) == ()
+
+
+@pytest.mark.parametrize("findings", ["not-findings", b"not-findings", [object()]])
+def test_validate_finding_identity_rejects_non_finding_inputs(findings: object) -> None:
+    with pytest.raises(TypeError, match="SecurityFinding"):
+        validate_finding_identity(findings)  # type: ignore[arg-type]
+
+
+def test_finding_identity_helpers_reject_non_validation_inputs_and_clean_error() -> None:
+    with pytest.raises(TypeError, match="expected FindingIdentityValidation"):
+        finding_identity_signals("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected FindingIdentityValidation"):
+        require_valid_finding_identity("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected FindingIdentityValidation"):
+        FindingIdentityError("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires at least one identity signal"):
+        FindingIdentityError(FindingIdentityValidation(findings=()))
 
 
 def test_validate_finding_scope_materializes_once_and_preserves_order() -> None:

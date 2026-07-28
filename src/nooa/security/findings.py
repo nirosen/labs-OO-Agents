@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Security finding transport and opt-in run-scope helpers."""
+"""Security finding transport and opt-in row-validation helpers."""
 
 from __future__ import annotations
 
@@ -27,6 +27,12 @@ FINDING_BUNDLE_COMPLETENESS_SIGNALS: tuple[FindingBundleCompletenessSignal, ...]
 MAX_FINDING_BUNDLE_JSON_INTEGER: int = (1 << 53) - 1
 DEFAULT_FINDING_BUNDLE_MAX_BYTES: int = 1024 * 1024
 DEFAULT_FINDING_BUNDLE_MAX_FINDINGS: int = 1 << 20
+
+FindingIdentitySignal = Literal["duplicate_finding_id"]
+# Tuple order is public because FindingIdentityError.reasons preserves it.
+FINDING_IDENTITY_SIGNALS: tuple[FindingIdentitySignal, ...] = (
+    "duplicate_finding_id",
+)
 
 FindingScopeSignal = Literal["missing_run_id", "run_id_mismatch"]
 # Tuple order is public because FindingScopeError.reasons preserves it.
@@ -315,6 +321,128 @@ def finding_bundle_completeness_signals(
     if result.truncated:
         reasons.append("truncated")
     return tuple(reasons)
+
+
+@dataclass(frozen=True)
+class FindingIdentityValidation:
+    """Identity diagnostics for one materialized finding iterable.
+
+    This result preserves the input order in ``findings`` and reports only
+    repeated ``finding_id`` values inside one supplied iterable. It does not
+    authenticate finding rows, producers, or identifiers; prove that distinct
+    identifiers denote distinct findings; establish uniqueness across bundles,
+    runs, or producers; dereference identifiers against any external system;
+    or prove detector coverage.
+
+    A clean empty result means only that none of the supplied rows shared a
+    ``finding_id``. It does not prove that no findings exist or that detector
+    coverage was complete.
+
+    Direct construction only asserts these diagnostic fields; it does not
+    perform the check that :func:`validate_finding_identity` performs.
+    """
+
+    findings: tuple[SecurityFinding, ...]
+    duplicate_finding_ids: tuple[str, ...] = ()
+
+
+class FindingIdentityError(RuntimeError):
+    """Raised when supplied findings reuse one or more finding identifiers.
+
+    This error reports only diagnostics visible in a
+    :class:`FindingIdentityValidation`. It does not establish finding
+    authenticity, detector coverage, or semantic correctness.
+    """
+
+    def __init__(self, validation: FindingIdentityValidation) -> None:
+        if not isinstance(validation, FindingIdentityValidation):
+            raise TypeError(
+                "FindingIdentityError expected FindingIdentityValidation, "
+                f"got {type(validation).__name__}"
+            )
+        reasons = finding_identity_signals(validation)
+        if not reasons:
+            raise ValueError("FindingIdentityError requires at least one identity signal")
+        self.duplicate_finding_ids = validation.duplicate_finding_ids
+        self.reasons = reasons
+        super().__init__(
+            "finding rows reuse finding_id values: "
+            f"duplicate_finding_ids={validation.duplicate_finding_ids!r}"
+        )
+
+
+def finding_identity_signals(
+    validation: FindingIdentityValidation,
+) -> tuple[FindingIdentitySignal, ...]:
+    """Return canonical identifier diagnostics for one finding iterable."""
+    if not isinstance(validation, FindingIdentityValidation):
+        raise TypeError(
+            "finding_identity_signals expected FindingIdentityValidation, "
+            f"got {type(validation).__name__}"
+        )
+    signals: list[FindingIdentitySignal] = []
+    if validation.duplicate_finding_ids:
+        signals.append("duplicate_finding_id")
+    return tuple(signals)
+
+
+def validate_finding_identity(
+    findings: Iterable[SecurityFinding],
+) -> FindingIdentityValidation:
+    """Materialize findings and report repeated finding identifiers.
+
+    ``findings`` is consumed once, preserved in input order, and stored as the
+    tuple returned by :func:`require_valid_finding_identity` when no identity
+    signal is present.
+
+    The helper checks only whether the supplied rows reuse ``finding_id``
+    values. It does not authenticate rows, producers, or identifiers; prove
+    that distinct identifiers denote distinct findings; establish uniqueness
+    across bundles, runs, or producers; dereference identifiers against any
+    external system; or prove detector coverage.
+    """
+    if isinstance(findings, (str, bytes, bytearray)) or not isinstance(findings, Iterable):
+        raise TypeError(
+            "validate_finding_identity expected iterable of SecurityFinding, "
+            f"got {type(findings).__name__}"
+        )
+
+    materialized = tuple(findings)
+    for index, finding in enumerate(materialized):
+        if not isinstance(finding, SecurityFinding):
+            raise TypeError(
+                "validate_finding_identity expected SecurityFinding at "
+                f"index {index}, got {type(finding).__name__}"
+            )
+
+    seen_ids: set[str] = set()
+    duplicate_ids: list[str] = []
+    reported_duplicate_ids: set[str] = set()
+    for finding in materialized:
+        finding_id = finding.finding_id
+        if finding_id in seen_ids and finding_id not in reported_duplicate_ids:
+            duplicate_ids.append(finding_id)
+            reported_duplicate_ids.add(finding_id)
+        seen_ids.add(finding_id)
+
+    return FindingIdentityValidation(
+        findings=materialized,
+        duplicate_finding_ids=tuple(duplicate_ids),
+    )
+
+
+def require_valid_finding_identity(
+    validation: FindingIdentityValidation,
+) -> tuple[SecurityFinding, ...]:
+    """Return supplied findings or fail closed on repeated finding identifiers."""
+    if not isinstance(validation, FindingIdentityValidation):
+        raise TypeError(
+            "require_valid_finding_identity expected FindingIdentityValidation, "
+            f"got {type(validation).__name__}"
+        )
+    if finding_identity_signals(validation):
+        raise FindingIdentityError(validation)
+    return validation.findings
 
 
 @dataclass(frozen=True)

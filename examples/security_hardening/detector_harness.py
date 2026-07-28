@@ -25,14 +25,15 @@ becomes an explicit detector refusal before run-scope or profile policy runs.
 After the detector subprocess emits its report and finding bundle, the
 supervisor admits only a bounded report payload to parsing, reads one bounded
 LF-terminated finding document from a supervisor-owned temporary file,
-cross-checks ``declared_finding_count``, and checks both report and finding row
-scopes against the supervisor-selected ``run_id`` before accepting the detector
-output as scored. The supervisor also admits victim and authority summary
-payloads through their own bounded parse checks and rejects visible victim
-scenario drift before assembling ``DetectedScenario``. The stdout bounds are
-parse-admission checks after ``communicate()`` has already collected stdout;
-the finding-bundle bound applies when the supervisor later reads the temporary
-file. Neither makes well-formed child lies impossible.
+cross-checks ``declared_finding_count``, checks both report and finding row
+scopes against the supervisor-selected ``run_id``, and refuses repeated
+``finding_id`` values before accepting the detector output as scored. The
+supervisor also admits victim and authority summary payloads through their own
+bounded parse checks and rejects visible victim scenario drift before
+assembling ``DetectedScenario``. The stdout bounds are parse-admission checks
+after ``communicate()`` has already collected stdout; the finding-bundle bound
+applies when the supervisor later reads the temporary file. Neither makes
+well-formed child lies impossible.
 
     uv run python -m examples.security_hardening.detector_harness demo
 """
@@ -113,6 +114,7 @@ from nooa.security import (
     FindingBundleIncompleteError,
     FindingBundleInputTooLargeError,
     FindingBundleReadResult,
+    FindingIdentityError,
     FindingScopeError,
     ReceiptBundleCompletenessSignal,
     ReceiptBundleIncompleteError,
@@ -133,8 +135,10 @@ from nooa.security import (
     receipt_bundle_completeness_signals,
     require_complete_finding_bundle,
     require_complete_receipt_bundle,
+    require_valid_finding_identity,
     require_valid_finding_scope,
     require_valid_receipt_scope,
+    validate_finding_identity,
     validate_finding_scope,
     validate_receipt_scope,
     write_finding_bundle,
@@ -156,6 +160,7 @@ _DETECTOR_FAULTS = (
     "none",
     "blank_finding_run_id",
     "stale_finding_run_id",
+    "duplicate_finding_id",
     "truncate_finding_document",
     "drop_finding_count_mismatch",
 )
@@ -163,6 +168,7 @@ DetectorFault = Literal[
     "none",
     "blank_finding_run_id",
     "stale_finding_run_id",
+    "duplicate_finding_id",
     "truncate_finding_document",
     "drop_finding_count_mismatch",
 ]
@@ -668,6 +674,22 @@ def _inject_detector_fault(
                 "findings": (faulted_finding, *remaining),
             }
         )
+    if fault == "duplicate_finding_id":
+        first, *remaining = finding_bundle.findings
+        duplicate = SecurityFinding.model_validate(first.model_dump(mode="python"))
+        faulted_findings = (first, duplicate, *remaining)
+        faulted_report = DetectorReport.model_validate(
+            {
+                **report.model_dump(mode="python"),
+                "declared_finding_count": len(faulted_findings),
+            }
+        )
+        return faulted_report, FindingBundle.model_validate(
+            {
+                **finding_bundle.model_dump(mode="python"),
+                "findings": faulted_findings,
+            }
+        )
     if fault == "drop_finding_count_mismatch":
         return report, FindingBundle.model_validate(
             {
@@ -906,6 +928,16 @@ def _admit_finding_bundle(
                     "supervisor finding bundle coherence gate refused output: "
                     "refused detector report cannot carry findings"
                 ),
+            ),
+            (),
+        )
+    try:
+        require_valid_finding_identity(validate_finding_identity(bundle.findings))
+    except FindingIdentityError as exc:
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=f"supervisor finding identity gate refused output: {exc}",
             ),
             (),
         )

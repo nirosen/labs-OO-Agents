@@ -461,6 +461,26 @@ def test_detected_invalid_finding_scope_refuses_at_supervisor_boundary(
     assert expected_reason in result.detector.refusal_reason
 
 
+def test_detected_duplicate_finding_id_refuses_at_supervisor_boundary() -> None:
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        detector_fault="duplicate_finding_id",
+    )
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert result.detector.run_id == "identity-approval-demo/vulnerable_attack"
+    assert result.detector.scored is False
+    assert result.detector.finding_bundle_completeness_signals == ()
+    assert result.detector.finding_bundle_completeness_gate_passed is True
+    assert result.detector.declared_finding_count == 2
+    assert result.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "supervisor finding identity gate refused output" in result.detector.refusal_reason
+    assert "duplicate_finding_ids=('finding-req-attack',)" in result.detector.refusal_reason
+    assert "supervisor finding scope gate refused output" not in result.detector.refusal_reason
+
+
 @pytest.mark.parametrize(
     ("detector_fault", "expected_signals", "expected_gate", "expected_reason"),
     [
@@ -504,6 +524,7 @@ def test_detected_finding_bundle_faults_refuse_before_scope(
     [
         "blank_finding_run_id",
         "stale_finding_run_id",
+        "duplicate_finding_id",
         "truncate_finding_document",
         "drop_finding_count_mismatch",
     ],
@@ -618,6 +639,37 @@ def test_supervisor_refuses_finding_count_mismatch_before_scope() -> None:
     assert "supervisor finding bundle count gate refused output" in admitted.refusal_reason
     assert "declared_finding_count=1" in admitted.refusal_reason
     assert "finding_count=0" in admitted.refusal_reason
+    assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
+
+
+def test_supervisor_refuses_duplicate_finding_ids_after_scope() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+    duplicate_bundle = FindingBundle(
+        producer=finding_bundle.producer,
+        findings=(finding_bundle.findings[0], finding_bundle.findings[0]),
+    )
+    duplicate_report = DetectorReport.model_validate(
+        {
+            **report.model_dump(mode="python"),
+            "declared_finding_count": 2,
+        }
+    )
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(_finding_bundle_bytes(duplicate_bundle)),
+        report=duplicate_report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.finding_bundle_completeness_signals == ()
+    assert admitted.finding_bundle_completeness_gate_passed is True
+    assert admitted.declared_finding_count == 2
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding identity gate refused output" in admitted.refusal_reason
+    assert "duplicate_finding_ids=('finding-req-attack',)" in admitted.refusal_reason
     assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
 
 
