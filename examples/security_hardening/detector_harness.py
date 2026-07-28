@@ -16,12 +16,16 @@ issuer can run. This branch expects V2 effect egress so EOF before
 writer-declared completion becomes a detector refusal. When an authority
 receipt pipe is present, the example also wraps the profile scorer with one
 receipt run-scope gate keyed by the supervisor-selected ``run_id`` so a stale
-receipt copy becomes a refusal before policy runs. It does not authenticate
-channel contents, receipt sources, or refusal text; make same-user subprocesses a
-trust boundary; provide sandboxing or attestation; prove that an issued token
-was honored; or turn detector findings into enforcement. The receipt path now
-uses the public LF-terminated bundle reader so EOF before the bundle terminator
-becomes an explicit detector refusal before run-scope or profile policy runs.
+receipt copy becomes a refusal before policy runs. Every profile also wraps its
+scorer with one detector-side evidence-reference membership gate built from the
+current ``DetectorInput`` IDs, so a scorer that invents a reference outside that
+input becomes a refusal before the finding bundle is emitted. This does not
+authenticate channel contents, receipt sources, scorer output, allowed evidence
+IDs, or refusal text; make same-user subprocesses a trust boundary; provide
+sandboxing or attestation; prove that an issued token was honored; or turn
+detector findings into enforcement. The receipt path now uses the public
+LF-terminated bundle reader so EOF before the bundle terminator becomes an
+explicit detector refusal before run-scope or profile policy runs.
 After the detector subprocess emits its report and finding bundle, the
 supervisor admits only a bounded report payload to parsing, reads one bounded
 LF-terminated finding document from a supervisor-owned temporary file,
@@ -119,6 +123,7 @@ from nooa.security import (
     FindingBundleIncompleteError,
     FindingBundleInputTooLargeError,
     FindingBundleReadResult,
+    FindingEvidenceRefError,
     FindingIdUniquenessError,
     FindingScopeError,
     ReceiptBundleCompletenessSignal,
@@ -140,9 +145,11 @@ from nooa.security import (
     receipt_bundle_completeness_signals,
     require_complete_finding_bundle,
     require_complete_receipt_bundle,
+    require_valid_finding_evidence_ref_membership,
     require_valid_finding_id_uniqueness,
     require_valid_finding_scope,
     require_valid_receipt_scope,
+    validate_finding_evidence_ref_membership,
     validate_finding_id_uniqueness,
     validate_finding_scope,
     validate_receipt_scope,
@@ -541,6 +548,43 @@ def receipt_scope_gated_scorer(
     return _score
 
 
+def evidence_ref_membership_gated_scorer(scorer: DetectorScorer) -> DetectorScorer:
+    """Wrap one scorer with an example-local evidence-reference membership gate.
+
+    The allowed ID set is built from the same ``DetectorInput`` the scorer sees:
+    its ``input_id``, effect IDs, and receipt IDs. This checks only whether one
+    scorer output references IDs outside that supplied input. It does not
+    authenticate the input, scorer, findings, or referenced evidence; require a
+    finding to cite any evidence; or survive a hostile detector process.
+    """
+    if not callable(scorer):
+        raise TypeError(
+            "evidence_ref_membership_gated_scorer expected callable scorer, "
+            f"got {type(scorer).__name__}"
+        )
+
+    def _score(detector_input: DetectorInput) -> tuple[SecurityFinding, ...]:
+        findings = scorer(detector_input)
+        allowed_evidence_ids = (
+            detector_input.input_id,
+            *(effect.id for effect in detector_input.effects),
+            *(receipt.receipt_id for receipt in detector_input.receipts),
+        )
+        try:
+            return require_valid_finding_evidence_ref_membership(
+                validate_finding_evidence_ref_membership(
+                    findings,
+                    allowed_evidence_ids=allowed_evidence_ids,
+                )
+            )
+        except FindingEvidenceRefError as exc:
+            raise UnscoreableDetectorInputError(
+                f"detector evidence ref membership gate refused scorer output: {exc}"
+            ) from exc
+
+    return _score
+
+
 def score_fd(
     effect_fd: int,
     receipt_fd: int | None,
@@ -560,7 +604,7 @@ def score_fd(
             effect_fh,
             expected_schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
         )
-    scorer = profile.scorer
+    scorer = evidence_ref_membership_gated_scorer(profile.scorer)
     receipts = ()
     receipt_source = ""
     receipt_coverage: ReceiptCoverage = "unknown"
@@ -598,7 +642,7 @@ def score_fd(
         receipt_bundle_gate_passed = True
         if profile.uses_approval_authority:
             scorer = receipt_scope_gated_scorer(
-                profile.scorer,
+                scorer,
                 expected_run_id=run_id,
             )
     detector_input = detector_input_from_egress(

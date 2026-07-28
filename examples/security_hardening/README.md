@@ -10,6 +10,21 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Finding Evidence-Ref Membership Follow-On
+
+`codex/security-finding-evidence-ref-membership` adds the public opt-in `FindingEvidenceRefValidation` helper and wires one detector-side `evidence_ref_membership_gated_scorer()` wrapper into both example profiles. The wrapper builds one allowed-ID set from the current `DetectorInput.input_id`, effect IDs, and receipt IDs, then refuses a scorer result that cites any other exact string before the finding bundle is written.
+
+```mermaid
+flowchart LR
+    D["DetectorInput<br/>input_id + effect ids + receipt ids"] --> G["evidence_ref_membership_gated_scorer()"]
+    S["profile scorer"] --> G
+    G --> V["validate_finding_evidence_ref_membership()"]
+    V -- "all refs admitted" --> B["FindingBundle"]
+    V -. "unknown_evidence_ref" .-> X["scored=False"]
+```
+
+The wrapper is scorer conformance inside one detector process, not a supervisor trust boundary. It does not authenticate the scorer, finding rows, evidence IDs, or allowed set; dereference evidence; prove that a present reference supports a finding; require a finding to cite any evidence at all; prove detector coverage; or enforce that every finding cites the supervisor-selected `input_id`. That last required-ref question is a different possible future gate because the supervisor independently knows `input_id`, while this membership helper only checks for invented refs relative to the detector input it receives.
+
 ## Finding Admission Diagnostics Follow-On
 
 `codex/security-finding-admission-diagnostics` adds no public `nooa.security` API. The example-local `DetectorReport` now carries one supervisor-owned `finding_admission_refusal` field for the existing finding count, scope, refused-report-row, and ID-uniqueness refusal stages. The supervisor clears any child-supplied value on report admission, then sets the field only when one of those later finding-admission gates fails.

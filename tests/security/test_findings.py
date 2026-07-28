@@ -17,6 +17,7 @@ from nooa.security import (
     FINDING_BUNDLE_SCHEMA_VERSION,
     FINDING_BUNDLE_SCHEMA_VERSION_PATTERN,
     FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE,
+    FINDING_EVIDENCE_REF_SIGNALS,
     FINDING_ID_UNIQUENESS_SIGNALS,
     FINDING_SCOPE_SIGNALS,
     MAX_FINDING_BUNDLE_JSON_INTEGER,
@@ -24,6 +25,8 @@ from nooa.security import (
     FindingBundleIncompleteError,
     FindingBundleInputTooLargeError,
     FindingBundleReadResult,
+    FindingEvidenceRefError,
+    FindingEvidenceRefValidation,
     FindingIdUniquenessError,
     FindingIdUniquenessValidation,
     FindingScopeError,
@@ -31,12 +34,15 @@ from nooa.security import (
     SecurityFinding,
     UnsupportedFindingBundleVersionError,
     finding_bundle_completeness_signals,
+    finding_evidence_ref_signals,
     finding_id_uniqueness_signals,
     finding_scope_signals,
     read_finding_bundle,
     require_complete_finding_bundle,
+    require_valid_finding_evidence_ref_membership,
     require_valid_finding_id_uniqueness,
     require_valid_finding_scope,
+    validate_finding_evidence_ref_membership,
     validate_finding_id_uniqueness,
     validate_finding_scope,
     write_finding_bundle,
@@ -431,6 +437,125 @@ def test_finding_id_uniqueness_helpers_reject_non_validation_inputs_and_clean_er
         FindingIdUniquenessError("not-a-validation")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="requires at least one uniqueness signal"):
         FindingIdUniquenessError(FindingIdUniquenessValidation(findings=()))
+
+
+def test_validate_finding_evidence_ref_membership_materializes_once_and_preserves_order() -> None:
+    source = iter(
+        (
+            _finding(finding_id="finding-1", evidence_refs=("effect-event-1",)),
+            _finding(finding_id="finding-2", evidence_refs=("receipt-audit-1",)),
+        )
+    )
+    allowed_ids = iter(("effect-event-1", "receipt-audit-1", "effect-event-1"))
+
+    validation = validate_finding_evidence_ref_membership(
+        source,
+        allowed_evidence_ids=allowed_ids,
+    )
+
+    assert tuple(source) == ()
+    assert tuple(allowed_ids) == ()
+    assert [finding.finding_id for finding in validation.findings] == ["finding-1", "finding-2"]
+    assert validation.allowed_evidence_ids == ("effect-event-1", "receipt-audit-1")
+    assert validation.unknown_evidence_refs == ()
+    assert validation.unknown_evidence_ref_finding_ids == ()
+    assert finding_evidence_ref_signals(validation) == ()
+    assert require_valid_finding_evidence_ref_membership(validation) is validation.findings
+
+
+def test_validate_finding_evidence_ref_membership_reports_unknown_refs_once_in_first_seen_order() -> None:
+    validation = validate_finding_evidence_ref_membership(
+        (
+            _finding(
+                finding_id="finding-a",
+                evidence_refs=("effect-event-1", "missing-a", "missing-b"),
+            ),
+            _finding(
+                finding_id="finding-b",
+                evidence_refs=("missing-a", "receipt-audit-1"),
+            ),
+            _finding(
+                finding_id="finding-b",
+                evidence_refs=("missing-c",),
+            ),
+        ),
+        allowed_evidence_ids=("effect-event-1", "receipt-audit-1"),
+    )
+
+    assert validation.unknown_evidence_refs == ("missing-a", "missing-b", "missing-c")
+    assert validation.unknown_evidence_ref_finding_ids == (
+        "finding-a",
+        "finding-b",
+        "finding-b",
+    )
+    assert finding_evidence_ref_signals(validation) == ("unknown_evidence_ref",)
+    assert FINDING_EVIDENCE_REF_SIGNALS == ("unknown_evidence_ref",)
+
+
+def test_require_valid_finding_evidence_ref_membership_raises_structured_error() -> None:
+    validation = validate_finding_evidence_ref_membership(
+        (_finding(finding_id="finding-a", evidence_refs=("missing-a",)),),
+        allowed_evidence_ids=("effect-event-1", "receipt-audit-1"),
+    )
+
+    with pytest.raises(FindingEvidenceRefError) as exc_info:
+        require_valid_finding_evidence_ref_membership(validation)
+
+    error = exc_info.value
+    assert error.reasons == ("unknown_evidence_ref",)
+    assert error.unknown_evidence_refs == ("missing-a",)
+    assert error.unknown_evidence_ref_finding_ids == ("finding-a",)
+    assert error.allowed_evidence_id_count == 2
+    assert "effect-event-1" not in str(error)
+    assert "receipt-audit-1" not in str(error)
+    assert not isinstance(error, ValueError)
+
+
+def test_empty_finding_evidence_ref_membership_passes_without_claiming_coverage() -> None:
+    validation = validate_finding_evidence_ref_membership((), allowed_evidence_ids=())
+
+    assert validation.findings == ()
+    assert validation.allowed_evidence_ids == ()
+    assert finding_evidence_ref_signals(validation) == ()
+    assert require_valid_finding_evidence_ref_membership(validation) == ()
+
+
+@pytest.mark.parametrize("findings", ["not-findings", b"not-findings", [object()]])
+def test_validate_finding_evidence_ref_membership_rejects_non_finding_inputs(
+    findings: object,
+) -> None:
+    with pytest.raises(TypeError, match="SecurityFinding"):
+        validate_finding_evidence_ref_membership(
+            findings,  # type: ignore[arg-type]
+            allowed_evidence_ids=(),
+        )
+
+
+@pytest.mark.parametrize(
+    "allowed_evidence_ids",
+    ["not-ids", b"not-ids", [object()], [""]],
+)
+def test_validate_finding_evidence_ref_membership_rejects_invalid_allowed_ids(
+    allowed_evidence_ids: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="allowed_evidence_ids"):
+        validate_finding_evidence_ref_membership(
+            (),
+            allowed_evidence_ids=allowed_evidence_ids,  # type: ignore[arg-type]
+        )
+
+
+def test_finding_evidence_ref_helpers_reject_non_validation_inputs_and_clean_error() -> None:
+    with pytest.raises(TypeError, match="expected FindingEvidenceRefValidation"):
+        finding_evidence_ref_signals("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected FindingEvidenceRefValidation"):
+        require_valid_finding_evidence_ref_membership("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected FindingEvidenceRefValidation"):
+        FindingEvidenceRefError("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires at least one evidence-ref signal"):
+        FindingEvidenceRefError(
+            FindingEvidenceRefValidation(findings=(), allowed_evidence_ids=())
+        )
 
 
 def test_validate_finding_scope_materializes_once_and_preserves_order() -> None:
