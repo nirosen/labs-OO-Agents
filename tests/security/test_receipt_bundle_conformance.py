@@ -160,6 +160,46 @@ def test_receipt_bundle_conformance_fixture_matches_public_contract() -> None:
         and b"\xff" in _vector_payload(vector)
         for vector in fixture["reader_vectors"]
     )
+    version_vectors = [
+        vector for vector in fixture["reader_vectors"] if "schema_version" in vector["expect"]
+    ]
+    assert {
+        vector["name"] for vector in version_vectors
+    } >= {
+        "future_version",
+        "future_version_double_digit",
+        "zero_version_is_invalid",
+        "prerelease_version_is_invalid",
+        "prefixed_version_is_invalid",
+        "trailing_newline_version_is_invalid",
+        "non_string_version_is_invalid",
+    }
+    for vector in version_vectors:
+        expected = vector["expect"]
+        schema_version = expected["schema_version"]
+        fullmatch = (
+            isinstance(schema_version, str)
+            and re.fullmatch(RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN, schema_version)
+            is not None
+        )
+        if expected["outcome"] == "unsupported_version_error":
+            assert fullmatch is True
+            assert schema_version != RECEIPT_BUNDLE_SCHEMA_VERSION
+        else:
+            assert expected["outcome"] == "invalid_document_error"
+            assert fullmatch is False
+
+    trailing_newline_version = next(
+        vector["expect"]["schema_version"]
+        for vector in version_vectors
+        if vector["name"] == "trailing_newline_version_is_invalid"
+    )
+    assert isinstance(trailing_newline_version, str)
+    assert re.match(
+        rf"^{RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN}$",
+        trailing_newline_version,
+    )
+    assert not re.fullmatch(RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN, trailing_newline_version)
 
     assert fixture["receipts"]["receipt_payload_encoding"]["attributes"] == {
         "ratio": 0.1,

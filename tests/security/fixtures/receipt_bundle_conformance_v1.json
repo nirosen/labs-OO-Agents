@@ -291,21 +291,40 @@
       "name": "zero_version_is_invalid",
       "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v0\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
       "expect": {
-        "outcome": "invalid_document_error"
+        "outcome": "invalid_document_error",
+        "schema_version": "nooa-receipt-bundle-v0"
       }
     },
     {
       "name": "prerelease_version_is_invalid",
       "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v2-beta\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
       "expect": {
-        "outcome": "invalid_document_error"
+        "outcome": "invalid_document_error",
+        "schema_version": "nooa-receipt-bundle-v2-beta"
       }
     },
     {
       "name": "prefixed_version_is_invalid",
       "payload_utf8": "{\"schema_version\":\"xnooa-receipt-bundle-v2\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
       "expect": {
-        "outcome": "invalid_document_error"
+        "outcome": "invalid_document_error",
+        "schema_version": "xnooa-receipt-bundle-v2"
+      }
+    },
+    {
+      "name": "trailing_newline_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v2\\n\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error",
+        "schema_version": "nooa-receipt-bundle-v2\n"
+      }
+    },
+    {
+      "name": "non_string_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":123,\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error",
+        "schema_version": 123
       }
     }
   ]
