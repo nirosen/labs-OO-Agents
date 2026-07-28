@@ -39,7 +39,8 @@ class _MatrixRow(NamedTuple):
     victim_fault: VictimFault
     authority_fault: AuthorityFault
     profile: str
-    signals: tuple[str, ...]
+    effect_signals: tuple[str, ...]
+    receipt_signals: tuple[str, ...]
     scored: bool
     findings: int
 
@@ -60,10 +61,12 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
     rows: list[_MatrixRow] = []
     for line in lines[2:]:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        assert len(cells) == 7, line
-        signals = ast.literal_eval(_strip_code(cells[4]))
-        scored = ast.literal_eval(_strip_code(cells[5]))
-        assert isinstance(signals, tuple)
+        assert len(cells) == 8, line
+        effect_signals = ast.literal_eval(_strip_code(cells[4]))
+        receipt_signals = ast.literal_eval(_strip_code(cells[5]))
+        scored = ast.literal_eval(_strip_code(cells[6]))
+        assert isinstance(effect_signals, tuple)
+        assert isinstance(receipt_signals, tuple)
         assert isinstance(scored, bool)
         rows.append(
             _MatrixRow(
@@ -71,9 +74,10 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
                 victim_fault=cast(VictimFault, _strip_code(cells[1])),
                 authority_fault=cast(AuthorityFault, _strip_code(cells[2])),
                 profile=_strip_code(cells[3]),
-                signals=signals,
+                effect_signals=effect_signals,
+                receipt_signals=receipt_signals,
                 scored=scored,
-                findings=int(_strip_code(cells[6])),
+                findings=int(_strip_code(cells[7])),
             )
         )
     return tuple(rows)
@@ -87,6 +91,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V3" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -136,7 +141,7 @@ def test_hardening_readme_orders_security_onramps() -> None:
 def test_joint_readme_matrix_reproduces_detector_paths() -> None:
     rows = _matrix_rows()
 
-    assert len(rows) == 10
+    assert len(rows) == 13
     for row in rows:
         result = run_detected_scenario(
             row.scenario,
@@ -145,6 +150,7 @@ def test_joint_readme_matrix_reproduces_detector_paths() -> None:
         )
 
         assert result.victim_profile == row.profile
-        assert result.detector.effect_egress_completeness_signals == row.signals
+        assert result.detector.effect_egress_completeness_signals == row.effect_signals
+        assert result.detector.receipt_bundle_completeness_signals == row.receipt_signals
         assert result.detector.scored is row.scored
         assert len(result.detector.findings) == row.findings
