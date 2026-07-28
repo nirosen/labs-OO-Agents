@@ -326,9 +326,9 @@ flowchart LR
 
 These vectors are interoperability regression references, not an authenticity claim. A conforming writer can still forge records or omit effects before closing, and an external writer can remain acceptable to the reader without copying NOOA's exact JSON formatting.
 
-## Security Review Joint Branch: End-to-End Detector Pipeline V12
+## Security Review Joint Branch: End-to-End Detector Pipeline V13
 
-`codex/security-hardening-e2e-detector-pipeline-v12` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress plus public receipt and finding bundle transports for reader-visible refusal semantics, publishes both bundle version-token classification rules for independent readers, refuses degraded receipt transport before receipt scope or identity policy runs, refuses visible stale authority receipt scope before identity policy runs, checks both profile scorers for evidence refs outside the current `DetectorInput` ID set before finding bundle emission, admits detector report metadata and finding rows through separate supervisor-side gates before accepting output, refuses repeated `finding_id` values only after finding scope and report coherence pass, exposes the current finding-admission refusal stage through one example-local structured field, admits every parsed child stdout payload through example-local bounded checks, exercises the same detector handoff across identity approval and data export victims, and carries checked conformance vectors for both bundle boundaries.
+`codex/security-hardening-e2e-detector-pipeline-v13` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress plus public receipt and finding bundle transports for reader-visible refusal semantics, publishes both bundle version-token classification rules for independent readers, refuses degraded receipt transport before receipt scope or identity policy runs, refuses visible stale authority receipt scope before identity policy runs, checks both profile scorers for evidence refs outside the current `DetectorInput` ID set before finding bundle emission, admits detector report metadata and finding rows through separate supervisor-side gates before accepting output, refuses visible report `detector_input_id` drift, refuses repeated `finding_id` values only after finding scope and report coherence pass, requires every admitted row to cite the supervisor-selected `input_id` after those gates pass, exposes the current finding-admission refusal stage through one example-local structured field, admits every parsed child stdout payload through example-local bounded checks, exercises the same detector handoff across identity approval and data export victims, and carries checked conformance vectors for both bundle boundaries.
 
 ```mermaid
 flowchart LR
@@ -358,16 +358,17 @@ flowchart LR
     FBW --> FFT["finding temp file"]
     VS --> VA["victim summary admission<br/>+ scenario check"]
     AS --> AA["authority summary admission"]
-    RPT --> RA["detector report admission<br/>+ report run_id check"]
+    RPT --> RA["detector report admission<br/>+ run_id / input_id checks"]
     FFT --> FBR["read_finding_bundle()<br/>+ completeness gate"]
     RA --> FC["finding count gate"]
     FBR --> FC
     FC --> FG["finding scope gate"]
     FG --> FCG["report coherence gate"]
     FCG --> FU["finding ID uniqueness gate"]
+    FU --> FR["required evidence-ref gate<br/>supervisor-selected input_id"]
     VA --> O["DetectedScenario"]
     AA --> O
-    FU --> O
+    FR --> O
     ER -. "gap / truncation / missing end / count mismatch" .-> X["DetectorReport<br/>scored=False"]
     RR -. "truncated / receipt count mismatch" .-> X
     G -. "receipt run_id mismatch" .-> X
@@ -378,15 +379,16 @@ flowchart LR
     FG -. "scope_drift" .-> FAD
     FCG -. "refused_report_rows" .-> FAD
     FU -. "duplicate_finding_id" .-> FAD
+    FR -. "missing_required_evidence_ref" .-> FAD
     FAD --> X
     X --> O
     VA -. "over-bound / invalid / scenario drift" .-> Y["SupervisorAdmissionError"]
     AA -. "over-bound / invalid" .-> Y
 ```
 
-The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v12). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes. The matrix includes only paths that return `DetectedScenario`; victim and authority summary admission faults remain exception-path coverage in `tests/security/test_detector_harness.py`. V12 adds no new matrix row because evidence-ref membership is detector-side scorer conformance rather than a supervisor-visible admission stage, the current fault axis mutates outputs only after scoring, and the supervisor still has no independent evidence-ID set to recheck after bundle admission. The existing `Finding admission refusal` column still separates the current count, scope, and duplicate-ID finding-admission failures; malformed detector reports and stale receipt scope remain `None` because they refuse before finding admission, and the refused-report-row value remains unit-test-only because no matrix scenario emits that combination.
+The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v13). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes. The matrix includes only paths that return `DetectedScenario`; victim and authority summary admission faults remain exception-path coverage in `tests/security/test_detector_harness.py`. The matrix still has no row for detector-side evidence-ref membership because current scorers emit refs within their `DetectorInput`, the current fault axis mutates outputs only after scoring, and the supervisor still has no independent evidence-ID set to recheck membership after bundle admission. V13 adds one row for supervisor-side required-ref presence because `drop_required_evidence_ref` strips the supervisor-selected anchor after scoring and before finding admission. The `Finding admission refusal` column now separates count, scope, duplicate-ID, and missing-required-ref failures; malformed detector reports and stale receipt scope remain `None` because they refuse before finding admission, and the refused-report-row value remains unit-test-only because no matrix scenario emits that combination.
 
-This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, a valid-looking V2 terminator, receipt bundle, or finding bundle remains only as trustworthy as the boundary that produced it, matching future bundle version tokens are not promises of parser support or safety, count agreement does not prove omitted receipts or findings did not happen, matching receipt or finding `run_id` values are not proof of authenticity, distinct `finding_id` values, evidence-ref membership against a detector input, and `finding_admission_refusal` do not prove authenticity, evidence support, or uniqueness across bundles, the evidence-ref wrapper is not a supervisor gate and a hostile detector can bypass it, the new field is example-local rather than a public NOOA schema, a well-formed victim or authority summary can still lie, the three stdout byte bounds apply only after `communicate()` has already collected stdout, and the finding-bundle bound applies only when the supervisor reads its same-user temporary file.
+This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, a valid-looking V2 terminator, receipt bundle, or finding bundle remains only as trustworthy as the boundary that produced it, matching future bundle version tokens are not promises of parser support or safety, count agreement does not prove omitted receipts or findings did not happen, matching receipt or finding `run_id` values are not proof of authenticity, distinct `finding_id` values, evidence-ref membership against a detector input, required-ref presence, and `finding_admission_refusal` do not prove authenticity, provenance, evidence support, or uniqueness across bundles, the detector sees the supervisor-selected `input_id` and can echo it mechanically, the evidence-ref wrapper is not a supervisor gate and a hostile detector can bypass it, the new field is example-local rather than a public NOOA schema, a well-formed victim or authority summary can still lie, the three stdout byte bounds apply only after `communicate()` has already collected stdout, and the finding-bundle bound applies only when the supervisor reads its same-user temporary file.
 
 ## V2 Effect Egress Stream-End Follow-On
 

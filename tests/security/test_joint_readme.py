@@ -109,7 +109,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
-    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V12" in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V13" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -122,6 +122,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V9" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V10" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V11" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V12" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -171,7 +172,7 @@ def test_hardening_readme_orders_security_onramps() -> None:
 def test_joint_readme_matrix_reproduces_detector_paths() -> None:
     rows = _matrix_rows()
 
-    assert len(rows) == 19
+    assert len(rows) == 20
     for row in rows:
         result = run_detected_scenario(
             row.scenario,
@@ -218,6 +219,7 @@ def test_joint_readme_exposes_current_finding_admission_refusal_stages() -> None
         "blank_finding_run_id": "scope_drift",
         "stale_finding_run_id": "scope_drift",
         "duplicate_finding_id": "duplicate_finding_id",
+        "drop_required_evidence_ref": "missing_required_evidence_ref",
         "drop_finding_count_mismatch": "count_mismatch",
     }
 
@@ -234,8 +236,30 @@ def test_joint_readme_keeps_evidence_membership_detector_side() -> None:
 
     assert "evidence_ref_membership_gated_scorer()" in root_text
     assert "evidence ref membership gate" in hardening_text
-    assert "V12 adds no new matrix row because evidence-ref membership is detector-side" in (
-        root_text
-    )
+    assert "The matrix still has no row for detector-side evidence-ref membership" in root_text
     assert "the current fault axis mutates outputs only after scoring" in root_text
     assert "the supervisor still has no independent evidence-ID set" in root_text
+
+
+def test_joint_readme_exposes_required_evidence_ref_refusal_stage() -> None:
+    rows = _matrix_rows()
+    required_ref_rows = tuple(
+        row for row in rows if row.detector_fault == "drop_required_evidence_ref"
+    )
+
+    assert required_ref_rows == (
+        _MatrixRow(
+            scenario="vulnerable_attack",
+            victim_fault="none",
+            authority_fault="none",
+            detector_fault="drop_required_evidence_ref",
+            subprocess_output_fault="none",
+            profile="identity_approval",
+            effect_signals=(),
+            receipt_signals=(),
+            finding_signals=(),
+            finding_admission_refusal="missing_required_evidence_ref",
+            scored=False,
+            findings=0,
+        ),
+    )
