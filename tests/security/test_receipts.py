@@ -18,6 +18,7 @@ from nooa.security import (
     RECEIPT_BUNDLE_COMPLETENESS_SIGNALS,
     RECEIPT_ID_UNIQUENESS_SIGNALS,
     RECEIPT_SCOPE_SIGNALS,
+    RECEIPT_SOURCE_ALIGNMENT_SIGNALS,
     ReceiptBundle,
     ReceiptBundleIncompleteError,
     ReceiptBundleInputTooLargeError,
@@ -26,6 +27,8 @@ from nooa.security import (
     ReceiptIdUniquenessValidation,
     ReceiptScopeError,
     ReceiptScopeValidation,
+    ReceiptSourceAlignmentError,
+    ReceiptSourceAlignmentValidation,
     SecurityReceipt,
     UnsupportedReceiptBundleVersionError,
     install_effect_recorder,
@@ -33,11 +36,14 @@ from nooa.security import (
     receipt_bundle_completeness_signals,
     receipt_id_uniqueness_signals,
     receipt_scope_signals,
+    receipt_source_alignment_signals,
     require_complete_receipt_bundle,
     require_valid_receipt_id_uniqueness,
     require_valid_receipt_scope,
+    require_valid_receipt_source_alignment,
     validate_receipt_id_uniqueness,
     validate_receipt_scope,
+    validate_receipt_source_alignment,
     write_receipt_bundle,
 )
 
@@ -478,6 +484,106 @@ def test_receipt_id_uniqueness_helpers_reject_non_validation_inputs_and_clean_er
         ReceiptIdUniquenessError("not-a-validation")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="requires at least one uniqueness signal"):
         ReceiptIdUniquenessError(ReceiptIdUniquenessValidation(receipts=()))
+
+
+def test_validate_receipt_source_alignment_materializes_once_and_preserves_order() -> None:
+    source = iter(
+        (
+            _receipt(receipt_id="audit-1"),
+            _receipt(receipt_id="audit-2"),
+        )
+    )
+
+    validation = validate_receipt_source_alignment(
+        source,
+        expected_source="payment_backend.audit",
+    )
+
+    assert tuple(source) == ()
+    assert [receipt.receipt_id for receipt in validation.receipts] == ["audit-1", "audit-2"]
+    assert validation.expected_source == "payment_backend.audit"
+    assert validation.mismatched_source_receipt_ids == ()
+    assert receipt_source_alignment_signals(validation) == ()
+    assert require_valid_receipt_source_alignment(validation) is validation.receipts
+
+
+def test_validate_receipt_source_alignment_reports_mismatched_rows_in_input_order() -> None:
+    validation = validate_receipt_source_alignment(
+        (
+            _receipt(receipt_id="audit-current"),
+            _receipt(receipt_id="audit-stale-a", source="review_backend.audit"),
+            _receipt(receipt_id="audit-stale-b", source="review_backend.audit"),
+        ),
+        expected_source="payment_backend.audit",
+    )
+
+    assert validation.mismatched_source_receipt_ids == ("audit-stale-a", "audit-stale-b")
+    assert receipt_source_alignment_signals(validation) == ("receipt_source_mismatch",)
+    assert RECEIPT_SOURCE_ALIGNMENT_SIGNALS == ("receipt_source_mismatch",)
+
+
+def test_require_valid_receipt_source_alignment_raises_structured_error() -> None:
+    validation = validate_receipt_source_alignment(
+        (_receipt(receipt_id="audit-stale", source="review_backend.audit"),),
+        expected_source="payment_backend.audit",
+    )
+
+    with pytest.raises(ReceiptSourceAlignmentError) as exc_info:
+        require_valid_receipt_source_alignment(validation)
+
+    error = exc_info.value
+    assert error.reasons == ("receipt_source_mismatch",)
+    assert error.expected_source == "payment_backend.audit"
+    assert error.mismatched_source_receipt_ids == ("audit-stale",)
+    assert not isinstance(error, ValueError)
+
+
+def test_empty_receipt_source_alignment_passes_without_claiming_coverage() -> None:
+    validation = validate_receipt_source_alignment(
+        (),
+        expected_source="payment_backend.audit",
+    )
+
+    assert validation.receipts == ()
+    assert receipt_source_alignment_signals(validation) == ()
+    assert require_valid_receipt_source_alignment(validation) == ()
+
+
+@pytest.mark.parametrize("expected_source", ["", None, 0])
+def test_validate_receipt_source_alignment_rejects_invalid_expected_source(
+    expected_source: object,
+) -> None:
+    error_type = ValueError if expected_source == "" else TypeError
+    with pytest.raises(error_type):
+        validate_receipt_source_alignment(
+            (),
+            expected_source=expected_source,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("receipts", ["not-receipts", b"not-receipts", [object()]])
+def test_validate_receipt_source_alignment_rejects_non_receipt_inputs(receipts: object) -> None:
+    with pytest.raises(TypeError, match="SecurityReceipt"):
+        validate_receipt_source_alignment(
+            receipts,  # type: ignore[arg-type]
+            expected_source="payment_backend.audit",
+        )
+
+
+def test_receipt_source_alignment_helpers_reject_non_validation_inputs_and_clean_error() -> None:
+    with pytest.raises(TypeError, match="expected ReceiptSourceAlignmentValidation"):
+        receipt_source_alignment_signals("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected ReceiptSourceAlignmentValidation"):
+        require_valid_receipt_source_alignment("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected ReceiptSourceAlignmentValidation"):
+        ReceiptSourceAlignmentError("not-a-validation")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires at least one alignment signal"):
+        ReceiptSourceAlignmentError(
+            ReceiptSourceAlignmentValidation(
+                receipts=(),
+                expected_source="payment_backend.audit",
+            )
+        )
 
 
 def test_validate_receipt_scope_materializes_once_and_preserves_order() -> None:

@@ -15,19 +15,19 @@ The split shows where a separately controlled detector and optional approval
 issuer can run. This branch expects V2 effect egress so EOF before
 writer-declared completion becomes a detector refusal. When an authority
 receipt pipe is present, the example also wraps the profile scorer with one
-receipt-ID uniqueness gate and one receipt run-scope gate keyed by the
-supervisor-selected ``run_id`` so a repeated receipt ID or stale receipt copy
-becomes a refusal before policy runs. Every profile also wraps its scorer with
-one detector-side evidence-reference membership gate built from the current
-``DetectorInput`` IDs, so a scorer that invents a reference outside that input
-becomes a refusal before the finding bundle is emitted. This does not
-authenticate channel contents, receipt sources, scorer output, allowed evidence
-IDs, or refusal text; make same-user subprocesses a trust boundary; provide
-sandboxing or attestation; prove that an issued token was honored; or turn
-detector findings into enforcement. The receipt path now uses the public
-LF-terminated bundle reader so EOF before the bundle terminator becomes an
-explicit detector refusal before receipt-ID uniqueness, run-scope, or profile
-policy runs.
+receipt-ID uniqueness gate, one receipt source-alignment gate, and one receipt
+run-scope gate keyed by the supervisor-selected ``run_id`` so a repeated receipt
+ID, visibly mismatched row source, or stale receipt copy becomes a refusal
+before policy runs. Every profile also wraps its scorer with one detector-side
+evidence-reference membership gate built from the current ``DetectorInput``
+IDs, so a scorer that invents a reference outside that input becomes a refusal
+before the finding bundle is emitted. This does not authenticate channel
+contents, receipt sources, scorer output, allowed evidence IDs, or refusal text;
+make same-user subprocesses a trust boundary; provide sandboxing or attestation;
+prove that an issued token was honored; or turn detector findings into
+enforcement. The receipt path now uses the public LF-terminated bundle reader so
+EOF before the bundle terminator becomes an explicit detector refusal before
+receipt-ID uniqueness, source alignment, run-scope, or profile policy runs.
 After the detector subprocess emits its report and finding bundle, the
 supervisor admits only a bounded report payload to parsing, reads one bounded
 LF-terminated finding document from a supervisor-owned temporary file,
@@ -137,6 +137,7 @@ from nooa.security import (
     ReceiptCoverage,
     ReceiptIdUniquenessError,
     ReceiptScopeError,
+    ReceiptSourceAlignmentError,
     SecurityFinding,
     UnsupportedFindingBundleVersionError,
     detector_input_from_egress,
@@ -157,12 +158,14 @@ from nooa.security import (
     require_valid_finding_scope,
     require_valid_receipt_id_uniqueness,
     require_valid_receipt_scope,
+    require_valid_receipt_source_alignment,
     validate_finding_evidence_ref_membership,
     validate_finding_id_uniqueness,
     validate_finding_required_evidence_ref,
     validate_finding_scope,
     validate_receipt_id_uniqueness,
     validate_receipt_scope,
+    validate_receipt_source_alignment,
     write_finding_bundle,
 )
 
@@ -591,6 +594,43 @@ def receipt_id_uniqueness_gated_scorer(scorer: DetectorScorer) -> DetectorScorer
     return _score
 
 
+def receipt_source_alignment_gated_scorer(
+    scorer: DetectorScorer,
+    *,
+    expected_source: str,
+) -> DetectorScorer:
+    """Wrap one scorer with an example-local receipt source-alignment gate.
+
+    This checks only whether one supplied receipt iterable carries row
+    ``source`` values exactly equal to one caller-supplied ``expected_source``.
+    In this example the expected value comes from the same receipt bundle, so
+    the check is intra-document coherence rather than provenance. It does not
+    authenticate receipts, sources, or the expected value; prove that receipts
+    originated from the named source; or survive a hostile detector process.
+    """
+    if not callable(scorer):
+        raise TypeError(
+            "receipt_source_alignment_gated_scorer expected callable scorer, "
+            f"got {type(scorer).__name__}"
+        )
+
+    def _score(detector_input: DetectorInput) -> tuple[SecurityFinding, ...]:
+        try:
+            require_valid_receipt_source_alignment(
+                validate_receipt_source_alignment(
+                    detector_input.receipts,
+                    expected_source=expected_source,
+                )
+            )
+        except ReceiptSourceAlignmentError as exc:
+            raise UnscoreableDetectorInputError(
+                f"detector receipt source alignment gate refused input: {exc}"
+            ) from exc
+        return scorer(detector_input)
+
+    return _score
+
+
 def evidence_ref_membership_gated_scorer(scorer: DetectorScorer) -> DetectorScorer:
     """Wrap one scorer with an example-local evidence-reference membership gate.
 
@@ -687,6 +727,10 @@ def score_fd(
             scorer = receipt_scope_gated_scorer(
                 scorer,
                 expected_run_id=run_id,
+            )
+            scorer = receipt_source_alignment_gated_scorer(
+                scorer,
+                expected_source=receipt_bundle.receipt_source,
             )
             scorer = receipt_id_uniqueness_gated_scorer(scorer)
     detector_input = detector_input_from_egress(

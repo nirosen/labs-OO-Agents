@@ -43,6 +43,7 @@ from examples.security_hardening.detector_harness import (
     evidence_ref_membership_gated_scorer,
     receipt_id_uniqueness_gated_scorer,
     receipt_scope_gated_scorer,
+    receipt_source_alignment_gated_scorer,
     run_detected_scenario,
     score_detector_input,
     score_fd,
@@ -318,6 +319,102 @@ def test_receipt_id_uniqueness_gate_runs_before_receipt_scope() -> None:
     assert finding_bundle.findings == ()
     assert report.refusal_reason is not None
     assert "detector receipt ID uniqueness gate refused input" in report.refusal_reason
+    assert "detector receipt scope gate refused input" not in report.refusal_reason
+
+
+def test_receipt_source_alignment_gated_scorer_turns_mislabeled_rows_into_refusal() -> None:
+    receipt = SecurityReceipt(
+        receipt_id="authority-receipt-req-attack",
+        receipt_type="identity.approval",
+        source="approval-authority/mislabel",
+        run_id="identity-approval-demo/vulnerable_attack",
+        target="contractor@prod-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+    detector_input = _scoreable_input(receipts=(receipt,))
+
+    direct_report, direct_bundle = score_detector_input(detector_input)
+    gated_report, gated_bundle = score_detector_input(
+        detector_input,
+        scorer=receipt_source_alignment_gated_scorer(
+            detect_grants_without_approval,
+            expected_source="approval-authority",
+        ),
+    )
+
+    assert direct_report.scored is True
+    assert direct_report.declared_finding_count == 0
+    assert direct_bundle.findings == ()
+    assert gated_report.scored is False
+    assert gated_report.declared_finding_count == 0
+    assert gated_bundle.findings == ()
+    assert gated_report.refusal_reason is not None
+    assert "detector receipt source alignment gate refused input" in (
+        gated_report.refusal_reason
+    )
+    assert "expected_source='approval-authority'" in gated_report.refusal_reason
+    assert "mismatched_source_receipt_ids=('authority-receipt-req-attack',)" in (
+        gated_report.refusal_reason
+    )
+
+
+def test_receipt_id_uniqueness_gate_runs_before_receipt_source_alignment() -> None:
+    mislabeled_receipt = SecurityReceipt(
+        receipt_id="authority-receipt-req-attack",
+        receipt_type="identity.approval",
+        source="approval-authority/mislabel",
+        run_id="identity-approval-demo/vulnerable_attack",
+        target="contractor@prod-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+    detector_input = _scoreable_input(receipts=(mislabeled_receipt, mislabeled_receipt))
+
+    report, finding_bundle = score_detector_input(
+        detector_input,
+        scorer=receipt_id_uniqueness_gated_scorer(
+            receipt_source_alignment_gated_scorer(
+                detect_grants_without_approval,
+                expected_source="approval-authority",
+            )
+        ),
+    )
+
+    assert report.scored is False
+    assert finding_bundle.findings == ()
+    assert report.refusal_reason is not None
+    assert "detector receipt ID uniqueness gate refused input" in report.refusal_reason
+    assert "detector receipt source alignment gate refused input" not in report.refusal_reason
+
+
+def test_receipt_source_alignment_gate_runs_before_receipt_scope() -> None:
+    stale_mislabeled_receipt = SecurityReceipt(
+        receipt_id="authority-receipt-req-attack",
+        receipt_type="identity.approval",
+        source="approval-authority/mislabel",
+        run_id="identity-approval-demo/stale",
+        target="contractor@prod-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+    detector_input = _scoreable_input(receipts=(stale_mislabeled_receipt,))
+
+    report, finding_bundle = score_detector_input(
+        detector_input,
+        scorer=receipt_source_alignment_gated_scorer(
+            receipt_scope_gated_scorer(
+                detect_grants_without_approval,
+                expected_run_id=detector_input.run_id,
+            ),
+            expected_source="approval-authority",
+        ),
+    )
+
+    assert report.scored is False
+    assert finding_bundle.findings == ()
+    assert report.refusal_reason is not None
+    assert "detector receipt source alignment gate refused input" in report.refusal_reason
     assert "detector receipt scope gate refused input" not in report.refusal_reason
 
 
@@ -738,6 +835,35 @@ def test_detected_authorized_duplicate_receipt_id_refuses_before_scope_or_policy
         result.detector.refusal_reason
     )
     assert "duplicate_receipt_ids=('authority-receipt-req-approved',)" in (
+        result.detector.refusal_reason
+    )
+    assert "detector receipt scope gate refused input" not in result.detector.refusal_reason
+
+
+def test_detected_authorized_mislabeled_receipt_source_refuses_before_scope_or_policy() -> None:
+    result = run_detected_scenario(
+        "hardened_authorized",
+        authority_fault="mislabel_receipt_source",
+    )
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert result.victim.decision == "allowed"
+    assert result.authority.issued_token_count == 1
+    assert result.authority.receipt_count == 1
+    assert result.detector.receipt_bundle_completeness_signals == ()
+    assert result.detector.receipt_bundle_completeness_gate_passed is True
+    assert result.detector.receipt_count == 1
+    assert result.detector.declared_receipt_count == 1
+    assert result.detector.scored is False
+    assert result.detector.declared_finding_count == 0
+    assert result.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "detector receipt source alignment gate refused input" in (
+        result.detector.refusal_reason
+    )
+    assert "expected_source='approval-authority'" in result.detector.refusal_reason
+    assert "mismatched_source_receipt_ids=('authority-receipt-req-approved',)" in (
         result.detector.refusal_reason
     )
     assert "detector receipt scope gate refused input" not in result.detector.refusal_reason

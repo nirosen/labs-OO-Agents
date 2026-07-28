@@ -41,6 +41,7 @@ _AUTHORITY_FAULTS = (
     "exit_before_receipt",
     "stale_receipt_run_id",
     "duplicate_receipt_id",
+    "mislabel_receipt_source",
     "truncate_receipt_document",
     "drop_receipt_count_mismatch",
 )
@@ -50,6 +51,7 @@ AuthorityFault = Literal[
     "exit_before_receipt",
     "stale_receipt_run_id",
     "duplicate_receipt_id",
+    "mislabel_receipt_source",
     "truncate_receipt_document",
     "drop_receipt_count_mismatch",
 ]
@@ -219,14 +221,15 @@ def issue_fd(
         if fault == "drop_receipt_count_mismatch"
         else len(transported_receipts)
     )
-    receipt_bundle = _validate_authority_receipt_bundle(
-        ReceiptBundle(
-            receipt_source=_AUTHORITY_SOURCE,
-            receipt_coverage="asserted_complete",
-            declared_receipt_count=declared_receipt_count,
-            receipts=transported_receipts,
-        )
+    receipt_bundle = ReceiptBundle(
+        receipt_source=_AUTHORITY_SOURCE,
+        receipt_coverage="asserted_complete",
+        declared_receipt_count=declared_receipt_count,
+        receipts=transported_receipts,
     )
+    # This fault emits one deliberately incoherent document for the detector-side gate.
+    if fault != "mislabel_receipt_source":
+        receipt_bundle = _validate_authority_receipt_bundle(receipt_bundle)
     with os.fdopen(receipt_fd, "wb", closefd=True) as receipt_fh:
         if fault == "truncate_receipt_document":
             _write_truncated_receipt_bundle(receipt_fh, receipt_bundle)
@@ -255,6 +258,17 @@ def _transport_receipts_for_fault(
         first, *remaining = receipts
         duplicate = SecurityReceipt.model_validate(first.model_dump(mode="python"))
         return (first, duplicate, *remaining)
+    if fault == "mislabel_receipt_source":
+        if not receipts:
+            raise ValueError(f"{fault} requires at least one authority receipt")
+        first, *remaining = receipts
+        mislabeled = SecurityReceipt.model_validate(
+            {
+                **first.model_dump(mode="python"),
+                "source": f"{first.source}/mislabel",
+            }
+        )
+        return (mislabeled, *remaining)
     return receipts
 
 
