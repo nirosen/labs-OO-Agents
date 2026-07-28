@@ -92,6 +92,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V3" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V4" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
