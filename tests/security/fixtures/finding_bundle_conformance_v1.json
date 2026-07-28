@@ -223,6 +223,34 @@
       }
     },
     {
+      "name": "bom_prefix",
+      "payload_base64": "77u/eyJzY2hlbWFfdmVyc2lvbiI6Im5vb2EtZmluZGluZy1idW5kbGUtdjEiLCJwcm9kdWNlciI6IiIsImZpbmRpbmdzIjpbXX0K",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "outer_whitespace",
+      "payload_utf8": " {\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "non_object",
+      "payload_utf8": "[]\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "missing_keys",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\"}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
       "name": "invalid_finding_id",
       "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"\",\"finding_type\":\"t\",\"producer\":\"p\",\"run_id\":\"\",\"target\":\"\",\"evidence_refs\":[],\"attributes\":{}}]}\n",
       "expect": {
@@ -260,6 +288,13 @@
     {
       "name": "unsafe_int",
       "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\",\"findings\":[{\"schema_version\":\"nooa-finding-v1\",\"finding_id\":\"f\",\"finding_type\":\"t\",\"producer\":\"p\",\"run_id\":\"\",\"target\":\"\",\"evidence_refs\":[],\"attributes\":{\"score\":9007199254740992}}]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "lone_surrogate",
+      "payload_utf8": "{\"schema_version\":\"nooa-finding-bundle-v1\",\"producer\":\"\\ud800\",\"findings\":[]}\n",
       "expect": {
         "outcome": "invalid_document_error"
       }
