@@ -109,7 +109,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
-    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V11" in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V12" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -121,6 +121,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V8" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V9" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V10" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V11" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -225,3 +226,15 @@ def test_joint_readme_exposes_current_finding_admission_refusal_stages() -> None
         for row in rows
         if row.detector_fault in expected
     } == expected
+
+
+def test_joint_readme_keeps_evidence_membership_detector_side() -> None:
+    root_text = _readme_text()
+    hardening_text = _readme_text(HARDENING_README_PATH)
+
+    assert "evidence_ref_membership_gated_scorer()" in root_text
+    assert "evidence ref membership gate" in hardening_text
+    assert "V12 adds no new matrix row because evidence-ref membership is detector-side" in (
+        root_text
+    )
+    assert "the supervisor still has no independent evidence-ID set" in root_text
