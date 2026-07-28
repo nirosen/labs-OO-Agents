@@ -102,6 +102,27 @@ The checked finding-bundle vectors in `tests/security/fixtures/finding_bundle_co
 
 A clean result means only that the reader saw one terminated document with the supplied rows. The writer can still omit findings, forge a bundle producer label, emit semantically false rows, or disagree with row-level `SecurityFinding.producer`; `FindingBundle.producer` does not constrain row-level producers. The bundle gate does not authenticate bytes, prove detector coverage, establish run scope, enforce finding-id uniqueness, dereference evidence refs, assign severity or verdict, or make an empty clean bundle evidence that nothing was found.
 
+## Receipt ID Uniqueness Validation
+
+`validate_receipt_id_uniqueness()` is an opt-in consumer helper for one narrow problem: keeping one supplied receipt iterable free of repeated `receipt_id` values before aggregation, scoring, or review. It materializes the iterable once, preserves order, and reports each repeated identifier once in first-repeat order. `require_valid_receipt_id_uniqueness()` turns that visible ambiguity into a fail-closed boundary for callers that want one.
+
+```mermaid
+flowchart LR
+    R["SecurityReceipt rows"] --> V["validate_receipt_id_uniqueness()"]
+    V --> C["ReceiptIdUniquenessValidation"]
+    C -- "no signals" --> Q["require_valid_receipt_id_uniqueness()"]
+    Q --> A["aggregation or scoring"]
+    C -. "duplicate_receipt_id" .-> X["caller refusal"]
+```
+
+| Helper fact | Meaning |
+| --- | --- |
+| `duplicate_receipt_id` | At least one supplied `receipt_id` appeared more than once in the same materialized iterable. |
+
+A clean result means only that the supplied rows carried distinct `receipt_id` values within one materialized iterable. Directly constructing `ReceiptIdUniquenessValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate receipts, sources, or identifiers; prove that distinct identifiers denote distinct receipts; establish uniqueness across bundles, runs, or sources; dereference or correlate identifiers against any external system; prove receipt coverage or that omitted receipts do not exist; or make the same-user authority subprocess a trust boundary.
+
+The `detector_harness.py` example shows one application-owned integration: after the identity-approval path admits one complete receipt bundle, it wraps the profile scorer with `receipt_id_uniqueness_gated_scorer()` outside the existing receipt-scope gate. A repeated receipt ID therefore becomes an example-local refusal before run-scope or policy runs. That placement does not make uniqueness automatic for `DetectorInput`, and a hostile detector can bypass the wrapper.
+
 ## Receipt Scope Validation
 
 `validate_receipt_scope()` is an opt-in collector helper for one narrow problem: keeping a supplied receipt bundle scoped to one caller-selected `expected_run_id`. It materializes the iterable once, preserves order, and reports only blank or mismatched `run_id` values. `require_valid_receipt_scope()` turns those visible diagnostics into a fail-closed boundary for callers that want one.
@@ -366,6 +387,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `ReceiptScopeValidation` | Collector author | Materialized receipt bundle plus visible run-scope diagnostics. |
 | `ReceiptScopeSignal` | Collector author | Public run-scope diagnostic type alias. |
 | `ReceiptScopeError` | Collector author | Fail-closed run-scope refusal. |
+| `ReceiptIdUniquenessValidation` | Receipt consumer | Materialized receipt iterable plus visible repeated-ID diagnostics. |
+| `ReceiptIdUniquenessSignal` | Receipt consumer | Public repeated-ID diagnostic type alias. |
+| `ReceiptIdUniquenessError` | Receipt consumer | Fail-closed repeated-ID refusal. |
 | `DetectorInput` | Detector author | Detector-facing evidence bundle. |
 | `SecurityFinding` | Detector author | Caller-owned finding shape. |
 | `FindingIdUniquenessValidation` | Finding consumer | Materialized finding iterable plus visible repeated-ID diagnostics. |
@@ -407,6 +431,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `validate_receipt_scope` | Collector author | Materialize one receipt iterable and diagnose visible run-scope drift. |
 | `require_valid_receipt_scope` | Collector author | Fail closed on public receipt run-scope signals. |
 | `receipt_scope_signals` | Collector author | Return canonical receipt run-scope diagnostics. |
+| `validate_receipt_id_uniqueness` | Receipt consumer | Materialize one receipt iterable and diagnose repeated IDs. |
+| `require_valid_receipt_id_uniqueness` | Receipt consumer | Fail closed on public receipt-ID diagnostics. |
+| `receipt_id_uniqueness_signals` | Receipt consumer | Return canonical receipt-ID diagnostics. |
 | `validate_finding_scope` | Finding consumer | Materialize one finding iterable and diagnose visible run-scope drift. |
 | `require_valid_finding_scope` | Finding consumer | Fail closed on public finding run-scope signals. |
 | `finding_scope_signals` | Finding consumer | Return canonical finding run-scope diagnostics. |
@@ -447,6 +474,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `RECEIPT_BUNDLE_SCHEMA_VERSION` | Conformance implementer | Receipt-bundle schema version token. |
 | `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN` | Conformance implementer | Future receipt-bundle version token pattern. |
 | `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE` | Conformance implementer | Whole-token receipt-bundle pattern match rule. |
+| `RECEIPT_ID_UNIQUENESS_SIGNALS` | Conformance implementer | Canonical receipt-ID diagnostic order. |
 | `MAX_FINDING_BUNDLE_JSON_INTEGER` | Conformance implementer | Largest portable finding-bundle JSON integer. |
 | `FINDING_BUNDLE_COMPLETENESS_SIGNALS` | Conformance implementer | Canonical finding-bundle completeness-signal order. |
 | `FINDING_BUNDLE_KEYS` | Conformance implementer | Exact finding-bundle document key set. |
@@ -467,7 +495,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - V2 stream-end frames distinguish declared completion from stream cessation only. They do not authenticate records, prove omitted effects did not happen, or make count agreement sufficient evidence.
 - Receipt-bundle termination and count agreement distinguish visible transport degradation only. They do not authenticate producers, prove omitted receipts did not happen, or make count agreement sufficient evidence.
 - Finding-bundle termination distinguishes visible transport degradation only. It does not authenticate producers, prove omitted findings did not happen, or make an empty clean bundle evidence that nothing was found.
-- Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
+- Receipts remain caller-supplied copies. `validate_receipt_id_uniqueness()` can reject repeated `receipt_id` values within one supplied iterable, and `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, establish uniqueness across bundles, or correlate receipts to effects.
 - Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values, `validate_finding_id_uniqueness()` can reject repeated `finding_id` values within one supplied iterable, `validate_finding_evidence_ref_membership()` can reject refs outside one caller-supplied allowed-ID set, and `validate_finding_required_evidence_ref()` can reject omission of one caller-selected exact ref only; NOOA still does not authenticate finding producers, verify detector coverage, establish uniqueness across bundles, dereference evidence refs, or prove that present references support a finding.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.
 - Collector byte and record budgets are resource backstops, not authenticity or authorization guarantees.

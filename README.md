@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Receipt ID Uniqueness Validation
+
+> Branch: `codex/security-receipt-id-uniqueness`
+
+This slice adds one opt-in public helper for an intrinsic property of supplied receipt rows: whether one materialized iterable reuses a `receipt_id`. The identity-approval detector path now runs that helper after receipt-bundle completeness passes and before receipt scope or profile policy runs. The new `duplicate_receipt_id` authority fault writes two copies with one repeated ID while keeping the bundle count coherent, so the refusal proves the uniqueness gate is independent of transport completeness and run-scope diagnostics.
+
+```mermaid
+flowchart LR
+    B["complete ReceiptBundle rows"] --> I["validate_receipt_id_uniqueness()"]
+    I -- "distinct receipt_id values" --> S["validate_receipt_scope()"]
+    S --> P["profile scorer"]
+    I -. "duplicate_receipt_id" .-> X["scored=False"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `ReceiptIdUniquenessValidation`, `ReceiptIdUniquenessSignal`, `ReceiptIdUniquenessError`, canonical `RECEIPT_ID_UNIQUENESS_SIGNALS`, `validate_receipt_id_uniqueness()`, `require_valid_receipt_id_uniqueness()`, `receipt_id_uniqueness_signals()`, example-local `receipt_id_uniqueness_gated_scorer()`, and `duplicate_receipt_id` authority fault |
+| Security claim | Applications can opt into a fail-closed check that one supplied receipt iterable does not reuse a `receipt_id`, and the example detector refuses a duplicate-ID receipt bundle before receipt scope or profile policy runs. |
+| Non-claim | A clean uniqueness result means only that no two supplied receipts in one materialized iterable shared a `receipt_id`. It does not authenticate receipts, sources, or identifiers; prove that distinct identifiers denote distinct receipts, or that a duplicate identifier denotes a dishonest collector rather than a construction bug; establish uniqueness across bundles, runs, or sources; dereference or correlate identifiers against any external system; prove receipt coverage or that omitted receipts do not exist; or make the same-user authority subprocess a trust boundary. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v13` |
+| Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/approval_authority.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_receipts.py`, `tests/security/test_approval_authority.py`, `tests/security/test_detector_harness.py`, `tests/security/test_surface_guide.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_receipts.py tests/security/test_approval_authority.py tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/receipts.py examples/security_hardening/approval_authority.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Finding Required Evidence Ref
 
 > Branch: `codex/security-finding-required-evidence-ref`

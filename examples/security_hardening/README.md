@@ -10,6 +10,26 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Receipt ID Uniqueness Validation Follow-On
+
+`codex/security-receipt-id-uniqueness` adds the public opt-in `ReceiptIdUniquenessValidation` helper and wires one detector-side `receipt_id_uniqueness_gated_scorer()` wrapper into the identity-approval profile after receipt-bundle completeness and before receipt scope or profile policy. One `duplicate_receipt_id` authority fault copies an issued receipt before bundle write while keeping `declared_receipt_count` coherent, so the detector reaches the new intrinsic row-ID gate instead of confusing the case with transport or scope drift.
+
+```mermaid
+flowchart LR
+    B["complete ReceiptBundle rows"] --> I["validate_receipt_id_uniqueness()"]
+    I -- "distinct receipt_id values" --> S["receipt scope gate"]
+    S --> P["identity scorer"]
+    I -. "duplicate_receipt_id" .-> X["scored=False"]
+```
+
+Run the duplicate-ID fault:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault duplicate_receipt_id
+```
+
+A clean uniqueness result means only that no two supplied receipts in one materialized iterable shared a `receipt_id`. It does not authenticate receipts, sources, or identifiers; prove that distinct identifiers denote distinct receipts, or that a duplicate identifier denotes a dishonest collector rather than a construction bug; establish uniqueness across bundles, runs, or sources; dereference or correlate identifiers against any external system; prove receipt coverage or that omitted receipts do not exist; or make the same-user authority subprocess a trust boundary.
+
 ## Finding Required Evidence Ref Follow-On
 
 `codex/security-finding-required-evidence-ref` adds the public opt-in `FindingRequiredEvidenceRefValidation` helper and wires its first supervisor-side consumer after finding scope, report coherence, and ID uniqueness have already passed. The supervisor uses its own selected `input_id` as the required exact ref, not the detector report's echoed field, and now also refuses a report whose `detector_input_id` drifts from that selected value before it admits any finding rows.

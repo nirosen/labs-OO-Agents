@@ -14,6 +14,7 @@ from examples.security_hardening.approval_authority import (
     ApprovalResponseDocument,
     AuthorityInputTooLargeError,
     AuthoritySummary,
+    _transport_receipts_for_fault,
     _validate_authority_receipt_bundle,
     approval_token_for_request,
     approval_tokens_by_request_id,
@@ -108,6 +109,24 @@ def test_authority_receipt_bundle_keeps_receipt_source_aligned() -> None:
 
     with pytest.raises(ValueError, match="authority receipts must use receipt_source"):
         _validate_authority_receipt_bundle(bundle)
+
+
+def test_duplicate_receipt_id_fault_duplicates_one_transport_copy_only() -> None:
+    receipt = SecurityReceipt(
+        receipt_id="receipt-1",
+        receipt_type="identity.approval",
+        source="approval-authority",
+    )
+
+    transported = _transport_receipts_for_fault((receipt,), fault="duplicate_receipt_id")
+
+    assert transported == (receipt, receipt)
+    assert transported[0] is not transported[1]
+    with pytest.raises(
+        ValueError,
+        match="duplicate_receipt_id requires at least one authority receipt",
+    ):
+        _transport_receipts_for_fault((), fault="duplicate_receipt_id")
 
 
 def test_authority_request_and_response_readers_are_bounded() -> None:

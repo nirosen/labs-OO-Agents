@@ -36,6 +36,12 @@ MAX_RECEIPT_BUNDLE_JSON_INTEGER: int = (1 << 53) - 1
 DEFAULT_RECEIPT_BUNDLE_MAX_BYTES: int = 1024 * 1024
 DEFAULT_RECEIPT_BUNDLE_MAX_RECEIPTS: int = 1 << 20
 
+ReceiptIdUniquenessSignal = Literal["duplicate_receipt_id"]
+# Tuple order is public because ReceiptIdUniquenessError.reasons preserves it.
+RECEIPT_ID_UNIQUENESS_SIGNALS: tuple[ReceiptIdUniquenessSignal, ...] = (
+    "duplicate_receipt_id",
+)
+
 ReceiptScopeSignal = Literal["missing_run_id", "run_id_mismatch"]
 # Tuple order is public because ReceiptScopeError.reasons preserves it.
 RECEIPT_SCOPE_SIGNALS: tuple[ReceiptScopeSignal, ...] = (
@@ -358,6 +364,130 @@ def receipt_bundle_completeness_signals(
     ):
         reasons.append("receipt_count_mismatch")
     return tuple(reasons)
+
+
+@dataclass(frozen=True)
+class ReceiptIdUniquenessValidation:
+    """Identifier-uniqueness diagnostics for one materialized receipt iterable.
+
+    This result preserves the input order in ``receipts`` and reports only
+    repeated ``receipt_id`` values inside one supplied iterable. It does not
+    authenticate receipts, sources, or identifiers; prove that distinct
+    identifiers denote distinct receipts; establish uniqueness across bundles,
+    runs, or sources; dereference identifiers against any external system; or
+    prove receipt coverage.
+
+    A clean empty result means only that none of the supplied receipts shared a
+    ``receipt_id``. It does not prove that no receipts exist or that collection
+    was complete.
+
+    Direct construction only asserts these diagnostic fields; it does not
+    perform the check that :func:`validate_receipt_id_uniqueness` performs.
+    """
+
+    receipts: tuple[SecurityReceipt, ...]
+    duplicate_receipt_ids: tuple[str, ...] = ()
+
+
+class ReceiptIdUniquenessError(RuntimeError):
+    """Raised when supplied receipts reuse one or more receipt identifiers.
+
+    This error reports only diagnostics visible in a
+    :class:`ReceiptIdUniquenessValidation`. It does not establish receipt
+    authenticity, collection coverage, or semantic correctness.
+    """
+
+    def __init__(self, validation: ReceiptIdUniquenessValidation) -> None:
+        if not isinstance(validation, ReceiptIdUniquenessValidation):
+            raise TypeError(
+                "ReceiptIdUniquenessError expected ReceiptIdUniquenessValidation, "
+                f"got {type(validation).__name__}"
+            )
+        reasons = receipt_id_uniqueness_signals(validation)
+        if not reasons:
+            raise ValueError(
+                "ReceiptIdUniquenessError requires at least one uniqueness signal"
+            )
+        self.duplicate_receipt_ids = validation.duplicate_receipt_ids
+        self.reasons = reasons
+        super().__init__(
+            "receipt rows reuse receipt_id values: "
+            f"duplicate_receipt_ids={validation.duplicate_receipt_ids!r}"
+        )
+
+
+def receipt_id_uniqueness_signals(
+    validation: ReceiptIdUniquenessValidation,
+) -> tuple[ReceiptIdUniquenessSignal, ...]:
+    """Return canonical identifier diagnostics for one receipt iterable."""
+    if not isinstance(validation, ReceiptIdUniquenessValidation):
+        raise TypeError(
+            "receipt_id_uniqueness_signals expected ReceiptIdUniquenessValidation, "
+            f"got {type(validation).__name__}"
+        )
+    signals: list[ReceiptIdUniquenessSignal] = []
+    if validation.duplicate_receipt_ids:
+        signals.append("duplicate_receipt_id")
+    return tuple(signals)
+
+
+def validate_receipt_id_uniqueness(
+    receipts: Iterable[SecurityReceipt],
+) -> ReceiptIdUniquenessValidation:
+    """Materialize receipts and report repeated receipt identifiers.
+
+    ``receipts`` is consumed once, preserved in input order, and stored as the
+    tuple returned by :func:`require_valid_receipt_id_uniqueness` when no
+    uniqueness signal is present.
+
+    The helper checks only whether the supplied rows reuse ``receipt_id``
+    values. It does not authenticate receipts, sources, or identifiers; prove
+    that distinct identifiers denote distinct receipts; establish uniqueness
+    across bundles, runs, or sources; dereference identifiers against any
+    external system; or prove receipt coverage.
+    """
+    if isinstance(receipts, (str, bytes, bytearray)) or not isinstance(receipts, Iterable):
+        raise TypeError(
+            "validate_receipt_id_uniqueness expected iterable of SecurityReceipt, "
+            f"got {type(receipts).__name__}"
+        )
+
+    materialized = tuple(receipts)
+    for index, receipt in enumerate(materialized):
+        if not isinstance(receipt, SecurityReceipt):
+            raise TypeError(
+                "validate_receipt_id_uniqueness expected SecurityReceipt at "
+                f"index {index}, got {type(receipt).__name__}"
+            )
+
+    seen_ids: set[str] = set()
+    duplicate_ids: list[str] = []
+    reported_duplicate_ids: set[str] = set()
+    for receipt in materialized:
+        receipt_id = receipt.receipt_id
+        if receipt_id in seen_ids and receipt_id not in reported_duplicate_ids:
+            duplicate_ids.append(receipt_id)
+            reported_duplicate_ids.add(receipt_id)
+        seen_ids.add(receipt_id)
+
+    return ReceiptIdUniquenessValidation(
+        receipts=materialized,
+        duplicate_receipt_ids=tuple(duplicate_ids),
+    )
+
+
+def require_valid_receipt_id_uniqueness(
+    validation: ReceiptIdUniquenessValidation,
+) -> tuple[SecurityReceipt, ...]:
+    """Return supplied receipts or fail closed on repeated receipt identifiers."""
+    if not isinstance(validation, ReceiptIdUniquenessValidation):
+        raise TypeError(
+            "require_valid_receipt_id_uniqueness expected ReceiptIdUniquenessValidation, "
+            f"got {type(validation).__name__}"
+        )
+    if receipt_id_uniqueness_signals(validation):
+        raise ReceiptIdUniquenessError(validation)
+    return validation.receipts
 
 
 @dataclass(frozen=True)
