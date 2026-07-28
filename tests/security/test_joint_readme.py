@@ -14,6 +14,7 @@ from examples.security_hardening.approval_authority import AuthorityFault
 from examples.security_hardening.detector_harness import (
     DetectorFault,
     FindingAdmissionRefusal,
+    ReceiptAdmissionRefusal,
     SubprocessOutputFault,
     run_detected_scenario,
 )
@@ -49,6 +50,7 @@ class _MatrixRow(NamedTuple):
     effect_signals: tuple[str, ...]
     receipt_signals: tuple[str, ...]
     finding_signals: tuple[str, ...]
+    receipt_admission_refusal: ReceiptAdmissionRefusal | None
     finding_admission_refusal: FindingAdmissionRefusal | None
     scored: bool
     findings: int
@@ -70,15 +72,19 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
     rows: list[_MatrixRow] = []
     for line in lines[2:]:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        assert len(cells) == 12, line
+        assert len(cells) == 13, line
         effect_signals = ast.literal_eval(_strip_code(cells[6]))
         receipt_signals = ast.literal_eval(_strip_code(cells[7]))
         finding_signals = ast.literal_eval(_strip_code(cells[8]))
-        finding_admission_refusal = ast.literal_eval(_strip_code(cells[9]))
-        scored = ast.literal_eval(_strip_code(cells[10]))
+        receipt_admission_refusal = ast.literal_eval(_strip_code(cells[9]))
+        finding_admission_refusal = ast.literal_eval(_strip_code(cells[10]))
+        scored = ast.literal_eval(_strip_code(cells[11]))
         assert isinstance(effect_signals, tuple)
         assert isinstance(receipt_signals, tuple)
         assert isinstance(finding_signals, tuple)
+        assert receipt_admission_refusal is None or isinstance(
+            receipt_admission_refusal, str
+        )
         assert finding_admission_refusal is None or isinstance(
             finding_admission_refusal, str
         )
@@ -94,11 +100,14 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
                 effect_signals=effect_signals,
                 receipt_signals=receipt_signals,
                 finding_signals=finding_signals,
+                receipt_admission_refusal=cast(
+                    ReceiptAdmissionRefusal | None, receipt_admission_refusal
+                ),
                 finding_admission_refusal=cast(
                     FindingAdmissionRefusal | None, finding_admission_refusal
                 ),
                 scored=scored,
-                findings=int(_strip_code(cells[11])),
+                findings=int(_strip_code(cells[12])),
             )
         )
     return tuple(rows)
@@ -109,7 +118,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
-    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V15" in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V16" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -125,6 +134,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V12" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V13" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V14" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V15" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -188,6 +198,7 @@ def test_joint_readme_matrix_reproduces_detector_paths() -> None:
         assert result.detector.effect_egress_completeness_signals == row.effect_signals
         assert result.detector.receipt_bundle_completeness_signals == row.receipt_signals
         assert result.detector.finding_bundle_completeness_signals == row.finding_signals
+        assert result.detector.receipt_admission_refusal == row.receipt_admission_refusal
         assert result.detector.finding_admission_refusal == row.finding_admission_refusal
         assert result.detector.scored is row.scored
         assert len(result.findings) == row.findings
@@ -208,6 +219,7 @@ def test_joint_readme_exposes_id_uniqueness_refusal_stage() -> None:
             effect_signals=(),
             receipt_signals=(),
             finding_signals=(),
+            receipt_admission_refusal=None,
             finding_admission_refusal="duplicate_finding_id",
             scored=False,
             findings=0,
@@ -260,6 +272,7 @@ def test_joint_readme_exposes_required_evidence_ref_refusal_stage() -> None:
             effect_signals=(),
             receipt_signals=(),
             finding_signals=(),
+            receipt_admission_refusal=None,
             finding_admission_refusal="missing_required_evidence_ref",
             scored=False,
             findings=0,
@@ -284,6 +297,7 @@ def test_joint_readme_exposes_receipt_id_uniqueness_refusal_stage() -> None:
             effect_signals=(),
             receipt_signals=(),
             finding_signals=(),
+            receipt_admission_refusal="duplicate_receipt_id",
             finding_admission_refusal=None,
             scored=False,
             findings=0,
@@ -298,7 +312,7 @@ def test_joint_readme_keeps_receipt_id_uniqueness_detector_side() -> None:
     assert "receipt_id_uniqueness_gated_scorer()" in root_text
     assert "receipt ID uniqueness gate" in hardening_text
     assert "V14 adds one detector-side row for `duplicate_receipt_id`" in root_text
-    assert "Its `Finding admission refusal` remains `None`" in root_text
+    assert "duplicate receipt ID is `duplicate_receipt_id`" in root_text
 
 
 def test_joint_readme_exposes_receipt_source_alignment_refusal_stage() -> None:
@@ -318,6 +332,7 @@ def test_joint_readme_exposes_receipt_source_alignment_refusal_stage() -> None:
             effect_signals=(),
             receipt_signals=(),
             finding_signals=(),
+            receipt_admission_refusal="receipt_source_mismatch",
             finding_admission_refusal=None,
             scored=False,
             findings=0,
@@ -332,4 +347,19 @@ def test_joint_readme_keeps_receipt_source_alignment_detector_side() -> None:
     assert "receipt_source_alignment_gated_scorer()" in root_text
     assert "receipt source alignment gate" in hardening_text
     assert "V15 adds one detector-side row for `mislabel_receipt_source`" in root_text
-    assert "collision group now has four rows" in root_text
+    assert "The prior four-row collision splits completely" in root_text
+
+
+def test_joint_readme_exposes_current_receipt_admission_refusal_stages() -> None:
+    rows = _matrix_rows()
+    expected = {
+        "stale_receipt_run_id": "scope_drift",
+        "duplicate_receipt_id": "duplicate_receipt_id",
+        "mislabel_receipt_source": "receipt_source_mismatch",
+    }
+
+    assert {
+        row.authority_fault: row.receipt_admission_refusal
+        for row in rows
+        if row.authority_fault in expected
+    } == expected
