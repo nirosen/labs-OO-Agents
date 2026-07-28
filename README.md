@@ -62,6 +62,31 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Receipt Admission Diagnostics
+
+> Branch: `codex/security-receipt-admission-diagnostics`
+
+This slice adds no public `nooa.security` API. The example-local `DetectorReport` now carries one detector-supplied `receipt_admission_refusal` field for the three post-completeness receipt wrappers already used by the identity-approval path: receipt-ID uniqueness, receipt source alignment, and receipt scope. The supervisor preserves that field when it admits a parseable report so reviewers can distinguish those detector-side refusal stages without parsing free-form text.
+
+```mermaid
+flowchart LR
+    B["complete ReceiptBundle rows"] --> I["receipt ID uniqueness gate"]
+    I --> A["receipt source alignment gate"]
+    A --> S["receipt scope gate"]
+    I -. "duplicate_receipt_id" .-> D["receipt_admission_refusal"]
+    A -. "receipt_source_mismatch" .-> D
+    S -. "scope_drift" .-> D
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-local `ReceiptAdmissionRefusal`, `receipt_admission_refusal` on `DetectorReport`, optional refusal metadata on `UnscoreableDetectorInputError`, wrapper-to-report plumbing, and focused ownership tests |
+| Security claim | The example detector can expose which of its existing post-completeness receipt wrappers refused one input without requiring consumers to parse `refusal_reason`. |
+| Non-claim | `receipt_admission_refusal` is detector-supplied and unverified. A detector can report any stage or `None`, exactly as it can with `refusal_reason`; the supervisor deliberately preserves the field rather than treating it as trusted evidence. This does not authenticate receipts, sources, identifiers, scope, detector output, or refusal text; add a new gate; cover receipt transport failures; or make same-user subprocesses a trust boundary. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v15` |
+| Review files | `examples/security_hardening/detector_policy.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_detector_harness.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `ruff check examples/security_hardening tests/security`; `pyright examples/security_hardening/detector_policy.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Receipt Source Alignment
 
 > Branch: `codex/security-receipt-source-alignment`
