@@ -190,11 +190,11 @@ flowchart LR
 | Review files | `tests/security/fixtures/effect_egress_producer_conformance_v1.json`, `tests/security/test_egress_producer_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `README.md` |
 | Validation | `pytest tests/security/test_egress_producer_conformance.py`; `pytest tests/security`; `git diff --quiet 11ae1eb -- src/nooa`; `pytest` |
 
-## Security Review Joint Branch: End-to-End Detector Pipeline V2
+## Security Review Joint Branch: End-to-End Detector Pipeline V3
 
-> Branch: `codex/security-hardening-e2e-detector-pipeline-v2`
+> Branch: `codex/security-hardening-e2e-detector-pipeline-v3`
 
-This is the current presentation branch for the security path assembled across the smaller review slices. It adds no runtime behavior beyond those slices. A maintainer can now review one cumulative path with two victim families, application-owned defender and backend policy, V2 collector-facing egress, optional approval-authority receipts, out-of-process detector scoring, reader-visible refusal on incomplete or inconsistent streams, and a checked surface guide for the public `nooa.security` exports. `SURFACE.md` owns the export map, egress rules, minimal integration, and canonical boundaries; this section owns the runnable composition and checked scenario matrix.
+This is the current presentation branch for the security path assembled across the smaller review slices. It adds no runtime behavior beyond those slices. A maintainer can now review one cumulative path with two victim families, application-owned defender and backend policy, V2 collector-facing egress, optional approval-authority receipts, out-of-process detector scoring, reader-visible refusal on incomplete or inconsistent streams, an example-local receipt scope gate before identity policy, and a checked surface guide for the public `nooa.security` exports. `SURFACE.md` owns the export map, egress rules, minimal integration, and canonical boundaries; this section owns the runnable composition and checked scenario matrix.
 
 ```mermaid
 flowchart LR
@@ -215,40 +215,44 @@ flowchart LR
     RP --> T
     T --> C["read_effect_egress()<br/>signals + budgets"]
     C --> DI["DetectorInput"]
-    DI --> P1["identity scorer"]
+    DI --> G["receipt_scope_gated_scorer()<br/>identity only"]
+    G --> P1["identity scorer"]
     DI --> P2["export scorer"]
     P1 --> F["finding or refusal"]
     P2 --> F
     C -. "gap / truncation / missing end / count mismatch" .-> X["scored=False"]
+    G -. "receipt run_id mismatch" .-> X
 ```
 
 <!-- JOINT_SCENARIO_MATRIX_START -->
-| Scenario | Victim fault | Profile | V2 signals | Scored | Findings |
-| --- | --- | --- | --- | --- | --- |
-| `vulnerable_attack` | `none` | `identity_approval` | `()` | `True` | `1` |
-| `defender_only_attack` | `none` | `identity_approval` | `()` | `True` | `0` |
-| `hardened_authorized` | `none` | `identity_approval` | `()` | `True` | `0` |
-| `export_vulnerable_attack` | `none` | `data_export` | `()` | `True` | `1` |
-| `export_hardened_attack` | `none` | `data_export` | `()` | `True` | `0` |
-| `vulnerable_attack` | `partial_tail_crash` | `identity_approval` | `("truncated", "missing_stream_end")` | `False` | `0` |
-| `vulnerable_attack` | `exit_between_frames` | `identity_approval` | `("missing_stream_end",)` | `False` | `0` |
-| `vulnerable_attack` | `drop_record_count_mismatch` | `identity_approval` | `("record_count_mismatch",)` | `False` | `0` |
-| `export_vulnerable_attack` | `sequence_gap` | `data_export` | `("first_sequence_error",)` | `False` | `0` |
+| Scenario | Victim fault | Authority fault | Profile | V2 signals | Scored | Findings |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vulnerable_attack` | `none` | `none` | `identity_approval` | `()` | `True` | `1` |
+| `defender_only_attack` | `none` | `none` | `identity_approval` | `()` | `True` | `0` |
+| `hardened_authorized` | `none` | `none` | `identity_approval` | `()` | `True` | `0` |
+| `hardened_authorized` | `none` | `stale_receipt_run_id` | `identity_approval` | `()` | `False` | `0` |
+| `export_vulnerable_attack` | `none` | `none` | `data_export` | `()` | `True` | `1` |
+| `export_hardened_attack` | `none` | `none` | `data_export` | `()` | `True` | `0` |
+| `vulnerable_attack` | `partial_tail_crash` | `none` | `identity_approval` | `("truncated", "missing_stream_end")` | `False` | `0` |
+| `vulnerable_attack` | `exit_between_frames` | `none` | `identity_approval` | `("missing_stream_end",)` | `False` | `0` |
+| `vulnerable_attack` | `drop_record_count_mismatch` | `none` | `identity_approval` | `("record_count_mismatch",)` | `False` | `0` |
+| `export_vulnerable_attack` | `sequence_gap` | `none` | `data_export` | `("first_sequence_error",)` | `False` | `0` |
 <!-- JOINT_SCENARIO_MATRIX_END -->
 
 | Review item | Detail |
 | --- | --- |
-| Included slices | `codex/security-hardening-e2e-detector-pipeline`, `codex/security-second-victim-detector-generality`, `codex/security-effect-egress-stream-end-v2`, `codex/security-surface-guide`, `codex/security-lossy-writer-fault-coverage` |
-| Security claim | Applications can compose and review one deterministic hardening path around current NOOA primitives: observe effects, keep authorization policy application-owned, move detector scoring outside the victim process, preserve V2 reader-visible refusal semantics, and reuse the same detector handoff across two example victim policies. |
-| Non-claim | This remains a same-user, same-host example with no sandboxing, signing, authentication, attestation, production IAM boundary, or completeness proof. Two victims do not establish general coverage. A valid-looking V2 terminator can still be forged, a dishonest writer can omit an effect and declare the reduced count, receipts remain caller-controlled copies, and zero findings remain policy-specific example outcomes rather than a general safety verdict. |
+| Included slices | `codex/security-hardening-e2e-detector-pipeline`, `codex/security-second-victim-detector-generality`, `codex/security-effect-egress-stream-end-v2`, `codex/security-surface-guide`, `codex/security-lossy-writer-fault-coverage`, `codex/security-effect-egress-producer-conformance`, `codex/security-transport-conformance-vectors`, `codex/security-minimal-out-of-process-recipe`, `codex/security-receipt-scope-validation`, `codex/security-detector-receipt-scope-gate` |
+| Security claim | Applications can compose and review one deterministic hardening path around current NOOA primitives: observe effects, keep authorization policy application-owned, move detector scoring outside the victim process, preserve V2 reader-visible refusal semantics, refuse visible stale receipt scope before identity policy runs, and reuse the same detector handoff across two example victim policies. |
+| Non-claim | This remains a same-user, same-host example with no sandboxing, signing, authentication, attestation, production IAM boundary, or completeness proof. Two victims do not establish general coverage. A valid-looking V2 terminator can still be forged, a dishonest writer can omit an effect and declare the reduced count, receipts remain caller-controlled copies, receipt scope consistency is not receipt authenticity, a clean empty receipt bundle is not evidence that no receipts exist, refusal text can expose raw identifiers, and zero findings remain policy-specific example outcomes rather than a general safety verdict. |
 | Presentation files | `README.md`, `examples/security_hardening/README.md`, `tests/security/test_joint_readme.py` |
-| Validation | `pytest tests/security/test_joint_readme.py`; `pytest tests/security`; `git diff --quiet feb3c7c -- src/nooa ':(glob)examples/**/*.py'`; `pytest` |
+| Validation | `pytest tests/security/test_joint_readme.py tests/security/test_detector_harness.py`; `pytest tests/security`; `git diff --quiet 62e3ba7 -- src/nooa ':(glob)examples/**/*.py'`; `pytest` |
 
 Run representative paths:
 
 ```bash
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack
 uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault stale_receipt_run_id
 uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault drop_record_count_mismatch
 ```

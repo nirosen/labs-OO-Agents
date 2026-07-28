@@ -10,6 +10,7 @@ from typing import NamedTuple, cast
 
 import pytest
 
+from examples.security_hardening.approval_authority import AuthorityFault
 from examples.security_hardening.detector_harness import run_detected_scenario
 from examples.security_hardening.effect_collector import VictimFault
 
@@ -36,6 +37,7 @@ SECURITY_SUPPORT_MODULES = (
 class _MatrixRow(NamedTuple):
     scenario: str
     victim_fault: VictimFault
+    authority_fault: AuthorityFault
     profile: str
     signals: tuple[str, ...]
     scored: bool
@@ -58,19 +60,20 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
     rows: list[_MatrixRow] = []
     for line in lines[2:]:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        assert len(cells) == 6, line
-        signals = ast.literal_eval(_strip_code(cells[3]))
-        scored = ast.literal_eval(_strip_code(cells[4]))
+        assert len(cells) == 7, line
+        signals = ast.literal_eval(_strip_code(cells[4]))
+        scored = ast.literal_eval(_strip_code(cells[5]))
         assert isinstance(signals, tuple)
         assert isinstance(scored, bool)
         rows.append(
             _MatrixRow(
                 scenario=_strip_code(cells[0]),
                 victim_fault=cast(VictimFault, _strip_code(cells[1])),
-                profile=_strip_code(cells[2]),
+                authority_fault=cast(AuthorityFault, _strip_code(cells[2])),
+                profile=_strip_code(cells[3]),
                 signals=signals,
                 scored=scored,
-                findings=int(_strip_code(cells[5])),
+                findings=int(_strip_code(cells[6])),
             )
         )
     return tuple(rows)
@@ -83,6 +86,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert text.count("## Security Review Joint Branch:") == 1
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -90,6 +94,19 @@ def test_root_joint_readme_has_scenario_matrix() -> None:
 
     assert MATRIX_START in text
     assert MATRIX_END in text
+
+
+def test_hardening_readme_joint_link_targets_current_root_heading() -> None:
+    root_text = _readme_text()
+    hardening_text = _readme_text(HARDENING_README_PATH)
+    heading = next(
+        line.removeprefix("## ")
+        for line in root_text.splitlines()
+        if line.startswith("## Security Review Joint Branch:")
+    )
+    expected_anchor = heading.lower().replace(":", "").replace(" ", "-")
+
+    assert f"(../../README.md#{expected_anchor})" in hardening_text
 
 
 def test_examples_readme_indexes_security_entrypoints() -> None:
@@ -119,9 +136,13 @@ def test_hardening_readme_orders_security_onramps() -> None:
 def test_joint_readme_matrix_reproduces_detector_paths() -> None:
     rows = _matrix_rows()
 
-    assert len(rows) == 9
+    assert len(rows) == 10
     for row in rows:
-        result = run_detected_scenario(row.scenario, victim_fault=row.victim_fault)
+        result = run_detected_scenario(
+            row.scenario,
+            victim_fault=row.victim_fault,
+            authority_fault=row.authority_fault,
+        )
 
         assert result.victim_profile == row.profile
         assert result.detector.effect_egress_completeness_signals == row.signals

@@ -96,9 +96,9 @@ flowchart LR
 
 These vectors are interoperability regression references, not an authenticity claim. A conforming writer can still forge records or omit effects before closing, and an external writer can remain acceptable to the reader without copying NOOA's exact JSON formatting.
 
-## Security Review Joint Branch: End-to-End Detector Pipeline V2
+## Security Review Joint Branch: End-to-End Detector Pipeline V3
 
-`codex/security-hardening-e2e-detector-pipeline-v2` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress for reader-visible refusal semantics, and exercises the same detector handoff across identity approval and data export victims.
+`codex/security-hardening-e2e-detector-pipeline-v3` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress for reader-visible refusal semantics, refuses visible stale authority receipt scope before identity policy runs, and exercises the same detector handoff across identity approval and data export victims.
 
 ```mermaid
 flowchart LR
@@ -111,14 +111,16 @@ flowchart LR
     EP --> D["detector subprocess"]
     RP --> D
     D --> DI["DetectorInput"]
-    DI --> S1["identity scorer"]
+    DI --> G["receipt scope gate<br/>identity only"]
+    G --> S1["identity scorer"]
     DI --> S2["export scorer"]
     D -. "gap / truncation / missing end / count mismatch" .-> X["refused"]
+    G -. "receipt run_id mismatch" .-> X
 ```
 
-The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v2). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes.
+The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v3). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes.
 
-This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, and a valid-looking V2 terminator or receipt remains only as trustworthy as the boundary that produced it.
+This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, a valid-looking V2 terminator or receipt remains only as trustworthy as the boundary that produced it, and a matching receipt `run_id` is not proof of receipt authenticity.
 
 ## V2 Effect Egress Stream-End Follow-On
 
