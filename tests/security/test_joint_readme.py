@@ -100,7 +100,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
-    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V9" in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V10" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -110,6 +110,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V6" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V7" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V8" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V9" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -159,7 +160,7 @@ def test_hardening_readme_orders_security_onramps() -> None:
 def test_joint_readme_matrix_reproduces_detector_paths() -> None:
     rows = _matrix_rows()
 
-    assert len(rows) == 18
+    assert len(rows) == 19
     for row in rows:
         result = run_detected_scenario(
             row.scenario,
@@ -175,3 +176,24 @@ def test_joint_readme_matrix_reproduces_detector_paths() -> None:
         assert result.detector.finding_bundle_completeness_signals == row.finding_signals
         assert result.detector.scored is row.scored
         assert len(result.findings) == row.findings
+
+
+def test_joint_readme_keeps_id_uniqueness_refusal_in_fault_column() -> None:
+    rows = _matrix_rows()
+    duplicate_rows = tuple(row for row in rows if row.detector_fault == "duplicate_finding_id")
+
+    assert duplicate_rows == (
+        _MatrixRow(
+            scenario="vulnerable_attack",
+            victim_fault="none",
+            authority_fault="none",
+            detector_fault="duplicate_finding_id",
+            subprocess_output_fault="none",
+            profile="identity_approval",
+            effect_signals=(),
+            receipt_signals=(),
+            finding_signals=(),
+            scored=False,
+            findings=0,
+        ),
+    )
