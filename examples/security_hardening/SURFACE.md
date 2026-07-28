@@ -11,7 +11,8 @@ flowchart LR
     E --> S["FdEffectSink<br/>V1 or V2"]
     S --> C["collector<br/>read_effect_egress()"]
     C --> G["DetectorInput"]
-    R["SecurityReceipt<br/>optional backend copy"] --> G
+    R["SecurityReceipt<br/>optional backend copy"] --> B["ReceiptBundle<br/>read_receipt_bundle()"]
+    B --> G
     G --> P["caller-owned scorer"]
     P --> F["SecurityFinding"]
 ```
@@ -22,12 +23,44 @@ flowchart LR
 | --- | --- | --- |
 | `EffectRecord` | Sanitized observed-effect telemetry from an application or framework choke point. | Record authenticity, backend truth, or authorization policy. |
 | `SecurityReceipt` | Sanitized backend or authority receipt copies with optional application-assigned run scope. | Receipt authentication, receipt-to-effect joins, or coverage verification. |
+| `ReceiptBundle` | One LF-terminated aggregate receipt document with caller assertions and a writer-declared receipt count. | Producer authentication, collection completeness proof, run-scope validity, or receipt semantics. |
 | `DetectorInput` | Collector-facing effects, public egress diagnostics, receipt copies, and caller assertions passed to detector policy. | Detector logic, verdicts, thresholds, or a trusted boundary. |
 | `SecurityFinding` | Caller-owned finding records with opaque evidence references. | Severity, remediation, enforcement, or proof that evidence is genuine. |
 
-All four types are portable shapes. Frozen field bindings do not make nested values tamper-resistant, and equal `run_id` values do not prove trusted provenance.
+All five types are portable shapes. Frozen field bindings do not make nested values tamper-resistant, and equal `run_id` values do not prove trusted provenance.
 
 The checked transport vectors in `tests/security/fixtures/security_transport_conformance_v1.json` pin the current compact UTF-8 JSON bytes for representative `SecurityReceipt`, `SecurityFinding`, and `DetectorInput` instances, then validate those bytes back through the public models. They are regression references for the current `-v1` shapes, not authenticity proofs, total field-space coverage, or policy semantics.
+
+## Receipt Bundle Contract
+
+`write_receipt_bundle()` writes one LF-terminated UTF-8 JSON document. `read_receipt_bundle()` parses at most one bounded document line, leaves later bytes unread, and returns `ReceiptBundleReadResult`; `require_complete_receipt_bundle()` turns reader-visible truncation or declared-count mismatch into `ReceiptBundleIncompleteError` before downstream code consumes receipt copies.
+
+```mermaid
+flowchart LR
+    R["SecurityReceipt copies"] --> W["write_receipt_bundle()"]
+    W --> P["receipt pipe or file"]
+    P --> D["read_receipt_bundle()"]
+    D --> G["ReceiptBundleReadResult"]
+    G -- "no signals" --> Q["require_complete_receipt_bundle()"]
+    Q --> S["scope validation or detector policy"]
+    G -. "truncated<br/>receipt_count_mismatch" .-> X["caller refusal"]
+```
+
+The bundle reader exposes two local resource budgets:
+
+| Budget | Meaning |
+| --- | --- |
+| `max_bundle_bytes` | Maximum bytes for one LF-terminated receipt document, including its terminator. |
+| `max_receipts` | Maximum receipt copies admitted after bounded document parsing. |
+
+The public receipt-bundle completeness signals are ordered:
+
+| Signal | Meaning |
+| --- | --- |
+| `truncated` | EOF arrived before the required LF document terminator. |
+| `receipt_count_mismatch` | `declared_receipt_count` differs from the receipt copies parsed from the document. |
+
+A clean result means only that the reader saw one terminated document with a matching declared count. The writer can still omit receipts before declaring a truthful count, forge a source label, or emit semantically false receipt copies. The bundle gate does not authenticate bytes, prove collection coverage, establish run scope, enforce receipt-id uniqueness, correlate receipts to effects, or make an empty clean bundle evidence that no receipts exist.
 
 ## Receipt Scope Validation
 
@@ -165,6 +198,16 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | --- | --- | --- |
 | `EffectRecord` | Transport author | Observed-effect telemetry shape. |
 | `SecurityReceipt` | Transport author | Backend or authority receipt shape. |
+| `ReceiptBundle` | Transport author | Aggregate LF-terminated receipt document shape. |
+| `ReceiptBundleReadResult` | Reader author | Parsed bundle plus reader-visible document diagnostics. |
+| `ReceiptBundleCompletenessSignal` | Reader author | Public receipt-bundle completeness-signal type alias. |
+| `ReceiptBundleInputTooLargeError` | Reader author | Receipt-bundle byte or count budget refusal. |
+| `ReceiptBundleIncompleteError` | Reader author | Parsed receipt bundle failed the completeness gate. |
+| `UnsupportedReceiptBundleVersionError` | Reader author | Well-formed unsupported receipt-bundle version. |
+| `write_receipt_bundle` | Writer author | Emit one bounded LF-terminated receipt bundle document. |
+| `read_receipt_bundle` | Reader author | Parse one bounded receipt bundle document. |
+| `require_complete_receipt_bundle` | Reader author | Fail closed on public receipt-bundle completeness signals. |
+| `receipt_bundle_completeness_signals` | Reader author | Return canonical receipt-bundle diagnostics. |
 | `ReceiptScopeValidation` | Collector author | Materialized receipt bundle plus visible run-scope diagnostics. |
 | `ReceiptScopeSignal` | Collector author | Public run-scope diagnostic type alias. |
 | `ReceiptScopeError` | Collector author | Fail-closed run-scope refusal. |
@@ -201,6 +244,8 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | Conformance implementer | Default per-frame byte budget. |
 | `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` | Conformance implementer | Default retained-record budget. |
 | `DEFAULT_EFFECT_EGRESS_MAX_TOTAL_BYTES` | Conformance implementer | Default whole-stream byte budget. |
+| `DEFAULT_RECEIPT_BUNDLE_MAX_BYTES` | Conformance implementer | Default receipt-bundle byte budget. |
+| `DEFAULT_RECEIPT_BUNDLE_MAX_RECEIPTS` | Conformance implementer | Default receipt-bundle count budget. |
 | `EFFECT_EGRESS_COMPLETENESS_SIGNALS` | Conformance implementer | Canonical completeness-signal order. |
 | `EFFECT_EGRESS_FRAME_KEYS` | Conformance implementer | Record-frame key set. |
 | `EFFECT_EGRESS_RECORD_EVENT_TYPE` | Conformance implementer | Record payload event discriminator. |
@@ -215,6 +260,10 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS` | Conformance implementer | Implemented reader and writer versions. |
 | `MAX_EFFECT_EGRESS_JSON_INTEGER` | Conformance implementer | Largest portable JSON integer. |
 | `MAX_EFFECT_EGRESS_SEQUENCE` | Conformance implementer | Largest accepted sequence number. |
+| `MAX_RECEIPT_BUNDLE_JSON_INTEGER` | Conformance implementer | Largest portable receipt-bundle JSON integer. |
+| `RECEIPT_BUNDLE_COMPLETENESS_SIGNALS` | Conformance implementer | Canonical receipt-bundle completeness-signal order. |
+| `RECEIPT_BUNDLE_KEYS` | Conformance implementer | Exact receipt-bundle document key set. |
+| `RECEIPT_BUNDLE_SCHEMA_VERSION` | Conformance implementer | Receipt-bundle schema version token. |
 | `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
 <!-- SECURITY_EXPORT_INDEX_END -->
 
@@ -223,6 +272,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - Effect telemetry is observed evidence, not backend truth or prevention.
 - Same-process event stores, descriptors, subprocesses under one user, and unsandboxed supervisors are not trusted boundaries.
 - V2 stream-end frames distinguish declared completion from stream cessation only. They do not authenticate records, prove omitted effects did not happen, or make count agreement sufficient evidence.
+- Receipt-bundle termination and count agreement distinguish visible transport degradation only. They do not authenticate producers, prove omitted receipts did not happen, or make count agreement sufficient evidence.
 - Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.
 - Collector byte and record budgets are resource backstops, not authenticity or authorization guarantees.

@@ -62,6 +62,32 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Receipt Bundle Transport
+
+> Branch: `codex/security-receipt-bundle-transport`
+
+This slice adds one public receipt transport boundary beside the existing effect egress contract. `write_receipt_bundle()` emits one bounded LF-terminated `ReceiptBundle` document, `read_receipt_bundle()` preserves reader-visible truncation and declared-count mismatch diagnostics, and `require_complete_receipt_bundle()` turns those diagnostics into a fail-closed gate before receipt scope or detector policy runs. The identity detector example now uses that core path instead of its former example-local receipt JSON reader.
+
+```mermaid
+flowchart LR
+    A["authority or backend"] --> W["write_receipt_bundle()<br/>LF-terminated JSON"]
+    W --> P["receipt pipe"]
+    P --> R["read_receipt_bundle()<br/>signals + budgets"]
+    R -- "complete" --> G["require_complete_receipt_bundle()"]
+    G --> S["receipt scope gate"]
+    S --> D["detector policy"]
+    R -. "truncated / receipt_count_mismatch" .-> X["DetectorReport<br/>scored=False"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `ReceiptBundle`, `ReceiptBundleReadResult`, `ReceiptBundleIncompleteError`, `ReceiptBundleInputTooLargeError`, `UnsupportedReceiptBundleVersionError`, canonical `RECEIPT_BUNDLE_COMPLETENESS_SIGNALS`, bounded `read_receipt_bundle()` / `write_receipt_bundle()`, `require_complete_receipt_bundle()`, and authority `truncate_receipt_document` / `drop_receipt_count_mismatch` faults |
+| Security claim | A detector can distinguish one complete LF-terminated receipt bundle from a reader-visible truncated or declared-count-mismatched bundle and refuse it before run-scope or profile policy consumes receipt copies. |
+| Non-claim | A clean bundle does not authenticate the producer or bytes, prove receipt coverage, detect a dishonest producer that omits receipts before declaring a matching count, enforce receipt-id uniqueness, correlate receipts to effects, establish run scope, or make an empty bundle evidence that no receipts exist. |
+| Base slice | `codex/security-detector-receipt-scope-gate` |
+| Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/approval_authority.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_receipts.py`, `tests/security/test_approval_authority.py`, `tests/security/test_detector_harness.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_receipts.py tests/security/test_approval_authority.py tests/security/test_detector_harness.py`; `pytest tests/security`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/receipts.py examples/security_hardening/approval_authority.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Detector Receipt Scope Gate
 
 > Branch: `codex/security-detector-receipt-scope-gate`

@@ -5,23 +5,19 @@
 from __future__ import annotations
 
 import os
-from io import BytesIO
 from tempfile import TemporaryFile
 
 import pytest
 from pydantic import ValidationError
 
 from examples.security_hardening.approval_authority import (
-    AuthorityReceiptDocument,
     AuthoritySummary,
 )
 from examples.security_hardening.data_export import EXPORT_EFFECT_TYPE
 from examples.security_hardening.detector_harness import (
     DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     DetectedScenario,
-    DetectorReceiptInputTooLargeError,
     DetectorReport,
-    read_receipt_document,
     receipt_scope_gated_scorer,
     run_detected_scenario,
     score_detector_input,
@@ -37,7 +33,9 @@ from nooa.security import (
     DetectorInput,
     EffectRecord,
     FdEffectSink,
+    ReceiptBundle,
     SecurityReceipt,
+    write_receipt_bundle,
 )
 
 
@@ -105,11 +103,17 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
             effect_egress_completeness_signals=("truncated", "first_sequence_error"),
             scored=True,
         )
-    with pytest.raises(ValidationError, match="issued_token_count must match receipt_count"):
+    with pytest.raises(ValidationError, match="receipt_bundle_completeness_signals"):
         DetectorReport(
             **_report_fields(),
-            receipt_count=1,
-            issued_token_count=0,
+            receipt_bundle_completeness_signals=("receipt_count_mismatch", "truncated"),
+            scored=True,
+        )
+    with pytest.raises(ValidationError, match="receipt_bundle_completeness_gate_passed"):
+        DetectorReport(
+            **_report_fields(),
+            receipt_bundle_completeness_signals=("truncated",),
+            receipt_bundle_completeness_gate_passed=True,
             scored=True,
         )
     with pytest.raises(ValidationError, match="requires refusal_reason"):
@@ -132,10 +136,12 @@ def test_score_detector_input_emits_identity_finding() -> None:
     assert report.scorer_name == "identity-approval-scorer"
     assert report.scored is True
     assert report.effect_egress_completeness_gate_passed is True
+    assert report.receipt_bundle_completeness_signals == ()
+    assert report.receipt_bundle_completeness_gate_passed is False
     assert report.receipt_source == "approval-authority"
     assert report.receipt_coverage == "asserted_complete"
     assert report.receipt_count == 0
-    assert report.issued_token_count is None
+    assert report.declared_receipt_count is None
     assert report.findings[0].evidence_refs == (
         detector_input.input_id,
         detector_input.effects[0].id,
@@ -185,8 +191,10 @@ def test_score_fd_keeps_receipt_free_profile_on_direct_scorer_path() -> None:
         effect_type=EXPORT_EFFECT_TYPE,
         attributes={"request_id": "export-attack"},
     )
-    receipt_document = AuthorityReceiptDocument(
-        issued_token_count=1,
+    receipt_bundle = ReceiptBundle(
+        receipt_source="approval-authority",
+        receipt_coverage="asserted_complete",
+        declared_receipt_count=1,
         receipts=(stale_receipt,),
     )
     with TemporaryFile() as effect_fh, TemporaryFile() as receipt_fh:
@@ -204,8 +212,7 @@ def test_score_fd_keeps_receipt_free_profile_on_direct_scorer_path() -> None:
         )
         sink.close()
         effect_fh.seek(0)
-        payload = receipt_document.model_dump_json().encode("utf-8")
-        assert receipt_fh.write(payload) == len(payload)
+        write_receipt_bundle(receipt_fh, receipt_bundle)
         receipt_fh.seek(0)
 
         report = score_fd(
@@ -247,32 +254,6 @@ def test_score_detector_input_reports_policy_refusal(
     assert expected_reason in report.refusal_reason
 
 
-def test_read_receipt_document_round_trips_json_and_rejects_over_bound_payload() -> None:
-    document = AuthorityReceiptDocument(issued_token_count=0)
-    payload = document.model_dump_json().encode("utf-8")
-
-    assert read_receipt_document(BytesIO(payload)) == document
-
-    with pytest.raises(DetectorReceiptInputTooLargeError) as exc_info:
-        read_receipt_document(BytesIO(payload), max_receipt_bytes=len(payload) - 1)
-
-    assert exc_info.value.max_receipt_bytes == len(payload) - 1
-
-
-@pytest.mark.parametrize("max_receipt_bytes", [0, -1, True, 1.5, "1024"])
-def test_read_receipt_document_rejects_invalid_budget(max_receipt_bytes: object) -> None:
-    expected_exception = (
-        TypeError
-        if not isinstance(max_receipt_bytes, int) or isinstance(max_receipt_bytes, bool)
-        else ValueError
-    )
-    with pytest.raises(expected_exception):
-        read_receipt_document(
-            BytesIO(b"{}"),
-            max_receipt_bytes=max_receipt_bytes,  # type: ignore[arg-type]
-        )
-
-
 def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_finding() -> None:
     result = run_detected_scenario("vulnerable_attack")
 
@@ -297,10 +278,12 @@ def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_
     assert result.detector.scored is True
     assert result.detector.effect_egress_completeness_signals == ()
     assert result.detector.effect_egress_completeness_gate_passed is True
+    assert result.detector.receipt_bundle_completeness_signals == ()
+    assert result.detector.receipt_bundle_completeness_gate_passed is True
     assert result.detector.receipt_source == "approval-authority"
     assert result.detector.receipt_coverage == "asserted_complete"
     assert result.detector.receipt_count == 0
-    assert result.detector.issued_token_count == 0
+    assert result.detector.declared_receipt_count == 0
     assert len(result.detector.findings) == 1
 
 
@@ -317,7 +300,9 @@ def test_detected_authorized_scenario_uses_authority_receipt_and_emits_no_findin
     assert result.detector.scored is True
     assert result.detector.receipt_source == "approval-authority"
     assert result.detector.receipt_count == 1
-    assert result.detector.issued_token_count == 1
+    assert result.detector.declared_receipt_count == 1
+    assert result.detector.receipt_bundle_completeness_signals == ()
+    assert result.detector.receipt_bundle_completeness_gate_passed is True
     assert result.detector.findings == ()
 
 
@@ -333,7 +318,7 @@ def test_detected_authorized_stale_receipt_scope_refuses_before_policy() -> None
     assert result.authority.issued_token_count == 1
     assert result.authority.receipt_count == 1
     assert result.detector.receipt_count == 1
-    assert result.detector.issued_token_count == 1
+    assert result.detector.declared_receipt_count == 1
     assert result.detector.scored is False
     assert result.detector.findings == ()
     assert result.detector.refusal_reason is not None
@@ -363,6 +348,62 @@ def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:
     assert result.detector.findings == ()
     assert result.detector.refusal_reason is not None
     assert "effect_egress_completeness_gate_passed=True" in result.detector.refusal_reason
+
+
+def test_detected_truncated_receipt_bundle_refuses_before_scope_or_policy() -> None:
+    result = run_detected_scenario(
+        "hardened_authorized",
+        authority_fault="truncate_receipt_document",
+    )
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert result.victim.decision == "allowed"
+    assert result.authority.issued_token_count == 1
+    assert result.detector.effect_egress_completeness_signals == ()
+    assert result.detector.effect_egress_completeness_gate_passed is True
+    assert result.detector.receipt_bundle_completeness_signals == ("truncated",)
+    assert result.detector.receipt_bundle_completeness_gate_passed is False
+    assert result.detector.receipt_count == 0
+    assert result.detector.declared_receipt_count is None
+    assert result.detector.scored is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "detector receipt bundle completeness gate refused input" in (
+        result.detector.refusal_reason
+    )
+    assert "truncated=True" in result.detector.refusal_reason
+    assert "detector receipt scope gate refused input" not in result.detector.refusal_reason
+
+
+def test_detected_receipt_count_mismatch_refuses_before_scope_or_policy() -> None:
+    result = run_detected_scenario(
+        "hardened_authorized",
+        authority_fault="drop_receipt_count_mismatch",
+    )
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert result.victim.decision == "allowed"
+    assert result.authority.issued_token_count == 1
+    assert result.authority.receipt_count == 1
+    assert result.detector.effect_egress_completeness_signals == ()
+    assert result.detector.effect_egress_completeness_gate_passed is True
+    assert result.detector.receipt_bundle_completeness_signals == (
+        "receipt_count_mismatch",
+    )
+    assert result.detector.receipt_bundle_completeness_gate_passed is False
+    assert result.detector.receipt_count == 0
+    assert result.detector.declared_receipt_count == 1
+    assert result.detector.scored is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "detector receipt bundle completeness gate refused input" in (
+        result.detector.refusal_reason
+    )
+    assert "declared_receipt_count=1" in result.detector.refusal_reason
+    assert "receipt_count=0" in result.detector.refusal_reason
+    assert "detector receipt scope gate refused input" not in result.detector.refusal_reason
 
 
 def test_detected_scenario_fails_closed_on_oversized_receipt_document() -> None:
@@ -483,6 +524,12 @@ def test_detected_scenario_rejects_authority_state_for_receipt_free_profile() ->
 
 
 def test_default_receipt_budget_is_large_enough_for_authority_document() -> None:
-    payload = AuthorityReceiptDocument(issued_token_count=0).model_dump_json()
+    payload = (
+        ReceiptBundle(
+            receipt_source="approval-authority",
+            receipt_coverage="asserted_complete",
+        ).model_dump_json()
+        + "\n"
+    )
 
     assert len(payload.encode("utf-8")) < DEFAULT_DETECTOR_RECEIPT_MAX_BYTES

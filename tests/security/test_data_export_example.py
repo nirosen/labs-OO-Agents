@@ -79,7 +79,7 @@ def test_export_scorer_scores_unknown_receipt_coverage_without_receipts() -> Non
     assert report.victim_profile == "data_export"
     assert report.scorer_name == "data-export-scorer"
     assert report.receipt_count == 0
-    assert report.issued_token_count is None
+    assert report.declared_receipt_count is None
     assert report.scored is True
     assert len(report.findings) == 1
 
@@ -118,7 +118,7 @@ def test_detected_export_vulnerable_scenario_scores_without_authority_or_receipt
     assert result.detector.receipt_source == ""
     assert result.detector.receipt_coverage == "unknown"
     assert result.detector.receipt_count == 0
-    assert result.detector.issued_token_count is None
+    assert result.detector.declared_receipt_count is None
     assert len(result.detector.findings) == 1
 
 

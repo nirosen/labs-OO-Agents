@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import json
+from io import BytesIO, StringIO
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,14 +14,25 @@ from nooa.events import ExecutionResult
 from nooa.runtime.event_manager import EventManager
 from nooa.runtime.middleware import ExecutePythonContext
 from nooa.security import (
+    MAX_RECEIPT_BUNDLE_JSON_INTEGER,
+    RECEIPT_BUNDLE_COMPLETENESS_SIGNALS,
     RECEIPT_SCOPE_SIGNALS,
+    ReceiptBundle,
+    ReceiptBundleIncompleteError,
+    ReceiptBundleInputTooLargeError,
+    ReceiptBundleReadResult,
     ReceiptScopeError,
     ReceiptScopeValidation,
     SecurityReceipt,
+    UnsupportedReceiptBundleVersionError,
     install_effect_recorder,
+    read_receipt_bundle,
+    receipt_bundle_completeness_signals,
     receipt_scope_signals,
+    require_complete_receipt_bundle,
     require_valid_receipt_scope,
     validate_receipt_scope,
+    write_receipt_bundle,
 )
 
 
@@ -35,6 +49,21 @@ def _receipt(**updates: object) -> SecurityReceipt:
     }
     fields.update(updates)
     return SecurityReceipt.model_validate(fields)
+
+
+def _bundle(**updates: object) -> ReceiptBundle:
+    fields = {
+        "receipt_source": "payment_backend.audit",
+        "receipt_coverage": "asserted_complete",
+        "declared_receipt_count": 1,
+        "receipts": (_receipt(),),
+    }
+    fields.update(updates)
+    return ReceiptBundle.model_validate(fields)
+
+
+def _bundle_line(bundle: ReceiptBundle) -> bytes:
+    return (bundle.model_dump_json() + "\n").encode("utf-8")
 
 
 def test_security_receipt_is_strict_json_transport() -> None:
@@ -85,6 +114,289 @@ def test_security_receipt_defaults_round_trip_and_freeze_field_bindings() -> Non
 
     with pytest.raises(ValidationError):
         receipt.receipt_id = "audit-3"  # type: ignore[misc]
+
+
+def test_receipt_bundle_is_strict_transport_without_cross_validating_declared_count() -> None:
+    bundle = _bundle(declared_receipt_count=0)
+
+    assert set(bundle.model_dump(mode="json")) == {
+        "schema_version",
+        "receipt_source",
+        "receipt_coverage",
+        "declared_receipt_count",
+        "receipts",
+    }
+    assert bundle.schema_version == "nooa-receipt-bundle-v1"
+    assert bundle.declared_receipt_count == 0
+    assert len(bundle.receipts) == 1
+
+    with pytest.raises(ValidationError):
+        _bundle(typo="not-allowed")
+    with pytest.raises(ValidationError):
+        _bundle(schema_version="nooa-receipt-bundle-v2")
+    with pytest.raises(ValidationError):
+        _bundle(declared_receipt_count=True)
+
+
+def test_receipt_bundle_writer_reader_round_trip_and_gate() -> None:
+    bundle = _bundle()
+    fh = BytesIO()
+
+    write_receipt_bundle(fh, bundle)
+
+    assert fh.getvalue().endswith(b"\n")
+    fh.seek(0)
+    result = read_receipt_bundle(fh)
+
+    assert result == ReceiptBundleReadResult(bundle=bundle)
+    assert receipt_bundle_completeness_signals(result) == ()
+    assert require_complete_receipt_bundle(result) == bundle
+
+
+def test_read_receipt_bundle_consumes_only_one_document_line() -> None:
+    first = _bundle()
+    second = _bundle(
+        receipt_source="review_backend.audit",
+        receipts=(_receipt(receipt_id="audit-2", source="review_backend.audit"),),
+    )
+    fh = BytesIO(_bundle_line(first) + _bundle_line(second))
+
+    assert require_complete_receipt_bundle(read_receipt_bundle(fh)) == first
+    assert require_complete_receipt_bundle(read_receipt_bundle(fh)) == second
+    assert fh.read() == b""
+
+
+def test_receipt_bundle_completeness_signals_cover_truncation_and_count_mismatch() -> None:
+    truncated = read_receipt_bundle(BytesIO(_bundle().model_dump_json().encode("utf-8")))
+    mismatch = ReceiptBundleReadResult(bundle=_bundle(declared_receipt_count=0))
+    both = ReceiptBundleReadResult(bundle=_bundle(declared_receipt_count=0), truncated=True)
+
+    assert RECEIPT_BUNDLE_COMPLETENESS_SIGNALS == ("truncated", "receipt_count_mismatch")
+    assert truncated.bundle is None
+    assert receipt_bundle_completeness_signals(truncated) == ("truncated",)
+    assert receipt_bundle_completeness_signals(mismatch) == ("receipt_count_mismatch",)
+    assert receipt_bundle_completeness_signals(both) == (
+        "truncated",
+        "receipt_count_mismatch",
+    )
+
+    with pytest.raises(ReceiptBundleIncompleteError) as exc_info:
+        require_complete_receipt_bundle(mismatch)
+
+    error = exc_info.value
+    assert error.reasons == ("receipt_count_mismatch",)
+    assert error.declared_receipt_count == 0
+    assert error.receipt_count == 1
+    assert not isinstance(error, ValueError)
+
+
+def test_receipt_bundle_writer_reader_preserves_count_mismatch_signal() -> None:
+    bundle = _bundle(declared_receipt_count=0)
+    fh = BytesIO()
+
+    write_receipt_bundle(fh, bundle)
+    fh.seek(0)
+    result = read_receipt_bundle(fh)
+
+    assert result.bundle == bundle
+    assert receipt_bundle_completeness_signals(result) == ("receipt_count_mismatch",)
+    with pytest.raises(ReceiptBundleIncompleteError):
+        require_complete_receipt_bundle(result)
+
+
+def test_read_receipt_bundle_keeps_malformed_and_future_versions_distinct() -> None:
+    with pytest.raises(ValueError, match="invalid receipt bundle document"):
+        read_receipt_bundle(BytesIO(b"{}\n"))
+
+    future_payload = {
+        "schema_version": "nooa-receipt-bundle-v2",
+        "receipt_source": "",
+        "receipt_coverage": "unknown",
+        "declared_receipt_count": 0,
+        "receipts": [],
+    }
+    with pytest.raises(UnsupportedReceiptBundleVersionError) as exc_info:
+        read_receipt_bundle(
+            BytesIO((json.dumps(future_payload, separators=(",", ":")) + "\n").encode("utf-8"))
+        )
+
+    assert exc_info.value.schema_version == "nooa-receipt-bundle-v2"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"\xef\xbb\xbf" + _bundle_line(_bundle()), id="bom"),
+        pytest.param(b" " + _bundle_line(_bundle()), id="outer-whitespace"),
+        pytest.param(b"[]\n", id="non-dict"),
+        pytest.param(b'{"schema_version":"nooa-receipt-bundle-v1"}\n', id="missing-keys"),
+        pytest.param(
+            (
+                _bundle().model_dump_json()[:-1]
+                + ',"extra":"not-allowed"}\n'
+            ).encode("utf-8"),
+            id="extra-key",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-receipt-bundle-v1","receipt_source":"a",'
+            b'"receipt_source":"b","receipt_coverage":"unknown",'
+            b'"declared_receipt_count":0,"receipts":[]}\n',
+            id="duplicate-key",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-receipt-bundle-v1","receipt_source":"",'
+            b'"receipt_coverage":"unknown","declared_receipt_count":0,'
+            b'"receipts":[{"schema_version":"nooa-receipt-v1","receipt_id":"r",'
+            b'"receipt_type":"t","source":"s","run_id":"","target":"",'
+            b'"effect_type":"","issued_at":"","attributes":{"score":NaN}}]}\n',
+            id="nan",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-receipt-bundle-v1","receipt_source":"",'
+            b'"receipt_coverage":"unknown","declared_receipt_count":0,'
+            b'"receipts":[{"schema_version":"nooa-receipt-v1","receipt_id":"r",'
+            b'"receipt_type":"t","source":"s","run_id":"","target":"",'
+            b'"effect_type":"","issued_at":"","attributes":{"score":1e999}}]}\n',
+            id="overflow-float",
+        ),
+        pytest.param(
+            (
+                b'{"schema_version":"nooa-receipt-bundle-v1","receipt_source":"",'
+                b'"receipt_coverage":"unknown","declared_receipt_count":'
+                + str(MAX_RECEIPT_BUNDLE_JSON_INTEGER + 1).encode("ascii")
+                + b',"receipts":[]}\n'
+            ),
+            id="unsafe-int",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-receipt-bundle-v1","receipt_source":"\\ud800",'
+            b'"receipt_coverage":"unknown","declared_receipt_count":0,"receipts":[]}\n',
+            id="lone-surrogate",
+        ),
+    ],
+)
+def test_read_receipt_bundle_rejects_nonportable_terminated_documents(payload: bytes) -> None:
+    with pytest.raises(ValueError, match="invalid receipt bundle document"):
+        read_receipt_bundle(BytesIO(payload))
+
+
+def test_receipt_bundle_reader_and_writer_enforce_budgets() -> None:
+    bundle = _bundle()
+    payload = (bundle.model_dump_json() + "\n").encode("utf-8")
+    two_receipt_bundle = _bundle(
+        declared_receipt_count=2,
+        receipts=(_receipt(), _receipt(receipt_id="audit-2")),
+    )
+    two_receipt_payload = (two_receipt_bundle.model_dump_json() + "\n").encode("utf-8")
+
+    assert read_receipt_bundle(BytesIO(payload), max_bundle_bytes=len(payload)).bundle == bundle
+    with pytest.raises(ReceiptBundleInputTooLargeError) as bytes_exc:
+        read_receipt_bundle(BytesIO(payload), max_bundle_bytes=len(payload) - 1)
+    assert bytes_exc.value.limit_name == "max_bundle_bytes"
+    assert bytes_exc.value.limit_value == len(payload) - 1
+
+    with pytest.raises(ReceiptBundleInputTooLargeError) as receipts_exc:
+        read_receipt_bundle(BytesIO(two_receipt_payload), max_receipts=1)
+    assert receipts_exc.value.limit_name == "max_receipts"
+    assert receipts_exc.value.limit_value == 1
+
+    with pytest.raises(ReceiptBundleInputTooLargeError):
+        write_receipt_bundle(BytesIO(), bundle, max_bundle_bytes=len(payload) - 1)
+    with pytest.raises(ReceiptBundleInputTooLargeError):
+        write_receipt_bundle(BytesIO(), two_receipt_bundle, max_receipts=1)
+
+
+def test_write_receipt_bundle_rejects_subclass_only_fields() -> None:
+    class ExtendedReceipt(SecurityReceipt):
+        extra_field: str
+
+    class ExtendedBundle(ReceiptBundle):
+        extra_field: str
+
+    receipt = ExtendedReceipt(
+        receipt_id="audit-extended",
+        receipt_type="payment.accepted",
+        source="payment_backend.audit",
+        extra_field="must-not-drop",
+    )
+    with pytest.raises(TypeError, match="expected SecurityReceipt at index 0"):
+        write_receipt_bundle(
+            BytesIO(),
+            _bundle(receipts=(receipt,)),
+        )
+    with pytest.raises(TypeError, match="expected ReceiptBundle"):
+        write_receipt_bundle(
+            BytesIO(),
+            ExtendedBundle(
+                receipt_source="payment_backend.audit",
+                declared_receipt_count=0,
+                extra_field="must-not-drop",
+            ),
+        )
+
+
+def test_write_receipt_bundle_rejects_mutated_nonportable_values_and_short_write() -> None:
+    bundle = _bundle()
+    bundle.receipts[0].attributes["score"] = float("nan")
+    with pytest.raises(TypeError, match="expected JSON-safe ReceiptBundle"):
+        write_receipt_bundle(BytesIO(), bundle)
+
+    rewritten_bundle = _bundle()
+    rewritten_bundle.receipts[0].attributes["items"] = (1, 2)  # type: ignore[assignment]
+    with pytest.raises(TypeError, match="expected JSON-safe ReceiptBundle"):
+        write_receipt_bundle(BytesIO(), rewritten_bundle)
+
+    cyclic_bundle = _bundle()
+    cyclic_value: list[object] = []
+    cyclic_value.append(cyclic_value)
+    cyclic_bundle.receipts[0].attributes["cycle"] = cyclic_value  # type: ignore[assignment]
+    with pytest.raises(TypeError, match="expected JSON-safe ReceiptBundle"):
+        write_receipt_bundle(BytesIO(), cyclic_bundle)
+
+    class ShortWriteBuffer(BytesIO):
+        def write(self, data: bytes) -> int:
+            super().write(data[:-1])
+            return len(data) - 1
+
+    with pytest.raises(OSError, match="receipt bundle writer wrote"):
+        write_receipt_bundle(ShortWriteBuffer(), _bundle())
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "1024"])
+def test_receipt_bundle_rejects_invalid_budget_values(value: object) -> None:
+    expected_exception = (
+        TypeError if not isinstance(value, int) or isinstance(value, bool) else ValueError
+    )
+    with pytest.raises(expected_exception):
+        read_receipt_bundle(
+            BytesIO(b""),
+            max_bundle_bytes=value,  # type: ignore[arg-type]
+        )
+    with pytest.raises(expected_exception):
+        write_receipt_bundle(
+            BytesIO(),
+            _bundle(),
+            max_receipts=value,  # type: ignore[arg-type]
+        )
+
+
+def test_receipt_bundle_helpers_reject_invalid_inputs_and_clean_error() -> None:
+    clean = ReceiptBundleReadResult(bundle=_bundle())
+
+    with pytest.raises(TypeError, match="expected ReceiptBundle"):
+        write_receipt_bundle(BytesIO(), "not-a-bundle")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="binary stream"):
+        read_receipt_bundle(StringIO(""))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected ReceiptBundleReadResult"):
+        receipt_bundle_completeness_signals("not-a-result")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected ReceiptBundleReadResult"):
+        require_complete_receipt_bundle("not-a-result")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="expected ReceiptBundleReadResult"):
+        ReceiptBundleIncompleteError("not-a-result")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="requires at least one completeness signal"):
+        ReceiptBundleIncompleteError(clean)
+    with pytest.raises(ValueError, match="without a bundle must be truncated"):
+        ReceiptBundleReadResult(bundle=None)
 
 
 def test_validate_receipt_scope_materializes_once_and_preserves_order() -> None:

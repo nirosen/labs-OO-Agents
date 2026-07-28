@@ -4,7 +4,7 @@
 
 The authority owns one fixed demo allowlist, accepts one bounded approval
 request document, returns a token response to the victim, and writes a separate
-receipt document for the detector. It demonstrates issuance separation only:
+public receipt bundle for the detector. It demonstrates issuance separation only:
 the process is not authenticated, signed, privileged, or an IAM system.
 
     uv run python -m examples.security_hardening.approval_authority --help
@@ -24,7 +24,7 @@ from examples.security_hardening.identity_contract import (
     RECEIPT_TYPE,
     derive_approval_token,
 )
-from nooa.security import ReceiptCoverage, SecurityReceipt
+from nooa.security import ReceiptBundle, SecurityReceipt, write_receipt_bundle
 
 _APPROVAL_REQUEST_SCHEMA_VERSION: Literal["nooa-approval-authority-request-example-v1"] = (
     "nooa-approval-authority-request-example-v1"
@@ -32,16 +32,25 @@ _APPROVAL_REQUEST_SCHEMA_VERSION: Literal["nooa-approval-authority-request-examp
 _APPROVAL_RESPONSE_SCHEMA_VERSION: Literal["nooa-approval-authority-response-example-v1"] = (
     "nooa-approval-authority-response-example-v1"
 )
-_AUTHORITY_RECEIPT_SCHEMA_VERSION: Literal["nooa-approval-authority-receipts-example-v1"] = (
-    "nooa-approval-authority-receipts-example-v1"
-)
 _AUTHORITY_SUMMARY_SCHEMA_VERSION: Literal["nooa-approval-authority-summary-example-v1"] = (
     "nooa-approval-authority-summary-example-v1"
 )
 _AUTHORITY_SOURCE: Literal["approval-authority"] = "approval-authority"
-_AUTHORITY_FAULTS = ("none", "exit_before_receipt", "stale_receipt_run_id")
+_AUTHORITY_FAULTS = (
+    "none",
+    "exit_before_receipt",
+    "stale_receipt_run_id",
+    "truncate_receipt_document",
+    "drop_receipt_count_mismatch",
+)
 DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES = 1024 * 1024
-AuthorityFault = Literal["none", "exit_before_receipt", "stale_receipt_run_id"]
+AuthorityFault = Literal[
+    "none",
+    "exit_before_receipt",
+    "stale_receipt_run_id",
+    "truncate_receipt_document",
+    "drop_receipt_count_mismatch",
+]
 
 _APPROVED_REQUESTS: dict[str, tuple[str, str]] = {
     "req-approved": ("oncall-engineer", "prod-db"),
@@ -87,33 +96,6 @@ class ApprovalResponseDocument(BaseModel):
             raise ValueError("approved authority response requires approval_token")
         if not self.approved and self.approval_token is not None:
             raise ValueError("denied authority response cannot carry approval_token")
-        return self
-
-
-class AuthorityReceiptDocument(BaseModel):
-    """Receipt bundle written by the authority for detector consumption.
-
-    ``issued_token_count`` is self-reported by the same process that wrote the
-    receipts. It detects accidental truncation or construction bugs only; it is
-    not proof that the authority was honest.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: Literal["nooa-approval-authority-receipts-example-v1"] = (
-        _AUTHORITY_RECEIPT_SCHEMA_VERSION
-    )
-    receipt_source: Literal["approval-authority"] = _AUTHORITY_SOURCE
-    receipt_coverage: ReceiptCoverage = "asserted_complete"
-    issued_token_count: int = Field(ge=0)
-    receipts: tuple[SecurityReceipt, ...] = ()
-
-    @model_validator(mode="after")
-    def _validate_receipts(self) -> Self:
-        if self.issued_token_count != len(self.receipts):
-            raise ValueError("issued_token_count must match receipts length")
-        if any(receipt.source != self.receipt_source for receipt in self.receipts):
-            raise ValueError("authority receipts must use receipt_source")
         return self
 
 
@@ -201,7 +183,7 @@ def issue_fd(
     fault: AuthorityFault = "none",
     max_document_bytes: int = DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES,
 ) -> AuthoritySummary:
-    """Issue one token response and one detector receipt document over descriptors."""
+    """Issue one token response and one detector receipt bundle over descriptors."""
     fault = _validate_authority_fault(fault)
     max_document_bytes = _validate_max_document_bytes(max_document_bytes)
     with os.fdopen(request_fd, "rb", closefd=True) as request_fh:
@@ -229,12 +211,20 @@ def issue_fd(
 
     receipt_run_id = f"{run_id}/stale" if fault == "stale_receipt_run_id" else run_id
     receipts = _receipts_for_response(request, response, run_id=receipt_run_id)
-    receipt_document = AuthorityReceiptDocument(
-        issued_token_count=len(receipts),
-        receipts=receipts,
+    transported_receipts = () if fault == "drop_receipt_count_mismatch" else receipts
+    receipt_bundle = _validate_authority_receipt_bundle(
+        ReceiptBundle(
+            receipt_source=_AUTHORITY_SOURCE,
+            receipt_coverage="asserted_complete",
+            declared_receipt_count=len(receipts),
+            receipts=transported_receipts,
+        )
     )
     with os.fdopen(receipt_fd, "wb", closefd=True) as receipt_fh:
-        _write_document(receipt_fh, receipt_document)
+        if fault == "truncate_receipt_document":
+            _write_truncated_receipt_bundle(receipt_fh, receipt_bundle)
+        else:
+            write_receipt_bundle(receipt_fh, receipt_bundle)
 
     return AuthoritySummary(
         request_count=1,
@@ -295,6 +285,22 @@ def _write_document(fh: BinaryIO, document: BaseModel) -> None:
     if written != len(payload):
         raise OSError(f"approval authority wrote {written} of {len(payload)} bytes")
     fh.flush()
+
+
+def _write_truncated_receipt_bundle(fh: BinaryIO, bundle: ReceiptBundle) -> None:
+    """Write one valid JSON prefix without the required receipt-bundle LF terminator."""
+    payload = bundle.model_dump_json().encode("utf-8")
+    written = fh.write(payload)
+    if written != len(payload):
+        raise OSError(f"approval authority wrote {written} of {len(payload)} bytes")
+    fh.flush()
+
+
+def _validate_authority_receipt_bundle(bundle: ReceiptBundle) -> ReceiptBundle:
+    """Keep the example authority's source assertion aligned with its receipt rows."""
+    if any(receipt.source != bundle.receipt_source for receipt in bundle.receipts):
+        raise ValueError("authority receipts must use receipt_source")
+    return bundle
 
 
 def _validate_authority_fault(fault: str) -> AuthorityFault:
