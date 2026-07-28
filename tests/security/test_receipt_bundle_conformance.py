@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ from nooa.security import (
     RECEIPT_BUNDLE_COMPLETENESS_SIGNALS,
     RECEIPT_BUNDLE_KEYS,
     RECEIPT_BUNDLE_SCHEMA_VERSION,
+    RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN,
+    RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE,
     ReceiptBundle,
     ReceiptBundleInputTooLargeError,
     SecurityReceipt,
@@ -76,6 +79,12 @@ def test_receipt_bundle_conformance_fixture_matches_public_contract() -> None:
 
     assert fixture["schema_version"] == CONFORMANCE_FIXTURE_SCHEMA_VERSION
     assert fixture["wire_schema_version"] == RECEIPT_BUNDLE_SCHEMA_VERSION
+    assert fixture["wire_schema_version_pattern"] == RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN
+    assert (
+        fixture["wire_schema_version_pattern_match_mode"]
+        == RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE
+        == "full"
+    )
     assert fixture["bundle_keys"] == list(ReceiptBundle.model_fields)
     assert frozenset(fixture["bundle_keys"]) == RECEIPT_BUNDLE_KEYS
     assert fixture["receipt_keys"] == list(SecurityReceipt.model_fields)
@@ -84,6 +93,7 @@ def test_receipt_bundle_conformance_fixture_matches_public_contract() -> None:
     assert fixture["default_max_bundle_bytes"] == DEFAULT_RECEIPT_BUNDLE_MAX_BYTES
     assert fixture["default_max_receipts"] == DEFAULT_RECEIPT_BUNDLE_MAX_RECEIPTS
     assert fixture["max_bundle_bytes_includes_terminating_lf"] is True
+    assert re.fullmatch(RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN, RECEIPT_BUNDLE_SCHEMA_VERSION)
 
     writer_names = [vector["name"] for vector in fixture["writer_vectors"]]
     reader_names = [vector["name"] for vector in fixture["reader_vectors"]]

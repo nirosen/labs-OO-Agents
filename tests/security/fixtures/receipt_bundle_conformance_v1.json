@@ -1,6 +1,8 @@
 {
   "schema_version": "nooa-receipt-bundle-conformance-v1",
   "wire_schema_version": "nooa-receipt-bundle-v1",
+  "wire_schema_version_pattern": "nooa-receipt-bundle-v[1-9][0-9]*",
+  "wire_schema_version_pattern_match_mode": "full",
   "bundle_keys": [
     "schema_version",
     "receipt_source",

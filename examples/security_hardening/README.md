@@ -10,6 +10,20 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Receipt Bundle Version Contract Follow-On
+
+`codex/security-receipt-bundle-version-contract` publishes the version-token rule that `read_receipt_bundle()` already uses internally. A compatible reader can now apply `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN` with `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` to distinguish a malformed token from a well-formed but unsupported future receipt-bundle version without reverse-engineering a private regex.
+
+```mermaid
+flowchart LR
+    V["schema_version token"] --> P["public pattern<br/>full match"]
+    P -- "nooa-receipt-bundle-v1" --> R["v1 parser path"]
+    P -- "future matching token" --> U["unsupported-version error"]
+    P -. "non-matching token" .-> M["invalid document"]
+```
+
+This is a conformance contract, not a trust claim. The pattern does not authenticate bytes, guarantee support for a matching future version, make malformed content recoverable, or change the current reader behavior.
+
 ## Supervisor Output Admission Follow-On
 
 `codex/security-supervisor-output-admission` completes the detector harness supervisor's example-local parse boundary without adding a public `nooa.security` API. The supervisor now admits victim summary JSON, authority summary JSON, and detector report JSON through separate bounded checks after `communicate()` returns. Detector report parse failures reuse its existing `scored=False` refusal channel; victim and authority summary failures raise `SupervisorAdmissionError` before the harness builds `DetectedScenario`. The victim summary path also rejects visible drift in the echoed `scenario` field.
