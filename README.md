@@ -265,11 +265,11 @@ flowchart LR
 | Review files | `tests/security/fixtures/effect_egress_producer_conformance_v1.json`, `tests/security/test_egress_producer_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `README.md` |
 | Validation | `pytest tests/security/test_egress_producer_conformance.py`; `pytest tests/security`; `git diff --quiet 11ae1eb -- src/nooa`; `pytest` |
 
-## Security Review Joint Branch: End-to-End Detector Pipeline V5
+## Security Review Joint Branch: End-to-End Detector Pipeline V6
 
-> Branch: `codex/security-hardening-e2e-detector-pipeline-v5`
+> Branch: `codex/security-hardening-e2e-detector-pipeline-v6`
 
-This is the current presentation branch for the security path assembled across the smaller review slices. It adds no runtime behavior beyond those slices. A maintainer can now review one cumulative path with two victim families, application-owned defender and backend policy, V2 collector-facing egress, public LF-terminated receipt-bundle transport, out-of-process detector scoring, reader-visible refusal on incomplete or inconsistent effect and receipt streams, an example-local receipt scope gate before identity policy, a checked surface guide for the public `nooa.security` exports, and checked receipt-bundle conformance vectors for the new transport boundary. `SURFACE.md` owns the export map, transport rules, minimal integration, and canonical boundaries; this section owns the runnable composition and checked scenario matrix.
+This is the current presentation branch for the security path assembled across the smaller review slices. It adds no runtime behavior beyond those slices. A maintainer can now review one cumulative path with two victim families, application-owned defender and backend policy, V2 collector-facing egress, public LF-terminated receipt-bundle transport, out-of-process detector scoring, reader-visible refusal on incomplete or inconsistent effect and receipt streams, an example-local receipt scope gate before identity policy, a supervisor-side finding scope gate after detector-report parsing, a checked surface guide for the public `nooa.security` exports, and checked receipt-bundle conformance vectors for the new transport boundary. `SURFACE.md` owns the export map, transport rules, minimal integration, and canonical boundaries; this section owns the runnable composition and checked scenario matrix.
 
 ```mermaid
 flowchart LR
@@ -296,39 +296,46 @@ flowchart LR
     DI --> G["receipt_scope_gated_scorer()<br/>identity only"]
     G --> P1["identity scorer"]
     DI --> P2["export scorer"]
-    P1 --> F["finding or refusal"]
-    P2 --> F
+    P1 --> RPT["DetectorReport JSON"]
+    P2 --> RPT
+    RPT --> RA["report parse admission<br/>+ report run_id check"]
+    RA --> FG["finding scope gate"]
+    FG --> F["finding or refusal"]
     C -. "gap / truncation / missing end / count mismatch" .-> X["scored=False"]
     RB -. "truncated / receipt count mismatch" .-> X
     G -. "receipt run_id mismatch" .-> X
+    RA -. "over-bound / report run_id mismatch" .-> X
+    FG -. "finding run_id mismatch" .-> X
 ```
 
 <!-- JOINT_SCENARIO_MATRIX_START -->
-| Scenario | Victim fault | Authority fault | Profile | V2 effect signals | Receipt bundle signals | Scored | Findings |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `vulnerable_attack` | `none` | `none` | `identity_approval` | `()` | `()` | `True` | `1` |
-| `defender_only_attack` | `none` | `none` | `identity_approval` | `()` | `()` | `True` | `0` |
-| `hardened_authorized` | `none` | `none` | `identity_approval` | `()` | `()` | `True` | `0` |
-| `hardened_authorized` | `none` | `stale_receipt_run_id` | `identity_approval` | `()` | `()` | `False` | `0` |
-| `hardened_authorized` | `none` | `truncate_receipt_document` | `identity_approval` | `()` | `("truncated",)` | `False` | `0` |
-| `hardened_authorized` | `none` | `drop_receipt_count_mismatch` | `identity_approval` | `()` | `("receipt_count_mismatch",)` | `False` | `0` |
-| `vulnerable_attack` | `partial_tail_crash` | `truncate_receipt_document` | `identity_approval` | `("truncated", "missing_stream_end")` | `("truncated",)` | `False` | `0` |
-| `export_vulnerable_attack` | `none` | `none` | `data_export` | `()` | `()` | `True` | `1` |
-| `export_hardened_attack` | `none` | `none` | `data_export` | `()` | `()` | `True` | `0` |
-| `vulnerable_attack` | `partial_tail_crash` | `none` | `identity_approval` | `("truncated", "missing_stream_end")` | `()` | `False` | `0` |
-| `vulnerable_attack` | `exit_between_frames` | `none` | `identity_approval` | `("missing_stream_end",)` | `()` | `False` | `0` |
-| `vulnerable_attack` | `drop_record_count_mismatch` | `none` | `identity_approval` | `("record_count_mismatch",)` | `()` | `False` | `0` |
-| `export_vulnerable_attack` | `sequence_gap` | `none` | `data_export` | `("first_sequence_error",)` | `()` | `False` | `0` |
+| Scenario | Victim fault | Authority fault | Detector fault | Profile | V2 effect signals | Receipt bundle signals | Scored | Findings |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `vulnerable_attack` | `none` | `none` | `none` | `identity_approval` | `()` | `()` | `True` | `1` |
+| `vulnerable_attack` | `none` | `none` | `blank_finding_run_id` | `identity_approval` | `()` | `()` | `False` | `0` |
+| `vulnerable_attack` | `none` | `none` | `stale_finding_run_id` | `identity_approval` | `()` | `()` | `False` | `0` |
+| `defender_only_attack` | `none` | `none` | `none` | `identity_approval` | `()` | `()` | `True` | `0` |
+| `hardened_authorized` | `none` | `none` | `none` | `identity_approval` | `()` | `()` | `True` | `0` |
+| `hardened_authorized` | `none` | `stale_receipt_run_id` | `none` | `identity_approval` | `()` | `()` | `False` | `0` |
+| `hardened_authorized` | `none` | `truncate_receipt_document` | `none` | `identity_approval` | `()` | `("truncated",)` | `False` | `0` |
+| `hardened_authorized` | `none` | `drop_receipt_count_mismatch` | `none` | `identity_approval` | `()` | `("receipt_count_mismatch",)` | `False` | `0` |
+| `vulnerable_attack` | `partial_tail_crash` | `truncate_receipt_document` | `none` | `identity_approval` | `("truncated", "missing_stream_end")` | `("truncated",)` | `False` | `0` |
+| `export_vulnerable_attack` | `none` | `none` | `none` | `data_export` | `()` | `()` | `True` | `1` |
+| `export_hardened_attack` | `none` | `none` | `none` | `data_export` | `()` | `()` | `True` | `0` |
+| `vulnerable_attack` | `partial_tail_crash` | `none` | `none` | `identity_approval` | `("truncated", "missing_stream_end")` | `()` | `False` | `0` |
+| `vulnerable_attack` | `exit_between_frames` | `none` | `none` | `identity_approval` | `("missing_stream_end",)` | `()` | `False` | `0` |
+| `vulnerable_attack` | `drop_record_count_mismatch` | `none` | `none` | `identity_approval` | `("record_count_mismatch",)` | `()` | `False` | `0` |
+| `export_vulnerable_attack` | `sequence_gap` | `none` | `none` | `data_export` | `("first_sequence_error",)` | `()` | `False` | `0` |
 <!-- JOINT_SCENARIO_MATRIX_END -->
 
 | Review item | Detail |
 | --- | --- |
-| Included slices | `codex/security-hardening-e2e-detector-pipeline`, `codex/security-second-victim-detector-generality`, `codex/security-effect-egress-stream-end-v2`, `codex/security-surface-guide`, `codex/security-lossy-writer-fault-coverage`, `codex/security-effect-egress-producer-conformance`, `codex/security-transport-conformance-vectors`, `codex/security-minimal-out-of-process-recipe`, `codex/security-receipt-scope-validation`, `codex/security-detector-receipt-scope-gate`, `codex/security-receipt-bundle-transport`, `codex/security-receipt-bundle-conformance-vectors` |
-| V5 addition | Checked receipt-bundle writer and reader vectors now pin representative LF-terminated bytes, budget boundaries, stream-position behavior, invalid UTF-8 refusal, and version classification without changing the runtime path above. |
-| Security claim | Applications can compose and review one deterministic hardening path around current NOOA primitives: observe effects, keep authorization policy application-owned, move detector scoring outside the victim process, preserve V2 reader-visible refusal semantics, refuse reader-visible receipt-bundle truncation or count mismatch before receipt scope and identity policy run, refuse visible stale receipt scope before identity policy runs, and reuse the same detector handoff across two example victim policies. |
-| Non-claim | This remains a same-user, same-host example with no sandboxing, signing, authentication, attestation, production IAM boundary, or completeness proof. Two victims do not establish general coverage. A valid-looking V2 terminator or receipt bundle can still be forged, a dishonest writer can omit an effect or receipt and declare the reduced count, receipts remain caller-controlled copies, receipt count agreement and scope consistency are not receipt authenticity, a clean empty receipt bundle is not evidence that no receipts exist, refusal text can expose raw identifiers, and zero findings remain policy-specific example outcomes rather than a general safety verdict. |
+| Included slices | `codex/security-hardening-e2e-detector-pipeline`, `codex/security-second-victim-detector-generality`, `codex/security-effect-egress-stream-end-v2`, `codex/security-surface-guide`, `codex/security-lossy-writer-fault-coverage`, `codex/security-effect-egress-producer-conformance`, `codex/security-transport-conformance-vectors`, `codex/security-minimal-out-of-process-recipe`, `codex/security-receipt-scope-validation`, `codex/security-detector-receipt-scope-gate`, `codex/security-receipt-bundle-transport`, `codex/security-receipt-bundle-conformance-vectors`, `codex/security-finding-scope-gate` |
+| V6 addition | The supervisor now admits only a bounded detector-report payload to parsing, refuses a report whose visible `run_id` drifts from its selected scope, and refuses blank-scoped or stale-scoped finding rows before `DetectedScenario` consumers accept them. The joint matrix adds both finding-fault paths. |
+| Security claim | Applications can compose and review one deterministic hardening path around current NOOA primitives: observe effects, keep authorization policy application-owned, move detector scoring outside the victim process, preserve V2 reader-visible refusal semantics, refuse reader-visible receipt-bundle truncation or count mismatch before receipt scope and identity policy run, refuse visible stale receipt scope before identity policy runs, refuse visible detector-report or finding scope drift before scenario consumers accept detector output, and reuse the same detector handoff across two example victim policies. |
+| Non-claim | This remains a same-user, same-host example with no sandboxing, signing, authentication, attestation, production IAM boundary, or completeness proof. Two victims do not establish general coverage. A valid-looking V2 terminator or receipt bundle can still be forged, a dishonest writer can omit an effect or receipt and declare the reduced count, receipts and findings remain caller-controlled copies, receipt count agreement and scope consistency are not authenticity, a clean empty receipt bundle is not evidence that no receipts exist, the detector-report byte bound applies only after `communicate()` has collected stdout, refusal text can expose raw identifiers, and zero findings remain policy-specific example outcomes rather than a general safety verdict. |
 | Presentation files | `README.md`, `examples/security_hardening/README.md`, `tests/security/test_joint_readme.py` |
-| Validation | `pytest tests/security/test_joint_readme.py tests/security/test_detector_harness.py tests/security/test_receipt_bundle_conformance.py`; `pytest tests/security`; `git diff --quiet 51540dd -- src/nooa ':(glob)examples/**/*.py'`; `pytest` |
+| Validation | `pytest tests/security/test_joint_readme.py tests/security/test_detector_harness.py tests/security/test_findings.py tests/security/test_receipt_bundle_conformance.py`; `pytest tests/security`; `git diff --quiet 2b90be5 -- src/nooa ':(glob)examples/**/*.py'`; `pytest` |
 
 Run representative paths:
 
@@ -340,6 +347,8 @@ uv run python -m examples.security_hardening.detector_harness demo --scenario ha
 uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault drop_receipt_count_mismatch
 uv run python -m examples.security_hardening.detector_harness demo --scenario export_vulnerable_attack
 uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --victim-fault drop_record_count_mismatch
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault blank_finding_run_id
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault stale_finding_run_id
 ```
 
 See [`examples/security_hardening/README.md`](examples/security_hardening/README.md) for the progressive rationale and [`examples/security_hardening/SURFACE.md`](examples/security_hardening/SURFACE.md) for the checked public-surface map. Historical per-slice review notes remain below for branch-by-branch context.

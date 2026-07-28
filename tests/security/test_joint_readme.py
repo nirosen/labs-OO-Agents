@@ -11,7 +11,7 @@ from typing import NamedTuple, cast
 import pytest
 
 from examples.security_hardening.approval_authority import AuthorityFault
-from examples.security_hardening.detector_harness import run_detected_scenario
+from examples.security_hardening.detector_harness import DetectorFault, run_detected_scenario
 from examples.security_hardening.effect_collector import VictimFault
 
 ROOT_README_PATH = Path(__file__).resolve().parents[2] / "README.md"
@@ -38,6 +38,7 @@ class _MatrixRow(NamedTuple):
     scenario: str
     victim_fault: VictimFault
     authority_fault: AuthorityFault
+    detector_fault: DetectorFault
     profile: str
     effect_signals: tuple[str, ...]
     receipt_signals: tuple[str, ...]
@@ -61,10 +62,10 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
     rows: list[_MatrixRow] = []
     for line in lines[2:]:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        assert len(cells) == 8, line
-        effect_signals = ast.literal_eval(_strip_code(cells[4]))
-        receipt_signals = ast.literal_eval(_strip_code(cells[5]))
-        scored = ast.literal_eval(_strip_code(cells[6]))
+        assert len(cells) == 9, line
+        effect_signals = ast.literal_eval(_strip_code(cells[5]))
+        receipt_signals = ast.literal_eval(_strip_code(cells[6]))
+        scored = ast.literal_eval(_strip_code(cells[7]))
         assert isinstance(effect_signals, tuple)
         assert isinstance(receipt_signals, tuple)
         assert isinstance(scored, bool)
@@ -73,11 +74,12 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
                 scenario=_strip_code(cells[0]),
                 victim_fault=cast(VictimFault, _strip_code(cells[1])),
                 authority_fault=cast(AuthorityFault, _strip_code(cells[2])),
-                profile=_strip_code(cells[3]),
+                detector_fault=cast(DetectorFault, _strip_code(cells[3])),
+                profile=_strip_code(cells[4]),
                 effect_signals=effect_signals,
                 receipt_signals=receipt_signals,
                 scored=scored,
-                findings=int(_strip_code(cells[7])),
+                findings=int(_strip_code(cells[8])),
             )
         )
     return tuple(rows)
@@ -93,6 +95,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V3" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V4" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V5" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -142,12 +145,13 @@ def test_hardening_readme_orders_security_onramps() -> None:
 def test_joint_readme_matrix_reproduces_detector_paths() -> None:
     rows = _matrix_rows()
 
-    assert len(rows) == 13
+    assert len(rows) == 15
     for row in rows:
         result = run_detected_scenario(
             row.scenario,
             victim_fault=row.victim_fault,
             authority_fault=row.authority_fault,
+            detector_fault=row.detector_fault,
         )
 
         assert result.victim_profile == row.profile
