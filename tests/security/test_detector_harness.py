@@ -415,7 +415,7 @@ def test_detected_invalid_finding_scope_refuses_at_supervisor_boundary(
     assert result.authority is not None
     assert result.detector.run_id == "identity-approval-demo/vulnerable_attack"
     assert result.detector.scored is False
-    assert result.detector.declared_finding_count is None
+    assert result.detector.declared_finding_count == 1
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor finding scope gate refused output" in result.detector.refusal_reason
@@ -453,7 +453,7 @@ def test_detected_finding_bundle_faults_refuse_before_scope(
     assert result.detector.scored is False
     assert result.detector.finding_bundle_completeness_signals == expected_signals
     assert result.detector.finding_bundle_completeness_gate_passed is expected_gate
-    assert result.detector.declared_finding_count is None
+    assert result.detector.declared_finding_count == 1
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert expected_reason in result.detector.refusal_reason
@@ -494,7 +494,7 @@ def test_supervisor_refuses_detector_report_scope_before_finding_scope() -> None
 
     assert admitted.run_id == "run-stale"
     assert admitted.scored is False
-    assert admitted.declared_finding_count is None
+    assert admitted.declared_finding_count == 0
     assert admitted.refusal_reason is not None
     assert "supervisor detector report scope gate refused output" in admitted.refusal_reason
     assert "reported_run_id='run-stale'" in admitted.refusal_reason
@@ -552,7 +552,7 @@ def test_supervisor_refuses_truncated_finding_document_before_scope() -> None:
     assert admitted.scored is False
     assert admitted.finding_bundle_completeness_signals == ("truncated",)
     assert admitted.finding_bundle_completeness_gate_passed is False
-    assert admitted.declared_finding_count is None
+    assert admitted.declared_finding_count == 1
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle completeness gate refused output" in admitted.refusal_reason
@@ -573,7 +573,7 @@ def test_supervisor_refuses_finding_count_mismatch_before_scope() -> None:
     assert admitted.scored is False
     assert admitted.finding_bundle_completeness_signals == ()
     assert admitted.finding_bundle_completeness_gate_passed is True
-    assert admitted.declared_finding_count is None
+    assert admitted.declared_finding_count == 1
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle count gate refused output" in admitted.refusal_reason
@@ -601,7 +601,7 @@ def test_supervisor_refuses_refused_report_with_finding_rows_after_scope() -> No
 
     assert admitted.scored is False
     assert admitted.finding_bundle_completeness_gate_passed is True
-    assert admitted.declared_finding_count is None
+    assert admitted.declared_finding_count == 1
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle coherence gate refused output" in admitted.refusal_reason
@@ -620,11 +620,37 @@ def test_supervisor_refuses_malformed_finding_bundle_payload() -> None:
     assert admitted.scored is False
     assert admitted.finding_bundle_completeness_signals == ()
     assert admitted.finding_bundle_completeness_gate_passed is False
-    assert admitted.declared_finding_count is None
+    assert admitted.declared_finding_count == 1
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle parse admission refused output" in admitted.refusal_reason
     assert "invalid FindingBundle payload" in admitted.refusal_reason
+
+
+def test_supervisor_preserves_unsupported_finding_bundle_version_refusal() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+    payload = _finding_bundle_bytes(finding_bundle).replace(
+        b"nooa-finding-bundle-v1",
+        b"nooa-finding-bundle-v2",
+        1,
+    )
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(payload),
+        report=report,
+        expected_run_id=report.run_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.declared_finding_count == 1
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding bundle parse admission refused output" in admitted.refusal_reason
+    assert "unsupported finding bundle schema_version: 'nooa-finding-bundle-v2'" in (
+        admitted.refusal_reason
+    )
+    assert "invalid FindingBundle payload" not in admitted.refusal_reason
 
 
 def test_supervisor_admits_victim_summary_and_refuses_visible_scenario_drift() -> None:
@@ -860,7 +886,7 @@ def test_detected_scenario_refuses_finding_bundle_over_parse_admission_budget() 
     assert result.detector.scored is False
     assert result.detector.finding_bundle_completeness_signals == ()
     assert result.detector.finding_bundle_completeness_gate_passed is False
-    assert result.detector.declared_finding_count is None
+    assert result.detector.declared_finding_count == 1
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor finding bundle parse admission refused output" in (

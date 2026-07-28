@@ -66,7 +66,7 @@ This design supports familiar Python testing, tracing, refactoring, and version-
 
 > Branch: `codex/security-finding-bundle-handoff`
 
-This slice moves detector findings out of the example-local `DetectorReport` JSON and onto a public `FindingBundle` transport. The detector still emits one stdout report, but that report now carries only `declared_finding_count`; the actual `SecurityFinding` rows are written as one bounded LF-terminated bundle through a dedicated inherited descriptor backed by a supervisor-owned temporary file. The supervisor admits both channels, requires a complete bundle, cross-checks the declared count, validates finding run scope against its selected `run_id`, and only then exposes admitted rows on `DetectedScenario.findings`.
+This slice moves detector findings out of the example-local `DetectorReport` JSON and onto a public `FindingBundle` transport. The detector still emits one stdout report, but that report now carries only `declared_finding_count`; the actual `SecurityFinding` rows are written as one bounded LF-terminated bundle through a dedicated inherited descriptor backed by a supervisor-owned temporary file. The supervisor admits both channels, requires a complete bundle, cross-checks the declared count, validates finding run scope against its selected `run_id`, and only then exposes admitted rows on `DetectedScenario.findings`. When a parsed detector output is refused, the report keeps its detector-declared count as diagnostic metadata while the scenario exposes no admitted rows.
 
 ```mermaid
 flowchart LR

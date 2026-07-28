@@ -207,6 +207,13 @@ def test_read_finding_bundle_keeps_malformed_and_future_versions_distinct() -> N
         pytest.param(b"[]\n", id="non-dict"),
         pytest.param(b'{"schema_version":"nooa-finding-bundle-v1"}\n', id="missing-keys"),
         pytest.param(
+            (
+                _bundle().model_dump_json()[:-1]
+                + ',"extra":"not-allowed"}\n'
+            ).encode("utf-8"),
+            id="extra-key",
+        ),
+        pytest.param(
             b'{"schema_version":"nooa-finding-bundle-v1","producer":"a",'
             b'"producer":"b","findings":[]}\n',
             id="duplicate-key",
@@ -217,6 +224,13 @@ def test_read_finding_bundle_keeps_malformed_and_future_versions_distinct() -> N
             b'"finding_type":"t","producer":"p","run_id":"","target":"",'
             b'"evidence_refs":[],"attributes":{"score":NaN}}]}\n',
             id="nan",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-finding-bundle-v1","producer":"",'
+            b'"findings":[{"schema_version":"nooa-finding-v1","finding_id":"f",'
+            b'"finding_type":"t","producer":"p","run_id":"","target":"",'
+            b'"evidence_refs":[],"attributes":{"score":1e999}}]}\n',
+            id="overflow-float",
         ),
         pytest.param(
             (
@@ -233,6 +247,11 @@ def test_read_finding_bundle_keeps_malformed_and_future_versions_distinct() -> N
             b'{"schema_version":"nooa-finding-bundle-v1","producer":"\\ud800",'
             b'"findings":[]}\n',
             id="lone-surrogate",
+        ),
+        pytest.param(
+            b'{"schema_version":"nooa-finding-bundle-v1","producer":"\xff",'
+            b'"findings":[]}\n',
+            id="invalid-utf8",
         ),
     ],
 )
