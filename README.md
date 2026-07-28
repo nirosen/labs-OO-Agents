@@ -62,6 +62,33 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Finding Admission Diagnostics
+
+> Branch: `codex/security-finding-admission-diagnostics`
+
+This slice adds no public `nooa.security` API. It gives the example-local `DetectorReport` one supervisor-owned `finding_admission_refusal` field so current finding-admission failures can be distinguished without parsing human-readable refusal text. Report admission clears any child-supplied value first; only the supervisor's count, scope, refused-report-row, and ID-uniqueness gates set the field.
+
+```mermaid
+flowchart LR
+    B["complete FindingBundle"] --> C["count gate"]
+    C --> S["scope gate"]
+    S --> R["report coherence gate"]
+    R --> U["ID uniqueness gate"]
+    C -. "count_mismatch" .-> F["DetectorReport.finding_admission_refusal"]
+    S -. "scope_drift" .-> F
+    R -. "refused_report_rows" .-> F
+    U -. "duplicate_finding_id" .-> F
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-local `FindingAdmissionRefusal`, `DetectorReport.finding_admission_refusal`, supervisor-side clearing of child-supplied values, and structured refusal-stage coverage for the existing finding count, scope, refused-report-row, and ID-uniqueness gates |
+| Security claim | Consumers of this example report can identify which current supervisor finding-admission stage refused rows without parsing the free-form `refusal_reason` string. |
+| Non-claim | The field is not a public NOOA schema, detector verdict, trust boundary, or evidence-reference validator. It does not authenticate reports, findings, producers, identifiers, or refusal text; add a new finding gate; prove detector coverage; or make a same-user child process trustworthy. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v10` |
+| Review files | `examples/security_hardening/detector_harness.py`, `tests/security/test_detector_harness.py`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_detector_harness.py`; `pytest tests/security`; `ruff check examples/security_hardening tests/security`; `pyright examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Finding ID Uniqueness Validation
 
 > Branch: `codex/security-finding-id-uniqueness`

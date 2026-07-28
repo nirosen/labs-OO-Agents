@@ -10,6 +10,32 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Finding Admission Diagnostics Follow-On
+
+`codex/security-finding-admission-diagnostics` adds no public `nooa.security` API. The example-local `DetectorReport` now carries one supervisor-owned `finding_admission_refusal` field for the existing finding count, scope, refused-report-row, and ID-uniqueness refusal stages. The supervisor clears any child-supplied value on report admission, then sets the field only when one of those later finding-admission gates fails.
+
+```mermaid
+flowchart LR
+    B["complete finding bundle"] --> C["count gate"]
+    C --> S["scope gate"]
+    S --> R["report coherence gate"]
+    R --> U["ID uniqueness gate"]
+    C -. "count_mismatch" .-> D["finding_admission_refusal"]
+    S -. "scope_drift" .-> D
+    R -. "refused_report_rows" .-> D
+    U -. "duplicate_finding_id" .-> D
+```
+
+Run representative existing faults:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault drop_finding_count_mismatch
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault stale_finding_run_id
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault duplicate_finding_id
+```
+
+This is observability for the example supervisor, not a trust upgrade. The field does not authenticate detector output, findings, producers, identifiers, or refusal text; add a new finding gate; validate evidence references; prove coverage; or make same-user child processes trustworthy.
+
 ## Finding ID Uniqueness Validation Follow-On
 
 `codex/security-finding-id-uniqueness` adds the public opt-in `FindingIdUniquenessValidation` helper and wires it into the example supervisor after finding-bundle completeness, count coherence, finding-scope, and report-coherence checks. Existing scope and report-coherence refusals retain precedence; ID uniqueness runs only after those checks pass. One `duplicate_finding_id` fault duplicates a scored row while keeping `declared_finding_count` coherent, so the supervisor reaches the new intrinsic row-ID gate instead of confusing the case with transport or scope drift.

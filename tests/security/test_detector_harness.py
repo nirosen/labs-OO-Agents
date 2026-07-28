@@ -110,6 +110,7 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
     assert report.victim_profile == "identity_approval"
     assert report.scorer_name == "identity-approval-scorer"
     assert report.declared_finding_count == 0
+    assert report.finding_admission_refusal is None
     assert report.refusal_reason is None
 
     with pytest.raises(ValidationError):
@@ -163,6 +164,23 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
         DetectorReport(
             **_report_fields(declared_finding_count=None),
             scored=True,
+        )
+    with pytest.raises(ValidationError, match="cannot carry finding_admission_refusal"):
+        DetectorReport(
+            **_report_fields(),
+            finding_bundle_completeness_gate_passed=True,
+            finding_admission_refusal="scope_drift",
+            scored=True,
+        )
+    with pytest.raises(
+        ValidationError,
+        match="requires finding_bundle_completeness_gate_passed=True",
+    ):
+        DetectorReport(
+            **_report_fields(),
+            finding_admission_refusal="scope_drift",
+            scored=False,
+            refusal_reason="scope drift",
         )
     with pytest.raises(ValidationError, match="requires refusal_reason"):
         DetectorReport(**_report_fields(), scored=False)
@@ -456,6 +474,7 @@ def test_detected_invalid_finding_scope_refuses_at_supervisor_boundary(
     assert result.detector.run_id == "identity-approval-demo/vulnerable_attack"
     assert result.detector.scored is False
     assert result.detector.declared_finding_count == 1
+    assert result.detector.finding_admission_refusal == "scope_drift"
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor finding scope gate refused output" in result.detector.refusal_reason
@@ -475,6 +494,7 @@ def test_detected_duplicate_finding_id_refuses_at_supervisor_boundary() -> None:
     assert result.detector.finding_bundle_completeness_signals == ()
     assert result.detector.finding_bundle_completeness_gate_passed is True
     assert result.detector.declared_finding_count == 2
+    assert result.detector.finding_admission_refusal == "duplicate_finding_id"
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert "supervisor finding ID uniqueness gate refused output" in result.detector.refusal_reason
@@ -483,18 +503,26 @@ def test_detected_duplicate_finding_id_refuses_at_supervisor_boundary() -> None:
 
 
 @pytest.mark.parametrize(
-    ("detector_fault", "expected_signals", "expected_gate", "expected_reason"),
+    (
+        "detector_fault",
+        "expected_signals",
+        "expected_gate",
+        "expected_admission_refusal",
+        "expected_reason",
+    ),
     [
         (
             "truncate_finding_document",
             ("truncated",),
             False,
+            None,
             "supervisor finding bundle completeness gate refused output",
         ),
         (
             "drop_finding_count_mismatch",
             (),
             True,
+            "count_mismatch",
             "supervisor finding bundle count gate refused output",
         ),
     ],
@@ -503,6 +531,7 @@ def test_detected_finding_bundle_faults_refuse_before_scope(
     detector_fault: str,
     expected_signals: tuple[str, ...],
     expected_gate: bool,
+    expected_admission_refusal: str | None,
     expected_reason: str,
 ) -> None:
     result = run_detected_scenario(
@@ -514,6 +543,7 @@ def test_detected_finding_bundle_faults_refuse_before_scope(
     assert result.detector.finding_bundle_completeness_signals == expected_signals
     assert result.detector.finding_bundle_completeness_gate_passed is expected_gate
     assert result.detector.declared_finding_count == 1
+    assert result.detector.finding_admission_refusal == expected_admission_refusal
     assert result.findings == ()
     assert result.detector.refusal_reason is not None
     assert expected_reason in result.detector.refusal_reason
@@ -556,6 +586,7 @@ def test_supervisor_refuses_detector_report_scope_before_finding_scope() -> None
     assert admitted.run_id == "run-stale"
     assert admitted.scored is False
     assert admitted.declared_finding_count == 0
+    assert admitted.finding_admission_refusal is None
     assert admitted.refusal_reason is not None
     assert "supervisor detector report scope gate refused output" in admitted.refusal_reason
     assert "reported_run_id='run-stale'" in admitted.refusal_reason
@@ -573,11 +604,35 @@ def test_supervisor_refuses_malformed_detector_report_payload() -> None:
     assert admitted.run_id == "run-current"
     assert admitted.scored is False
     assert admitted.declared_finding_count is None
+    assert admitted.finding_admission_refusal is None
     assert admitted.refusal_reason is not None
     assert "supervisor detector report parse admission refused output" in (
         admitted.refusal_reason
     )
     assert "invalid DetectorReport payload" in admitted.refusal_reason
+
+
+def test_supervisor_clears_child_supplied_finding_admission_refusal() -> None:
+    report = DetectorReport(
+        **_report_fields(),
+        run_id="run-current",
+        finding_bundle_completeness_gate_passed=True,
+        finding_admission_refusal="scope_drift",
+        scored=False,
+        refusal_reason="child-supplied refusal",
+    )
+
+    admitted = _admit_detector_report(
+        report.model_dump_json(),
+        profile=_IDENTITY_PROFILE,
+        input_id="detector-input-1",
+        expected_run_id="run-current",
+        max_report_bytes=DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.finding_admission_refusal is None
+    assert admitted.refusal_reason == "child-supplied refusal"
 
 
 def test_supervisor_admits_complete_finding_bundle_after_report_count_check() -> None:
@@ -597,6 +652,7 @@ def test_supervisor_admits_complete_finding_bundle_after_report_count_check() ->
     assert admitted.finding_bundle_completeness_signals == ()
     assert admitted.finding_bundle_completeness_gate_passed is True
     assert admitted.declared_finding_count == 1
+    assert admitted.finding_admission_refusal is None
     assert findings == finding_bundle.findings
 
 
@@ -614,6 +670,7 @@ def test_supervisor_refuses_truncated_finding_document_before_scope() -> None:
     assert admitted.finding_bundle_completeness_signals == ("truncated",)
     assert admitted.finding_bundle_completeness_gate_passed is False
     assert admitted.declared_finding_count == 1
+    assert admitted.finding_admission_refusal is None
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle completeness gate refused output" in admitted.refusal_reason
@@ -635,6 +692,7 @@ def test_supervisor_refuses_finding_count_mismatch_before_scope() -> None:
     assert admitted.finding_bundle_completeness_signals == ()
     assert admitted.finding_bundle_completeness_gate_passed is True
     assert admitted.declared_finding_count == 1
+    assert admitted.finding_admission_refusal == "count_mismatch"
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle count gate refused output" in admitted.refusal_reason
@@ -667,6 +725,7 @@ def test_supervisor_refuses_duplicate_finding_ids_after_scope_and_coherence() ->
     assert admitted.finding_bundle_completeness_signals == ()
     assert admitted.finding_bundle_completeness_gate_passed is True
     assert admitted.declared_finding_count == 2
+    assert admitted.finding_admission_refusal == "duplicate_finding_id"
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding ID uniqueness gate refused output" in admitted.refusal_reason
@@ -702,6 +761,7 @@ def test_supervisor_refuses_scope_before_finding_id_uniqueness() -> None:
 
     assert admitted.scored is False
     assert admitted.declared_finding_count == 2
+    assert admitted.finding_admission_refusal == "scope_drift"
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding scope gate refused output" in admitted.refusal_reason
@@ -731,6 +791,7 @@ def test_supervisor_refuses_refused_report_with_finding_rows_after_scope() -> No
     assert admitted.scored is False
     assert admitted.finding_bundle_completeness_gate_passed is True
     assert admitted.declared_finding_count == 1
+    assert admitted.finding_admission_refusal == "refused_report_rows"
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle coherence gate refused output" in admitted.refusal_reason
@@ -750,6 +811,7 @@ def test_supervisor_refuses_malformed_finding_bundle_payload() -> None:
     assert admitted.finding_bundle_completeness_signals == ()
     assert admitted.finding_bundle_completeness_gate_passed is False
     assert admitted.declared_finding_count == 1
+    assert admitted.finding_admission_refusal is None
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle parse admission refused output" in admitted.refusal_reason
@@ -773,6 +835,7 @@ def test_supervisor_preserves_unsupported_finding_bundle_version_refusal() -> No
 
     assert admitted.scored is False
     assert admitted.declared_finding_count == 1
+    assert admitted.finding_admission_refusal is None
     assert findings == ()
     assert admitted.refusal_reason is not None
     assert "supervisor finding bundle parse admission refused output" in admitted.refusal_reason
