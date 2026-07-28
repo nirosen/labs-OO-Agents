@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from io import BytesIO
 from tempfile import TemporaryFile
-from typing import BinaryIO
+from typing import BinaryIO, get_args
 
 import pytest
 from pydantic import ValidationError
@@ -18,6 +18,7 @@ from examples.security_hardening.approval_authority import (
 )
 from examples.security_hardening.data_export import EXPORT_EFFECT_TYPE
 from examples.security_hardening.detector_harness import (
+    _FINDING_ADMISSION_REFUSALS,
     _IDENTITY_PROFILE,
     DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES,
     DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
@@ -26,6 +27,7 @@ from examples.security_hardening.detector_harness import (
     DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
     DetectedScenario,
     DetectorReport,
+    FindingAdmissionRefusal,
     SupervisorAdmissionError,
     _admit_authority_summary,
     _admit_detector_report,
@@ -189,6 +191,11 @@ def test_detector_report_is_strict_and_self_consistent() -> None:
             **_report_fields(scorer_name="data-export-scorer"),
             scored=True,
         )
+
+
+def test_finding_admission_refusal_vocabulary_matches_literal() -> None:
+    assert set(get_args(FindingAdmissionRefusal)) == set(_FINDING_ADMISSION_REFUSALS)
+    assert len(_FINDING_ADMISSION_REFUSALS) == len(set(_FINDING_ADMISSION_REFUSALS))
 
 
 def test_score_detector_input_emits_identity_finding() -> None:
