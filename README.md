@@ -512,7 +512,7 @@ flowchart LR
     AA -. "over-bound / invalid" .-> Y
 ```
 
-The matrix covers paths that return `DetectedScenario`. Victim and authority summary admission faults raise `SupervisorAdmissionError` instead, so their exact refusal shapes stay in `tests/security/test_detector_harness.py` rather than being flattened into matrix rows. V12 adds no new matrix row because evidence-ref membership is detector-side scorer conformance, not a supervisor admission stage; current matrix scorers emit refs within their `DetectorInput`, and the supervisor still has no independent evidence-ID set to recheck membership after bundle admission.
+The matrix covers paths that return `DetectedScenario`. Victim and authority summary admission faults raise `SupervisorAdmissionError` instead, so their exact refusal shapes stay in `tests/security/test_detector_harness.py` rather than being flattened into matrix rows. V12 adds no new matrix row because evidence-ref membership is detector-side scorer conformance, not a supervisor admission stage; current matrix scorers emit refs within their `DetectorInput`, the current fault axis mutates outputs only after scoring, and the supervisor still has no independent evidence-ID set to recheck membership after bundle admission.
 
 <!-- JOINT_SCENARIO_MATRIX_START -->
 | Scenario | Victim fault | Authority fault | Detector fault | Subprocess output fault | Profile | V2 effect signals | Receipt bundle signals | Finding bundle signals | Finding admission refusal | Scored | Findings |

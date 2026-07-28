@@ -237,4 +237,5 @@ def test_joint_readme_keeps_evidence_membership_detector_side() -> None:
     assert "V12 adds no new matrix row because evidence-ref membership is detector-side" in (
         root_text
     )
+    assert "the current fault axis mutates outputs only after scoring" in root_text
     assert "the supervisor still has no independent evidence-ID set" in root_text
