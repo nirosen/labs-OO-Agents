@@ -709,6 +709,36 @@ def test_detected_duplicate_finding_id_refuses_at_supervisor_boundary() -> None:
     assert "supervisor finding scope gate refused output" not in result.detector.refusal_reason
 
 
+def test_detected_missing_required_evidence_ref_refuses_at_supervisor_boundary() -> None:
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        detector_fault="drop_required_evidence_ref",
+    )
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert result.detector.run_id == "identity-approval-demo/vulnerable_attack"
+    assert result.detector.scored is False
+    assert result.detector.finding_bundle_completeness_signals == ()
+    assert result.detector.finding_bundle_completeness_gate_passed is True
+    assert result.detector.declared_finding_count == 1
+    assert result.detector.finding_admission_refusal == "missing_required_evidence_ref"
+    assert result.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "supervisor finding required evidence-ref gate refused output" in (
+        result.detector.refusal_reason
+    )
+    assert "required_evidence_ref='detector-input-vulnerable_attack'" in (
+        result.detector.refusal_reason
+    )
+    assert "missing_required_evidence_ref_finding_ids=('finding-req-attack',)" in (
+        result.detector.refusal_reason
+    )
+    assert "supervisor finding ID uniqueness gate refused output" not in (
+        result.detector.refusal_reason
+    )
+
+
 @pytest.mark.parametrize(
     (
         "detector_fault",
@@ -763,6 +793,7 @@ def test_detected_finding_bundle_faults_refuse_before_scope(
         "blank_finding_run_id",
         "stale_finding_run_id",
         "duplicate_finding_id",
+        "drop_required_evidence_ref",
         "truncate_finding_document",
         "drop_finding_count_mismatch",
     ],
@@ -797,6 +828,31 @@ def test_supervisor_refuses_detector_report_scope_before_finding_scope() -> None
     assert admitted.refusal_reason is not None
     assert "supervisor detector report scope gate refused output" in admitted.refusal_reason
     assert "reported_run_id='run-stale'" in admitted.refusal_reason
+
+
+def test_supervisor_refuses_detector_report_input_id_before_finding_admission() -> None:
+    report = DetectorReport(
+        **_report_fields(detector_input_id="detector-input-stale"),
+        run_id="run-current",
+        scored=True,
+    )
+
+    admitted = _admit_detector_report(
+        report.model_dump_json(),
+        profile=_IDENTITY_PROFILE,
+        input_id="detector-input-current",
+        expected_run_id="run-current",
+        max_report_bytes=DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    )
+
+    assert admitted.detector_input_id == "detector-input-stale"
+    assert admitted.scored is False
+    assert admitted.declared_finding_count == 0
+    assert admitted.finding_admission_refusal is None
+    assert admitted.refusal_reason is not None
+    assert "supervisor detector report input ID gate refused output" in admitted.refusal_reason
+    assert "expected_input_id='detector-input-current'" in admitted.refusal_reason
+    assert "reported_input_id='detector-input-stale'" in admitted.refusal_reason
 
 
 def test_supervisor_refuses_malformed_detector_report_payload() -> None:
@@ -852,6 +908,7 @@ def test_supervisor_admits_complete_finding_bundle_after_report_count_check() ->
         payload,
         report=report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
@@ -870,6 +927,7 @@ def test_supervisor_refuses_truncated_finding_document_before_scope() -> None:
         BytesIO(_finding_bundle_bytes(finding_bundle, terminated=False)),
         report=report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
@@ -892,6 +950,7 @@ def test_supervisor_refuses_finding_count_mismatch_before_scope() -> None:
         BytesIO(_finding_bundle_bytes(FindingBundle(producer=finding_bundle.producer))),
         report=report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
@@ -925,6 +984,7 @@ def test_supervisor_refuses_duplicate_finding_ids_after_scope_and_coherence() ->
         BytesIO(_finding_bundle_bytes(duplicate_bundle)),
         report=duplicate_report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
@@ -938,6 +998,91 @@ def test_supervisor_refuses_duplicate_finding_ids_after_scope_and_coherence() ->
     assert "supervisor finding ID uniqueness gate refused output" in admitted.refusal_reason
     assert "duplicate_finding_ids=('finding-req-attack',)" in admitted.refusal_reason
     assert "supervisor finding scope gate refused output" not in admitted.refusal_reason
+
+
+def test_supervisor_refuses_missing_required_evidence_ref_after_id_uniqueness() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+    first = finding_bundle.findings[0]
+    missing_required_ref_finding = SecurityFinding.model_validate(
+        {
+            **first.model_dump(mode="python"),
+            "evidence_refs": tuple(
+                evidence_ref
+                for evidence_ref in first.evidence_refs
+                if evidence_ref != report.detector_input_id
+            ),
+        }
+    )
+    missing_required_ref_bundle = FindingBundle(
+        producer=finding_bundle.producer,
+        findings=(missing_required_ref_finding,),
+    )
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(_finding_bundle_bytes(missing_required_ref_bundle)),
+        report=report,
+        expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.finding_bundle_completeness_signals == ()
+    assert admitted.finding_bundle_completeness_gate_passed is True
+    assert admitted.declared_finding_count == 1
+    assert admitted.finding_admission_refusal == "missing_required_evidence_ref"
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding required evidence-ref gate refused output" in (
+        admitted.refusal_reason
+    )
+    assert "required_evidence_ref='detector-input-vulnerable_attack'" in (
+        admitted.refusal_reason
+    )
+    assert "supervisor finding ID uniqueness gate refused output" not in admitted.refusal_reason
+
+
+def test_supervisor_refuses_id_uniqueness_before_required_evidence_ref() -> None:
+    report, finding_bundle = score_detector_input(_scoreable_input())
+    first = finding_bundle.findings[0]
+    missing_required_ref_finding = SecurityFinding.model_validate(
+        {
+            **first.model_dump(mode="python"),
+            "evidence_refs": tuple(
+                evidence_ref
+                for evidence_ref in first.evidence_refs
+                if evidence_ref != report.detector_input_id
+            ),
+        }
+    )
+    duplicate_missing_ref_bundle = FindingBundle(
+        producer=finding_bundle.producer,
+        findings=(missing_required_ref_finding, missing_required_ref_finding),
+    )
+    duplicate_report = DetectorReport.model_validate(
+        {
+            **report.model_dump(mode="python"),
+            "declared_finding_count": 2,
+        }
+    )
+
+    admitted, findings = _admit_finding_bundle(
+        BytesIO(_finding_bundle_bytes(duplicate_missing_ref_bundle)),
+        report=duplicate_report,
+        expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
+        max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+
+    assert admitted.scored is False
+    assert admitted.declared_finding_count == 2
+    assert admitted.finding_admission_refusal == "duplicate_finding_id"
+    assert findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor finding ID uniqueness gate refused output" in admitted.refusal_reason
+    assert "supervisor finding required evidence-ref gate refused output" not in (
+        admitted.refusal_reason
+    )
 
 
 def test_supervisor_refuses_scope_before_finding_id_uniqueness() -> None:
@@ -963,6 +1108,7 @@ def test_supervisor_refuses_scope_before_finding_id_uniqueness() -> None:
         BytesIO(_finding_bundle_bytes(duplicate_stale_bundle)),
         report=duplicate_report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
@@ -992,6 +1138,7 @@ def test_supervisor_refuses_refused_report_with_finding_rows_after_scope() -> No
         BytesIO(_finding_bundle_bytes(finding_bundle)),
         report=refused_report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
@@ -1011,6 +1158,7 @@ def test_supervisor_refuses_malformed_finding_bundle_payload() -> None:
         BytesIO(b"{\n"),
         report=report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
@@ -1037,6 +1185,7 @@ def test_supervisor_preserves_unsupported_finding_bundle_version_refusal() -> No
         BytesIO(payload),
         report=report,
         expected_run_id=report.run_id,
+        expected_input_id=report.detector_input_id,
         max_bundle_bytes=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     )
 
