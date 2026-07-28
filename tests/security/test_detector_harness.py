@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import os
 from io import BytesIO
+from tempfile import TemporaryFile
 
 import pytest
 from pydantic import ValidationError
@@ -13,18 +15,30 @@ from examples.security_hardening.approval_authority import (
     AuthorityReceiptDocument,
     AuthoritySummary,
 )
+from examples.security_hardening.data_export import EXPORT_EFFECT_TYPE
 from examples.security_hardening.detector_harness import (
     DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     DetectedScenario,
     DetectorReceiptInputTooLargeError,
     DetectorReport,
     read_receipt_document,
+    receipt_scope_gated_scorer,
     run_detected_scenario,
     score_detector_input,
+    score_fd,
 )
 from examples.security_hardening.effect_collector import run_collected_scenario
-from examples.security_hardening.identity_approval import EFFECT_TYPE
-from nooa.security import DetectorInput, EffectRecord
+from examples.security_hardening.identity_approval import (
+    EFFECT_TYPE,
+    detect_grants_without_approval,
+)
+from nooa.security import (
+    EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    DetectorInput,
+    EffectRecord,
+    FdEffectSink,
+    SecurityReceipt,
+)
 
 
 def _scoreable_input(**updates: object) -> DetectorInput:
@@ -129,6 +143,84 @@ def test_score_detector_input_emits_identity_finding() -> None:
     assert report.refusal_reason is None
 
 
+def test_receipt_scope_gated_scorer_turns_off_run_drop_into_refusal() -> None:
+    stale_receipt = SecurityReceipt(
+        receipt_id="authority-receipt-req-attack",
+        receipt_type="identity.approval",
+        source="approval-authority",
+        run_id="identity-approval-demo/stale",
+        target="contractor@prod-db",
+        effect_type=EFFECT_TYPE,
+        attributes={"request_id": "req-attack"},
+    )
+    detector_input = _scoreable_input(receipts=(stale_receipt,))
+
+    direct_report = score_detector_input(detector_input)
+    gated_report = score_detector_input(
+        detector_input,
+        scorer=receipt_scope_gated_scorer(
+            detect_grants_without_approval,
+            expected_run_id=detector_input.run_id,
+        ),
+    )
+
+    assert direct_report.scored is True
+    assert len(direct_report.findings) == 1
+    assert gated_report.scored is False
+    assert gated_report.findings == ()
+    assert gated_report.refusal_reason is not None
+    assert "detector receipt scope gate refused input" in gated_report.refusal_reason
+    assert "mismatched_run_id_receipt_ids=('authority-receipt-req-attack',)" in (
+        gated_report.refusal_reason
+    )
+
+
+def test_score_fd_keeps_receipt_free_profile_on_direct_scorer_path() -> None:
+    stale_receipt = SecurityReceipt(
+        receipt_id="authority-receipt-export-attack",
+        receipt_type="identity.approval",
+        source="approval-authority",
+        run_id="identity-approval-demo/stale",
+        target="external://untrusted-bucket",
+        effect_type=EXPORT_EFFECT_TYPE,
+        attributes={"request_id": "export-attack"},
+    )
+    receipt_document = AuthorityReceiptDocument(
+        issued_token_count=1,
+        receipts=(stale_receipt,),
+    )
+    with TemporaryFile() as effect_fh, TemporaryFile() as receipt_fh:
+        sink = FdEffectSink(
+            effect_fh.fileno(),
+            schema_version=EFFECT_EGRESS_SCHEMA_VERSION_V2,
+        )
+        sink(
+            EffectRecord(
+                effect_type=EXPORT_EFFECT_TYPE,
+                target="external://untrusted-bucket",
+                decision="allowed",
+                attributes={"request_id": "export-attack"},
+            )
+        )
+        sink.close()
+        effect_fh.seek(0)
+        payload = receipt_document.model_dump_json().encode("utf-8")
+        assert receipt_fh.write(payload) == len(payload)
+        receipt_fh.seek(0)
+
+        report = score_fd(
+            os.dup(effect_fh.fileno()),
+            os.dup(receipt_fh.fileno()),
+            profile_name="data_export",
+            run_id="data-export-demo/export_vulnerable_attack",
+            input_id="detector-input-export_vulnerable_attack",
+        )
+
+    assert report.scored is True
+    assert report.refusal_reason is None
+    assert len(report.findings) == 1
+
+
 @pytest.mark.parametrize(
     ("detector_input", "expected_reason"),
     [
@@ -227,6 +319,28 @@ def test_detected_authorized_scenario_uses_authority_receipt_and_emits_no_findin
     assert result.detector.receipt_count == 1
     assert result.detector.issued_token_count == 1
     assert result.detector.findings == ()
+
+
+def test_detected_authorized_stale_receipt_scope_refuses_before_policy() -> None:
+    result = run_detected_scenario(
+        "hardened_authorized",
+        authority_fault="stale_receipt_run_id",
+    )
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert result.victim.decision == "allowed"
+    assert result.authority.issued_token_count == 1
+    assert result.authority.receipt_count == 1
+    assert result.detector.receipt_count == 1
+    assert result.detector.issued_token_count == 1
+    assert result.detector.scored is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "detector receipt scope gate refused input" in result.detector.refusal_reason
+    assert "mismatched_run_id_receipt_ids=('authority-receipt-req-approved',)" in (
+        result.detector.refusal_reason
+    )
 
 
 def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:

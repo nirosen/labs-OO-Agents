@@ -10,6 +10,28 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Detector Receipt Scope Gate Follow-On
+
+`codex/security-detector-receipt-scope-gate` wires the opt-in receipt scope helper into the example detector subprocess only when the identity profile receives an authority receipt pipe. The harness wraps the identity scorer with the supervisor-selected `run_id`, so an off-run receipt copy is refused before policy instead of disappearing inside the scorer's same-run receipt join. The receipt-free data export profile keeps its direct scorer path.
+
+```mermaid
+flowchart LR
+    S["supervisor-selected run_id"] --> G["receipt_scope_gated_scorer()"]
+    A["authority receipt document"] --> D["DetectorInput"]
+    D --> G
+    G -- "scope clean" --> P["identity scorer"]
+    G -. "run_id_mismatch" .-> R["DetectorReport<br/>scored=False"]
+    P --> F["finding or no finding"]
+```
+
+Run the new stale-receipt fault:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault stale_receipt_run_id
+```
+
+This follow-on converts one silent off-run drop into a visible refusal. It does not authenticate the receipt source, prove coverage, make `DetectorInput` enforce scope automatically, or protect the refusal text itself; this demo includes raw run and receipt identifiers in the refusal reason, so a real deployment must decide whether that text is allowed to cross its detector boundary.
+
 ## Receipt Scope Validation Follow-On
 
 `codex/security-receipt-scope-validation` adds one opt-in core helper for applications that already chose an assessment `run_id` and want to reject supplied receipt copies that are blank-scoped or stale-scoped before they hand them to policy. The helper materializes the receipt iterable once, preserves order, and leaves all identity-specific profile rules in the application layer.
@@ -23,7 +45,7 @@ flowchart LR
     R -. "missing_run_id / run_id_mismatch" .-> X["caller refuses bundle"]
 ```
 
-This is a run-scope consistency helper, not a trusted detector. Directly constructing `ReceiptScopeValidation` asserts diagnostics; it does not perform the check, and no current example auto-invokes the helper on behalf of `DetectorInput`. It does not authenticate the source, prove receipt coverage, check receipt-id uniqueness, inspect profile semantics, correlate a receipt to an effect, or make an empty clean bundle evidence that no receipts exist.
+This is a run-scope consistency helper, not a trusted detector. Directly constructing `ReceiptScopeValidation` asserts diagnostics; it does not perform the check. The detector receipt scope gate follow-on above invokes it in one example harness, but `DetectorInput` itself still does not auto-enforce it. The helper does not authenticate the source, prove receipt coverage, check receipt-id uniqueness, inspect profile semantics, correlate a receipt to an effect, or make an empty clean bundle evidence that no receipts exist.
 
 ## Minimal Out-of-Process Recipe Follow-On
 

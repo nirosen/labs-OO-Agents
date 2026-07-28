@@ -49,6 +49,8 @@ flowchart LR
 
 A clean result means only that none of the supplied copies contradicted the requested scope. Directly constructing `ReceiptScopeValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate receipt sources, verify coverage, check receipt-id uniqueness, correlate receipts to effects, inspect application attributes, or prove that an empty bundle is complete.
 
+The `detector_harness.py` example shows one application-owned integration: when an authority receipt pipe is wired, it wraps the identity scorer with the supervisor-selected `run_id` and converts visible scope drift into an example-local refusal before policy runs. That placement does not make receipt scope automatic for `DetectorInput`, and the demo refusal string includes raw run and receipt identifiers that a real deployment may need to redact before crossing a process boundary.
+
 ## Egress Contract
 
 `FdEffectSink` writes LF-delimited UTF-8 JSON frames to a borrowed blocking descriptor. `read_effect_egress()` parses those frames and returns `EffectEgressReadResult`; `require_complete_effect_egress()` turns known reader-visible degradation into `EffectEgressIncompleteError`.

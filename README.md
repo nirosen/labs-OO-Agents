@@ -62,6 +62,31 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Detector Receipt Scope Gate
+
+> Branch: `codex/security-detector-receipt-scope-gate`
+
+This slice wires the opt-in receipt scope helper into the example detector subprocess when an authority receipt pipe is present. The harness wraps the identity scorer with the supervisor-selected `run_id` before policy runs, so one stale authority receipt now becomes a visible `scored=False` refusal instead of being silently dropped by the scorer's same-run join. Receipt-free profiles keep their existing direct scorer path.
+
+```mermaid
+flowchart LR
+    S["supervisor-selected run_id"] --> G["receipt_scope_gated_scorer()"]
+    A["authority receipt pipe"] --> D["DetectorInput"]
+    D --> G
+    G -- "clean receipt scope" --> P["identity scorer"]
+    G -. "run_id_mismatch" .-> R["DetectorReport<br/>scored=False"]
+    P --> F["finding or no finding"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-local `receipt_scope_gated_scorer()`, an authority `stale_receipt_run_id` fault, focused harness tests, and README guidance for the new refusal path |
+| Security claim | The out-of-process identity example can fail closed on a visible mismatched receipt `run_id` before application policy consumes the supplied receipt copies. |
+| Non-claim | This is not automatic `DetectorInput` enforcement, receipt authentication, source authentication, coverage proof, sandboxing, or attestation. The demo refusal text includes raw run and receipt identifiers; real deployments must decide whether that text may cross a process boundary. |
+| Base slice | `codex/security-receipt-scope-validation` |
+| Review files | `examples/security_hardening/detector_harness.py`, `examples/security_hardening/approval_authority.py`, `examples/security_hardening/identity_approval.py`, `tests/security/test_detector_harness.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_detector_harness.py tests/security/test_data_export_example.py tests/security/test_approval_authority.py`; `pytest tests/security`; `ruff check examples/security_hardening tests/security`; `pyright examples/security_hardening/detector_harness.py examples/security_hardening/approval_authority.py` |
+
 ## Security Review Follow-On: Receipt Scope Validation
 
 > Branch: `codex/security-receipt-scope-validation`

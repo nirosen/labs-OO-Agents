@@ -39,9 +39,9 @@ _AUTHORITY_SUMMARY_SCHEMA_VERSION: Literal["nooa-approval-authority-summary-exam
     "nooa-approval-authority-summary-example-v1"
 )
 _AUTHORITY_SOURCE: Literal["approval-authority"] = "approval-authority"
-_AUTHORITY_FAULTS = ("none", "exit_before_receipt")
+_AUTHORITY_FAULTS = ("none", "exit_before_receipt", "stale_receipt_run_id")
 DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES = 1024 * 1024
-AuthorityFault = Literal["none", "exit_before_receipt"]
+AuthorityFault = Literal["none", "exit_before_receipt", "stale_receipt_run_id"]
 
 _APPROVED_REQUESTS: dict[str, tuple[str, str]] = {
     "req-approved": ("oncall-engineer", "prod-db"),
@@ -227,7 +227,8 @@ def issue_fd(
     if fault == "exit_before_receipt":
         raise SystemExit(4)
 
-    receipts = _receipts_for_response(request, response, run_id=run_id)
+    receipt_run_id = f"{run_id}/stale" if fault == "stale_receipt_run_id" else run_id
+    receipts = _receipts_for_response(request, response, run_id=receipt_run_id)
     receipt_document = AuthorityReceiptDocument(
         issued_token_count=len(receipts),
         receipts=receipts,
@@ -270,12 +271,14 @@ def _receipts_for_response(
     )
 
 
-def _read_bounded_json_document(
+def _read_bounded_json_document[
+    AuthorityDocumentT: (ApprovalRequestDocument, ApprovalResponseDocument)
+](
     fh: BinaryIO,
-    model: type[ApprovalRequestDocument] | type[ApprovalResponseDocument],
+    model: type[AuthorityDocumentT],
     *,
     max_document_bytes: int,
-) -> ApprovalRequestDocument | ApprovalResponseDocument:
+) -> AuthorityDocumentT:
     """Read one bounded JSON document into one authority model type."""
     max_document_bytes = _validate_max_document_bytes(max_document_bytes)
     payload = fh.read(max_document_bytes + 1)

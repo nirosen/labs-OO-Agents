@@ -319,6 +319,8 @@ def detect_grants_without_approval(
     receipts_by_request: dict[str, list[SecurityReceipt]] = {}
     for receipt in detector_input.receipts:
         request_id = receipt.attributes.get("request_id")
+        # Direct scorer callers still own receipt-scope policy. The subprocess
+        # detector harness can preflight a supplied bundle before this join.
         if (
             receipt.run_id == detector_input.run_id
             and receipt.receipt_type == RECEIPT_TYPE

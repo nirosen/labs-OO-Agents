@@ -12,10 +12,13 @@ running their application-local scorer.
 
 The split shows where a separately controlled detector and optional approval
 issuer can run. This branch expects V2 effect egress so EOF before
-writer-declared completion becomes a detector refusal. It does not authenticate
-pipe contents or terminators, make same-user subprocesses a trust boundary,
-provide sandboxing or attestation, prove that an issued token was honored, or
-turn detector findings into enforcement.
+writer-declared completion becomes a detector refusal. When an authority
+receipt pipe is present, the example also wraps the profile scorer with one
+receipt run-scope gate keyed by the supervisor-selected ``run_id`` so a stale
+receipt copy becomes a refusal before policy runs. It does not authenticate
+pipe contents, terminators, receipt sources, or refusal text; make same-user
+subprocesses a trust boundary; provide sandboxing or attestation; prove that
+an issued token was honored; or turn detector findings into enforcement.
 
     uv run python -m examples.security_hardening.detector_harness demo
 """
@@ -36,6 +39,7 @@ from typing import BinaryIO, Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from examples.security_hardening.approval_authority import (
+    _AUTHORITY_FAULTS,
     DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES,
     ApprovalRequestDocument,
     ApprovalResponseDocument,
@@ -86,6 +90,7 @@ from nooa.security import (
     DetectorInput,
     EffectEgressCompletenessSignal,
     ReceiptCoverage,
+    ReceiptScopeError,
     SecurityFinding,
     detector_input_from_egress,
     framework_guard_observer,
@@ -93,6 +98,8 @@ from nooa.security import (
     install_effect_recorder,
     install_effect_sink,
     read_effect_egress,
+    require_valid_receipt_scope,
+    validate_receipt_scope,
 )
 
 _DETECTOR_REPORT_SCHEMA_VERSION: Literal["nooa-detector-harness-example-v3"] = (
@@ -313,6 +320,42 @@ def score_detector_input(
     )
 
 
+def receipt_scope_gated_scorer(
+    scorer: DetectorScorer,
+    *,
+    expected_run_id: str,
+) -> DetectorScorer:
+    """Wrap one scorer with an example-local receipt run-scope gate.
+
+    The expected scope comes from the supervisor-selected run identifier, not
+    from the detector input itself. The wrapper converts visible receipt scope
+    drift into the same example-local refusal path used for policy refusals.
+    It does not authenticate the scope, receipt source, or refusal text.
+    """
+    if not callable(scorer):
+        raise TypeError(
+            "receipt_scope_gated_scorer expected callable scorer, "
+            f"got {type(scorer).__name__}"
+        )
+
+    def _score(detector_input: DetectorInput) -> tuple[SecurityFinding, ...]:
+        try:
+            require_valid_receipt_scope(
+                validate_receipt_scope(
+                    detector_input.receipts,
+                    expected_run_id=expected_run_id,
+                )
+            )
+        except ReceiptScopeError as exc:
+            raise UnscoreableDetectorInputError(
+                f"detector receipt scope gate refused input: {exc}"
+            ) from exc
+        # Keep scorer-owned refusals distinct from receipt-scope refusals.
+        return scorer(detector_input)
+
+    return _score
+
+
 def score_fd(
     effect_fd: int,
     receipt_fd: int | None,
@@ -324,6 +367,7 @@ def score_fd(
 ) -> DetectorReport:
     """Assemble one detector input from effect and receipt descriptors, then score it."""
     profile = _profile_from_name(profile_name)
+    scorer = profile.scorer
     receipts = ()
     receipt_source = ""
     receipt_coverage: ReceiptCoverage = "unknown"
@@ -338,6 +382,11 @@ def score_fd(
         receipt_source = receipt_document.receipt_source
         receipt_coverage = receipt_document.receipt_coverage
         issued_token_count = receipt_document.issued_token_count
+        if profile.uses_approval_authority:
+            scorer = receipt_scope_gated_scorer(
+                profile.scorer,
+                expected_run_id=run_id,
+            )
     with os.fdopen(effect_fd, "rb", closefd=True) as effect_fh:
         egress = read_effect_egress(
             effect_fh,
@@ -356,7 +405,7 @@ def score_fd(
         detector_input,
         victim_profile=profile.name,
         scorer_name=profile.scorer_name,
-        scorer=profile.scorer,
+        scorer=scorer,
         receipt_count=len(receipts),
         issued_token_count=issued_token_count,
     )
@@ -868,8 +917,8 @@ def _spawn_harness_subprocess(
 
 
 def _validate_authority_fault(fault: str) -> AuthorityFault:
-    if fault == "none" or fault == "exit_before_receipt":
-        return fault
+    if fault in _AUTHORITY_FAULTS:
+        return cast(AuthorityFault, fault)
     raise ValueError(f"unsupported authority fault: {fault}")
 
 
@@ -989,7 +1038,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=_VICTIM_FAULTS,
         default="none",
     )
-    demo_parser.add_argument("--authority-fault", choices=("none", "exit_before_receipt"), default="none")
+    demo_parser.add_argument(
+        "--authority-fault",
+        choices=_AUTHORITY_FAULTS,
+        default="none",
+    )
     demo_parser.add_argument("--emit-guard-effect", action="store_true")
     demo_parser.add_argument(
         "--max-receipt-bytes",
