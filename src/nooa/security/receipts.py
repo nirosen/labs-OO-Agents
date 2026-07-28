@@ -42,6 +42,12 @@ RECEIPT_ID_UNIQUENESS_SIGNALS: tuple[ReceiptIdUniquenessSignal, ...] = (
     "duplicate_receipt_id",
 )
 
+ReceiptSourceAlignmentSignal = Literal["receipt_source_mismatch"]
+# Tuple order is public because ReceiptSourceAlignmentError.reasons preserves it.
+RECEIPT_SOURCE_ALIGNMENT_SIGNALS: tuple[ReceiptSourceAlignmentSignal, ...] = (
+    "receipt_source_mismatch",
+)
+
 ReceiptScopeSignal = Literal["missing_run_id", "run_id_mismatch"]
 # Tuple order is public because ReceiptScopeError.reasons preserves it.
 RECEIPT_SCOPE_SIGNALS: tuple[ReceiptScopeSignal, ...] = (
@@ -487,6 +493,144 @@ def require_valid_receipt_id_uniqueness(
         )
     if receipt_id_uniqueness_signals(validation):
         raise ReceiptIdUniquenessError(validation)
+    return validation.receipts
+
+
+@dataclass(frozen=True)
+class ReceiptSourceAlignmentValidation:
+    """Source-alignment diagnostics for one materialized receipt iterable.
+
+    This result preserves the input order in ``receipts`` and reports only
+    supplied rows whose ``source`` differs from one caller-supplied
+    ``expected_source`` exact string. Both the row values and the expected
+    value are producer-controlled unless a caller supplies an independently
+    trusted value, so agreement is coherence rather than provenance.
+
+    Case, whitespace, and Unicode normalization remain caller policy. A clean
+    empty result means only that no supplied receipt contradicted this one
+    expected-source requirement. It does not prove that no receipts exist or
+    that collection was complete.
+
+    Direct construction only asserts these diagnostic fields; it does not
+    perform the check that :func:`validate_receipt_source_alignment` performs.
+    """
+
+    receipts: tuple[SecurityReceipt, ...]
+    expected_source: str
+    mismatched_source_receipt_ids: tuple[str, ...] = ()
+
+
+class ReceiptSourceAlignmentError(RuntimeError):
+    """Raised when supplied receipts do not match one expected source string.
+
+    This error reports only diagnostics visible in a
+    :class:`ReceiptSourceAlignmentValidation`. It does not establish receipt
+    authenticity, collection coverage, or semantic correctness.
+    """
+
+    def __init__(self, validation: ReceiptSourceAlignmentValidation) -> None:
+        if not isinstance(validation, ReceiptSourceAlignmentValidation):
+            raise TypeError(
+                "ReceiptSourceAlignmentError expected ReceiptSourceAlignmentValidation, "
+                f"got {type(validation).__name__}"
+            )
+        reasons = receipt_source_alignment_signals(validation)
+        if not reasons:
+            raise ValueError(
+                "ReceiptSourceAlignmentError requires at least one alignment signal"
+            )
+        self.expected_source = validation.expected_source
+        self.mismatched_source_receipt_ids = validation.mismatched_source_receipt_ids
+        self.reasons = reasons
+        super().__init__(
+            "receipt rows do not match expected source: "
+            f"expected_source={validation.expected_source!r}, "
+            "mismatched_source_receipt_ids="
+            f"{validation.mismatched_source_receipt_ids!r}"
+        )
+
+
+def receipt_source_alignment_signals(
+    validation: ReceiptSourceAlignmentValidation,
+) -> tuple[ReceiptSourceAlignmentSignal, ...]:
+    """Return canonical source-alignment diagnostics for one receipt iterable."""
+    if not isinstance(validation, ReceiptSourceAlignmentValidation):
+        raise TypeError(
+            "receipt_source_alignment_signals expected ReceiptSourceAlignmentValidation, "
+            f"got {type(validation).__name__}"
+        )
+    signals: list[ReceiptSourceAlignmentSignal] = []
+    if validation.mismatched_source_receipt_ids:
+        signals.append("receipt_source_mismatch")
+    return tuple(signals)
+
+
+def validate_receipt_source_alignment(
+    receipts: Iterable[SecurityReceipt],
+    *,
+    expected_source: str,
+) -> ReceiptSourceAlignmentValidation:
+    """Materialize receipts and report exact source-label inconsistencies.
+
+    ``receipts`` is consumed once, preserved in input order, and stored as the
+    tuple returned by :func:`require_valid_receipt_source_alignment` when no
+    alignment signal is present. ``expected_source`` must be a non-empty
+    caller-selected exact string; this helper does not mint or authenticate it.
+
+    The helper checks only that each supplied receipt carries a ``source``
+    exactly equal to ``expected_source``. Both the row source values and the
+    expected value are producer-controlled unless a caller supplies an
+    independently trusted value, so agreement is coherence rather than
+    provenance. It does not authenticate receipts or sources; prove that the
+    receipts originated from the named source; establish alignment across
+    bundles, runs, or sources; dereference or correlate source labels against
+    any external system; or prove receipt coverage.
+    """
+    if not isinstance(expected_source, str):
+        raise TypeError(
+            "validate_receipt_source_alignment expected str expected_source, "
+            f"got {type(expected_source).__name__}"
+        )
+    if not expected_source:
+        raise ValueError(
+            "validate_receipt_source_alignment requires non-empty expected_source"
+        )
+    if isinstance(receipts, (str, bytes, bytearray)) or not isinstance(receipts, Iterable):
+        raise TypeError(
+            "validate_receipt_source_alignment expected iterable of SecurityReceipt, "
+            f"got {type(receipts).__name__}"
+        )
+
+    materialized = tuple(receipts)
+    for index, receipt in enumerate(materialized):
+        if not isinstance(receipt, SecurityReceipt):
+            raise TypeError(
+                "validate_receipt_source_alignment expected SecurityReceipt at "
+                f"index {index}, got {type(receipt).__name__}"
+            )
+
+    return ReceiptSourceAlignmentValidation(
+        receipts=materialized,
+        expected_source=expected_source,
+        mismatched_source_receipt_ids=tuple(
+            receipt.receipt_id
+            for receipt in materialized
+            if receipt.source != expected_source
+        ),
+    )
+
+
+def require_valid_receipt_source_alignment(
+    validation: ReceiptSourceAlignmentValidation,
+) -> tuple[SecurityReceipt, ...]:
+    """Return supplied receipts or fail closed on visible source-label drift."""
+    if not isinstance(validation, ReceiptSourceAlignmentValidation):
+        raise TypeError(
+            "require_valid_receipt_source_alignment expected "
+            f"ReceiptSourceAlignmentValidation, got {type(validation).__name__}"
+        )
+    if receipt_source_alignment_signals(validation):
+        raise ReceiptSourceAlignmentError(validation)
     return validation.receipts
 
 

@@ -10,6 +10,27 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Receipt Source Alignment Follow-On
+
+`codex/security-receipt-source-alignment` adds the public opt-in `ReceiptSourceAlignmentValidation` helper and wires one detector-side `receipt_source_alignment_gated_scorer()` wrapper into the identity-approval profile after receipt-ID uniqueness and before receipt scope or profile policy. One `mislabel_receipt_source` authority fault rewrites an issued receipt copy before bundle write while keeping `declared_receipt_count` coherent, so the detector reaches the new source-label gate instead of confusing the case with transport or scope drift.
+
+```mermaid
+flowchart LR
+    B["complete ReceiptBundle rows"] --> I["receipt ID uniqueness gate"]
+    I --> A["validate_receipt_source_alignment()"]
+    A -- "exact source match" --> S["receipt scope gate"]
+    S --> P["identity scorer"]
+    A -. "receipt_source_mismatch" .-> X["scored=False"]
+```
+
+Run the source-mislabel fault:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario hardened_authorized --authority-fault mislabel_receipt_source
+```
+
+A clean result means only that every supplied receipt carried a `source` exactly equal to one caller-supplied `expected_source`. Both the row `source` values and the expected value are producer-controlled, so agreement between them is coherence, not provenance: a fully consistent bundle can still be fabricated. It does not authenticate receipts, sources, or the expected value; prove that the receipts originated from the named source; establish alignment across bundles, runs, or sources; dereference or correlate source labels against any external system; prove receipt coverage or that omitted receipts do not exist; or make the same-user authority subprocess a trust boundary. Case, whitespace, and Unicode normalization remain caller policy.
+
 ## Receipt ID Uniqueness Validation Follow-On
 
 `codex/security-receipt-id-uniqueness` adds the public opt-in `ReceiptIdUniquenessValidation` helper and wires one detector-side `receipt_id_uniqueness_gated_scorer()` wrapper into the identity-approval profile after receipt-bundle completeness and before receipt scope or profile policy. One `duplicate_receipt_id` authority fault copies an issued receipt before bundle write while keeping `declared_receipt_count` coherent, so the detector reaches the new intrinsic row-ID gate instead of confusing the case with transport or scope drift.

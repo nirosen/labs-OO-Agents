@@ -129,6 +129,26 @@ def test_duplicate_receipt_id_fault_duplicates_one_transport_copy_only() -> None
         _transport_receipts_for_fault((), fault="duplicate_receipt_id")
 
 
+def test_mislabel_receipt_source_fault_rewrites_one_transport_copy_only() -> None:
+    receipt = SecurityReceipt(
+        receipt_id="receipt-1",
+        receipt_type="identity.approval",
+        source="approval-authority",
+    )
+
+    transported = _transport_receipts_for_fault((receipt,), fault="mislabel_receipt_source")
+
+    assert transported[0].receipt_id == receipt.receipt_id
+    assert transported[0].source == "approval-authority/mislabel"
+    assert transported[0] is not receipt
+    assert receipt.source == "approval-authority"
+    with pytest.raises(
+        ValueError,
+        match="mislabel_receipt_source requires at least one authority receipt",
+    ):
+        _transport_receipts_for_fault((), fault="mislabel_receipt_source")
+
+
 def test_authority_request_and_response_readers_are_bounded() -> None:
     request = ApprovalRequestDocument(
         request_id="req-approved",

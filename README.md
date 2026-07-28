@@ -62,6 +62,30 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Receipt Source Alignment
+
+> Branch: `codex/security-receipt-source-alignment`
+
+This slice adds one opt-in public helper for a narrow receipt-coherence question: whether every supplied `SecurityReceipt.source` value exactly matches one caller-selected `expected_source`. The identity-approval detector path now runs that helper after receipt-ID uniqueness and before receipt scope or profile policy. The new `mislabel_receipt_source` authority fault rewrites one transported row source while keeping the bundle count coherent, so the refusal isolates source-label drift from transport completeness and run-scope diagnostics.
+
+```mermaid
+flowchart LR
+    B["complete ReceiptBundle rows"] --> I["validate_receipt_id_uniqueness()"]
+    I --> A["validate_receipt_source_alignment()"]
+    A -- "exact source match" --> S["validate_receipt_scope()"]
+    S --> P["profile scorer"]
+    A -. "receipt_source_mismatch" .-> X["scored=False"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `ReceiptSourceAlignmentValidation`, `ReceiptSourceAlignmentSignal`, `ReceiptSourceAlignmentError`, canonical `RECEIPT_SOURCE_ALIGNMENT_SIGNALS`, `validate_receipt_source_alignment()`, `require_valid_receipt_source_alignment()`, `receipt_source_alignment_signals()`, example-local `receipt_source_alignment_gated_scorer()`, and `mislabel_receipt_source` authority fault |
+| Security claim | Applications can opt into a fail-closed exact string check for one supplied receipt iterable, and the example detector refuses a visibly mislabeled receipt row after receipt-ID uniqueness and before receipt scope or profile policy runs. |
+| Non-claim | A clean result means only that every supplied receipt carried a `source` exactly equal to one caller-supplied `expected_source`. Both the row `source` values and the expected value are producer-controlled, so agreement between them is coherence, not provenance: a fully consistent bundle can still be fabricated. It does not authenticate receipts, sources, or the expected value; prove that the receipts originated from the named source; establish alignment across bundles, runs, or sources; dereference or correlate source labels against any external system; prove receipt coverage or that omitted receipts do not exist; or make the same-user authority subprocess a trust boundary. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v14` |
+| Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/approval_authority.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_receipts.py`, `tests/security/test_approval_authority.py`, `tests/security/test_detector_harness.py`, `tests/security/test_surface_guide.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_receipts.py tests/security/test_approval_authority.py tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/receipts.py examples/security_hardening/approval_authority.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Receipt ID Uniqueness Validation
 
 > Branch: `codex/security-receipt-id-uniqueness`
