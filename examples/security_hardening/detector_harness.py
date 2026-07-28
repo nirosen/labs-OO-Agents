@@ -24,9 +24,11 @@ becomes an explicit detector refusal before run-scope or profile policy runs.
 After the detector subprocess emits its report, the supervisor admits only a
 bounded report payload to parsing and checks both the report scope and finding
 row scopes against the supervisor-selected ``run_id`` before accepting the
-detector output as scored. That bound is a parse-admission check after
-``communicate()`` has already collected stdout; it is not a pre-read memory
-limit.
+detector output as scored. The supervisor also admits victim and authority
+summary payloads through their own bounded parse checks and rejects visible
+victim scenario drift before assembling ``DetectedScenario``. These bounds are
+parse-admission checks after ``communicate()`` has already collected stdout;
+they are not pre-read memory limits, and well-formed child lies remain possible.
 
     uv run python -m examples.security_hardening.detector_harness demo
 """
@@ -44,7 +46,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from examples.security_hardening.approval_authority import (
     _AUTHORITY_FAULTS,
@@ -130,8 +132,26 @@ _DETECTED_SCENARIO_SCHEMA_VERSION: Literal["nooa-detector-scenario-example-v3"] 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DETECTOR_RECEIPT_MAX_BYTES = DEFAULT_RECEIPT_BUNDLE_MAX_BYTES
 DEFAULT_DETECTOR_REPORT_MAX_BYTES = 1024 * 1024
+DEFAULT_VICTIM_SUMMARY_MAX_BYTES = 1024 * 1024
+DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES = 1024 * 1024
 _DETECTOR_FAULTS = ("none", "blank_finding_run_id", "stale_finding_run_id")
 DetectorFault = Literal["none", "blank_finding_run_id", "stale_finding_run_id"]
+_SUBPROCESS_OUTPUT_FAULTS = (
+    "none",
+    "malformed_detector_report",
+    "malformed_victim_summary",
+    "stale_victim_scenario",
+    "malformed_authority_summary",
+)
+SubprocessOutputFault = Literal[
+    "none",
+    "malformed_detector_report",
+    "malformed_victim_summary",
+    "stale_victim_scenario",
+    "malformed_authority_summary",
+]
+SupervisorAdmissionRole = Literal["victim", "authority"]
+SupervisorAdmissionReason = Literal["payload_too_large", "invalid_payload", "scenario_mismatch"]
 DetectorScorer = Callable[[DetectorInput], tuple[SecurityFinding, ...]]
 
 
@@ -248,6 +268,51 @@ class DetectorReport(BaseModel):
             if self.refusal_reason is None:
                 raise ValueError("refused detector report requires refusal_reason")
         return self
+
+
+class SupervisorAdmissionError(RuntimeError):
+    """Raised when one child summary cannot be admitted by the supervisor.
+
+    The error carries only supervisor-visible parse-admission facts. It does
+    not authenticate the child process, prove summary truth, or turn an echoed
+    field into trusted provenance.
+    """
+
+    def __init__(
+        self,
+        *,
+        role: SupervisorAdmissionRole,
+        reason: SupervisorAdmissionReason,
+        payload_bytes: int | None = None,
+        limit_name: str | None = None,
+        limit_value: int | None = None,
+        expected_scenario: str | None = None,
+        reported_scenario: str | None = None,
+    ) -> None:
+        self.role = role
+        self.reason = reason
+        self.payload_bytes = payload_bytes
+        self.limit_name = limit_name
+        self.limit_value = limit_value
+        self.expected_scenario = expected_scenario
+        self.reported_scenario = reported_scenario
+        if reason == "payload_too_large":
+            if payload_bytes is None or limit_name is None or limit_value is None:
+                raise ValueError("payload_too_large requires payload and limit facts")
+            detail = f"payload_bytes={payload_bytes} exceeds {limit_name}={limit_value}"
+            prefix = f"supervisor {role} summary parse admission refused output"
+        elif reason == "invalid_payload":
+            detail = "invalid summary payload"
+            prefix = f"supervisor {role} summary parse admission refused output"
+        else:
+            if expected_scenario is None or reported_scenario is None:
+                raise ValueError("scenario_mismatch requires expected and reported scenarios")
+            detail = (
+                f"expected_scenario={expected_scenario!r}, "
+                f"reported_scenario={reported_scenario!r}"
+            )
+            prefix = "supervisor victim summary scope gate refused output"
+        super().__init__(f"{prefix}: {detail}")
 
 
 class DetectedScenario(BaseModel):
@@ -524,6 +589,78 @@ def _inject_detector_fault(
     raise AssertionError(f"unhandled detector fault: {fault}")
 
 
+def _admit_summary_payload[SummaryModelT: BaseModel](
+    payload: str,
+    *,
+    role: SupervisorAdmissionRole,
+    model: type[SummaryModelT],
+    max_payload_bytes: int,
+    limit_name: str,
+) -> SummaryModelT:
+    """Parse one child summary after a supervisor-side byte admission check."""
+    payload_bytes = len(payload.encode("utf-8"))
+    if payload_bytes > max_payload_bytes:
+        raise SupervisorAdmissionError(
+            role=role,
+            reason="payload_too_large",
+            payload_bytes=payload_bytes,
+            limit_name=limit_name,
+            limit_value=max_payload_bytes,
+        )
+    try:
+        return model.model_validate_json(payload)
+    except ValidationError as exc:
+        raise SupervisorAdmissionError(role=role, reason="invalid_payload") from exc
+
+
+def _admit_victim_summary(
+    payload: str,
+    *,
+    expected_scenario: str,
+    max_summary_bytes: int,
+) -> VictimSummary:
+    """Admit one victim summary and reject visible scenario drift."""
+    if not isinstance(expected_scenario, str):
+        raise TypeError(
+            "_admit_victim_summary expected str expected_scenario, "
+            f"got {type(expected_scenario).__name__}"
+        )
+    if not expected_scenario:
+        raise ValueError("_admit_victim_summary requires non-empty expected_scenario")
+    max_summary_bytes = _validate_max_victim_summary_bytes(max_summary_bytes)
+    summary = _admit_summary_payload(
+        payload,
+        role="victim",
+        model=VictimSummary,
+        max_payload_bytes=max_summary_bytes,
+        limit_name="max_victim_summary_bytes",
+    )
+    if summary.scenario != expected_scenario:
+        raise SupervisorAdmissionError(
+            role="victim",
+            reason="scenario_mismatch",
+            expected_scenario=expected_scenario,
+            reported_scenario=summary.scenario,
+        )
+    return summary
+
+
+def _admit_authority_summary(
+    payload: str,
+    *,
+    max_summary_bytes: int,
+) -> AuthoritySummary:
+    """Admit one authority summary after a supervisor-side byte check."""
+    max_summary_bytes = _validate_max_authority_summary_bytes(max_summary_bytes)
+    return _admit_summary_payload(
+        payload,
+        role="authority",
+        model=AuthoritySummary,
+        max_payload_bytes=max_summary_bytes,
+        limit_name="max_authority_summary_bytes",
+    )
+
+
 def _admit_detector_report(
     payload: str,
     *,
@@ -552,7 +689,18 @@ def _admit_detector_report(
             ),
         )
 
-    report = DetectorReport.model_validate_json(payload)
+    try:
+        report = DetectorReport.model_validate_json(payload)
+    except ValidationError:
+        return _supervisor_refusal_report(
+            profile=profile,
+            input_id=input_id,
+            run_id=expected_run_id,
+            refusal_reason=(
+                "supervisor detector report parse admission refused output: "
+                "invalid DetectorReport payload"
+            ),
+        )
     if report.run_id != expected_run_id:
         return _supervisor_refuse_parsed_report(
             report,
@@ -608,6 +756,39 @@ def _supervisor_refusal_report(
         scored=False,
         refusal_reason=refusal_reason,
     )
+
+
+def _inject_subprocess_output_fault(
+    victim_stdout: str,
+    authority_stdout: str,
+    detector_stdout: str,
+    *,
+    fault: SubprocessOutputFault,
+    scenario: str,
+    profile: DetectorProfile,
+    victim_returncode: int,
+) -> tuple[str, str, str]:
+    """Corrupt one child stdout payload for supervisor admission tests."""
+    if fault == "none":
+        return victim_stdout, authority_stdout, detector_stdout
+    if fault == "malformed_detector_report":
+        return victim_stdout, authority_stdout, "{"
+    if fault in {"malformed_victim_summary", "stale_victim_scenario"}:
+        if victim_returncode != 0:
+            raise ValueError(f"{fault} requires a successful victim summary")
+        if fault == "malformed_victim_summary":
+            return "{", authority_stdout, detector_stdout
+        summary = VictimSummary.model_validate_json(victim_stdout)
+        return (
+            summary.model_copy(update={"scenario": f"{scenario}-stale"}).model_dump_json(),
+            authority_stdout,
+            detector_stdout,
+        )
+    if fault == "malformed_authority_summary":
+        if not profile.uses_approval_authority:
+            raise ValueError(f"{profile.name} profile does not emit an authority summary")
+        return victim_stdout, "{", detector_stdout
+    raise AssertionError(f"unhandled subprocess output fault: {fault}")
 
 
 async def run_victim_with_authority_to_fd(
@@ -775,10 +956,13 @@ def run_detected_scenario(
     victim_fault: VictimFault = "none",
     authority_fault: AuthorityFault = "none",
     detector_fault: DetectorFault = "none",
+    subprocess_output_fault: SubprocessOutputFault = "none",
     emit_guard_effect: bool = False,
     max_receipt_bytes: int = DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     max_authority_document_bytes: int = DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES,
     max_detector_report_bytes: int = DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    max_victim_summary_bytes: int = DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
+    max_authority_summary_bytes: int = DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES,
     timeout: float = 10.0,
 ) -> DetectedScenario:
     """Run one configured victim profile and detector over supervisor-owned pipes."""
@@ -786,6 +970,7 @@ def run_detected_scenario(
     victim_fault = _validate_victim_fault(victim_fault)
     authority_fault = _validate_authority_fault(authority_fault)
     detector_fault = _validate_detector_fault(detector_fault)
+    subprocess_output_fault = _validate_subprocess_output_fault(subprocess_output_fault)
     max_receipt_bytes = _validate_max_receipt_bytes(max_receipt_bytes)
     max_authority_document_bytes = _validate_max_authority_document_bytes(
         max_authority_document_bytes
@@ -793,8 +978,17 @@ def run_detected_scenario(
     max_detector_report_bytes = _validate_max_detector_report_bytes(
         max_detector_report_bytes
     )
+    max_victim_summary_bytes = _validate_max_victim_summary_bytes(max_victim_summary_bytes)
+    max_authority_summary_bytes = _validate_max_authority_summary_bytes(
+        max_authority_summary_bytes
+    )
     if not profile.uses_approval_authority and authority_fault != "none":
         raise ValueError(f"{profile.name} profile does not use an approval authority")
+    if (
+        not profile.uses_approval_authority
+        and subprocess_output_fault == "malformed_authority_summary"
+    ):
+        raise ValueError(f"{profile.name} profile does not emit an authority summary")
 
     run_id = f"{profile.run_id_prefix}/{scenario}"
     input_id = f"detector-input-{scenario}"
@@ -955,11 +1149,31 @@ def run_detected_scenario(
             _subprocess_failure_message("detector", detector.returncode, detector_stderr)
         )
 
+    victim_stdout, authority_stdout, detector_stdout = _inject_subprocess_output_fault(
+        victim_stdout,
+        authority_stdout,
+        detector_stdout,
+        fault=subprocess_output_fault,
+        scenario=scenario,
+        profile=profile,
+        victim_returncode=victim.returncode,
+    )
     victim_summary = (
-        VictimSummary.model_validate_json(victim_stdout) if victim.returncode == 0 else None
+        _admit_victim_summary(
+            victim_stdout,
+            expected_scenario=scenario,
+            max_summary_bytes=max_victim_summary_bytes,
+        )
+        if victim.returncode == 0
+        else None
     )
     authority_summary = (
-        AuthoritySummary.model_validate_json(authority_stdout) if authority is not None else None
+        _admit_authority_summary(
+            authority_stdout,
+            max_summary_bytes=max_authority_summary_bytes,
+        )
+        if authority is not None
+        else None
     )
     detector_report = _admit_detector_report(
         detector_stdout,
@@ -1150,6 +1364,12 @@ def _validate_detector_fault(fault: str) -> DetectorFault:
     raise ValueError(f"unsupported detector fault: {fault}")
 
 
+def _validate_subprocess_output_fault(fault: str) -> SubprocessOutputFault:
+    if fault in _SUBPROCESS_OUTPUT_FAULTS:
+        return cast(SubprocessOutputFault, fault)
+    raise ValueError(f"unsupported subprocess output fault: {fault}")
+
+
 def _profile_from_name(profile_name: str) -> DetectorProfile:
     """Return one configured detector profile by stable example-local name."""
     try:
@@ -1207,6 +1427,30 @@ def _validate_max_detector_report_bytes(max_report_bytes: int) -> int:
     if max_report_bytes <= 0:
         raise ValueError("detector harness requires max_detector_report_bytes > 0")
     return max_report_bytes
+
+
+def _validate_max_victim_summary_bytes(max_summary_bytes: int) -> int:
+    """Validate one positive strict integer victim summary parse budget."""
+    if not isinstance(max_summary_bytes, int) or isinstance(max_summary_bytes, bool):
+        raise TypeError(
+            "detector harness expected int max_victim_summary_bytes, "
+            f"got {type(max_summary_bytes).__name__}"
+        )
+    if max_summary_bytes <= 0:
+        raise ValueError("detector harness requires max_victim_summary_bytes > 0")
+    return max_summary_bytes
+
+
+def _validate_max_authority_summary_bytes(max_summary_bytes: int) -> int:
+    """Validate one positive strict integer authority summary parse budget."""
+    if not isinstance(max_summary_bytes, int) or isinstance(max_summary_bytes, bool):
+        raise TypeError(
+            "detector harness expected int max_authority_summary_bytes, "
+            f"got {type(max_summary_bytes).__name__}"
+        )
+    if max_summary_bytes <= 0:
+        raise ValueError("detector harness requires max_authority_summary_bytes > 0")
+    return max_summary_bytes
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1293,6 +1537,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=_DETECTOR_FAULTS,
         default="none",
     )
+    demo_parser.add_argument(
+        "--subprocess-output-fault",
+        choices=_SUBPROCESS_OUTPUT_FAULTS,
+        default="none",
+    )
     demo_parser.add_argument("--emit-guard-effect", action="store_true")
     demo_parser.add_argument(
         "--max-receipt-bytes",
@@ -1308,6 +1557,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--max-detector-report-bytes",
         type=int,
         default=DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    )
+    demo_parser.add_argument(
+        "--max-victim-summary-bytes",
+        type=int,
+        default=DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
+    )
+    demo_parser.add_argument(
+        "--max-authority-summary-bytes",
+        type=int,
+        default=DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES,
     )
     demo_parser.add_argument("--timeout", type=float, default=10.0)
 
@@ -1382,10 +1641,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             victim_fault=cast(VictimFault, args.victim_fault),
             authority_fault=cast(AuthorityFault, args.authority_fault),
             detector_fault=cast(DetectorFault, args.detector_fault),
+            subprocess_output_fault=cast(SubprocessOutputFault, args.subprocess_output_fault),
             emit_guard_effect=args.emit_guard_effect,
             max_receipt_bytes=args.max_receipt_bytes,
             max_authority_document_bytes=args.max_authority_document_bytes,
             max_detector_report_bytes=args.max_detector_report_bytes,
+            max_victim_summary_bytes=args.max_victim_summary_bytes,
+            max_authority_summary_bytes=args.max_authority_summary_bytes,
             timeout=args.timeout,
         )
     except RuntimeError as exc:

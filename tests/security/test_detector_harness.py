@@ -16,19 +16,27 @@ from examples.security_hardening.approval_authority import (
 from examples.security_hardening.data_export import EXPORT_EFFECT_TYPE
 from examples.security_hardening.detector_harness import (
     _IDENTITY_PROFILE,
+    DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES,
     DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
     DetectedScenario,
     DetectorReport,
+    SupervisorAdmissionError,
+    _admit_authority_summary,
     _admit_detector_report,
+    _admit_victim_summary,
     _validate_detector_fault,
+    _validate_max_authority_summary_bytes,
     _validate_max_detector_report_bytes,
+    _validate_max_victim_summary_bytes,
+    _validate_subprocess_output_fault,
     receipt_scope_gated_scorer,
     run_detected_scenario,
     score_detector_input,
     score_fd,
 )
-from examples.security_hardening.effect_collector import run_collected_scenario
+from examples.security_hardening.effect_collector import VictimSummary, run_collected_scenario
 from examples.security_hardening.identity_approval import (
     EFFECT_TYPE,
     detect_grants_without_approval,
@@ -398,6 +406,142 @@ def test_supervisor_refuses_detector_report_scope_before_finding_scope() -> None
     assert "reported_run_id='run-stale'" in admitted.refusal_reason
 
 
+def test_supervisor_refuses_malformed_detector_report_payload() -> None:
+    admitted = _admit_detector_report(
+        "{",
+        profile=_IDENTITY_PROFILE,
+        input_id="detector-input-1",
+        expected_run_id="run-current",
+        max_report_bytes=DEFAULT_DETECTOR_REPORT_MAX_BYTES,
+    )
+
+    assert admitted.run_id == "run-current"
+    assert admitted.scored is False
+    assert admitted.findings == ()
+    assert admitted.refusal_reason is not None
+    assert "supervisor detector report parse admission refused output" in (
+        admitted.refusal_reason
+    )
+    assert "invalid DetectorReport payload" in admitted.refusal_reason
+
+
+def test_supervisor_admits_victim_summary_and_refuses_visible_scenario_drift() -> None:
+    payload = (
+        VictimSummary(
+            scenario="vulnerable_attack",
+            decision="allowed",
+            decision_source="backend",
+            backend_event_count=1,
+        ).model_dump_json()
+    )
+
+    assert (
+        _admit_victim_summary(
+            payload,
+            expected_scenario="vulnerable_attack",
+            max_summary_bytes=DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
+        ).scenario
+        == "vulnerable_attack"
+    )
+
+    with pytest.raises(SupervisorAdmissionError) as exc_info:
+        _admit_victim_summary(
+            payload,
+            expected_scenario="hardened_authorized",
+            max_summary_bytes=DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
+        )
+
+    assert exc_info.value.role == "victim"
+    assert exc_info.value.reason == "scenario_mismatch"
+    assert exc_info.value.expected_scenario == "hardened_authorized"
+    assert exc_info.value.reported_scenario == "vulnerable_attack"
+    assert "supervisor victim summary scope gate refused output" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("admit", "payload", "kwargs", "role", "limit_name"),
+    [
+        (
+            _admit_victim_summary,
+            "{",
+            {
+                "expected_scenario": "vulnerable_attack",
+                "max_summary_bytes": DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
+            },
+            "victim",
+            "max_victim_summary_bytes",
+        ),
+        (
+            _admit_authority_summary,
+            "{",
+            {"max_summary_bytes": DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES},
+            "authority",
+            "max_authority_summary_bytes",
+        ),
+    ],
+)
+def test_supervisor_summary_admission_refuses_malformed_payloads(
+    admit: object,
+    payload: str,
+    kwargs: dict[str, object],
+    role: str,
+    limit_name: str,
+) -> None:
+    with pytest.raises(SupervisorAdmissionError) as exc_info:
+        admit(payload, **kwargs)  # type: ignore[operator]
+
+    assert exc_info.value.role == role
+    assert exc_info.value.reason == "invalid_payload"
+    assert exc_info.value.limit_name is None
+    assert limit_name not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("admit", "payload", "kwargs", "role", "limit_name"),
+    [
+        (
+            _admit_victim_summary,
+            VictimSummary(
+                scenario="vulnerable_attack",
+                decision="allowed",
+                decision_source="backend",
+                backend_event_count=1,
+            ).model_dump_json(),
+            {"expected_scenario": "vulnerable_attack", "max_summary_bytes": 1},
+            "victim",
+            "max_victim_summary_bytes",
+        ),
+        (
+            _admit_authority_summary,
+            AuthoritySummary(
+                request_count=1,
+                issued_token_count=1,
+                receipt_count=1,
+                receipt_ids=("receipt-1",),
+            ).model_dump_json(),
+            {"max_summary_bytes": 1},
+            "authority",
+            "max_authority_summary_bytes",
+        ),
+    ],
+)
+def test_supervisor_summary_admission_refuses_over_bound_payloads(
+    admit: object,
+    payload: str,
+    kwargs: dict[str, object],
+    role: str,
+    limit_name: str,
+) -> None:
+    with pytest.raises(SupervisorAdmissionError) as exc_info:
+        admit(payload, **kwargs)  # type: ignore[operator]
+
+    assert exc_info.value.role == role
+    assert exc_info.value.reason == "payload_too_large"
+    assert exc_info.value.limit_name == limit_name
+    assert exc_info.value.limit_value == 1
+    assert f"{limit_name}=1" in str(exc_info.value)
+
+
 def test_detected_partial_tail_crash_preserves_refusal_outside_victim() -> None:
     result = run_detected_scenario(
         "vulnerable_attack",
@@ -494,6 +638,62 @@ def test_detected_scenario_refuses_detector_report_over_parse_admission_budget()
     assert "max_detector_report_bytes=1" in result.detector.refusal_reason
 
 
+def test_detected_scenario_refuses_malformed_detector_report_payload() -> None:
+    result = run_detected_scenario(
+        "vulnerable_attack",
+        subprocess_output_fault="malformed_detector_report",
+    )
+
+    assert result.detector_returncode == 0
+    assert result.detector.scored is False
+    assert result.detector.findings == ()
+    assert result.detector.refusal_reason is not None
+    assert "invalid DetectorReport payload" in result.detector.refusal_reason
+
+
+@pytest.mark.parametrize(
+    ("subprocess_output_fault", "role", "reason"),
+    [
+        ("malformed_victim_summary", "victim", "invalid_payload"),
+        ("stale_victim_scenario", "victim", "scenario_mismatch"),
+        ("malformed_authority_summary", "authority", "invalid_payload"),
+    ],
+)
+def test_detected_scenario_refuses_invalid_child_summaries(
+    subprocess_output_fault: str,
+    role: str,
+    reason: str,
+) -> None:
+    with pytest.raises(SupervisorAdmissionError) as exc_info:
+        run_detected_scenario(
+            "vulnerable_attack",
+            subprocess_output_fault=subprocess_output_fault,  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.role == role
+    assert exc_info.value.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "role", "limit_name"),
+    [
+        ({"max_victim_summary_bytes": 1}, "victim", "max_victim_summary_bytes"),
+        ({"max_authority_summary_bytes": 1}, "authority", "max_authority_summary_bytes"),
+    ],
+)
+def test_detected_scenario_refuses_over_bound_child_summaries(
+    kwargs: dict[str, object],
+    role: str,
+    limit_name: str,
+) -> None:
+    with pytest.raises(SupervisorAdmissionError) as exc_info:
+        run_detected_scenario("vulnerable_attack", **kwargs)  # type: ignore[arg-type]
+
+    assert exc_info.value.role == role
+    assert exc_info.value.reason == "payload_too_large"
+    assert exc_info.value.limit_name == limit_name
+
+
 @pytest.mark.parametrize(
     ("value", "error_type"),
     [
@@ -512,9 +712,32 @@ def test_validate_max_detector_report_bytes_rejects_invalid_values(
         _validate_max_detector_report_bytes(value)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("validator", "value", "error_type"),
+    [
+        (_validate_max_victim_summary_bytes, 0, ValueError),
+        (_validate_max_victim_summary_bytes, True, TypeError),
+        (_validate_max_authority_summary_bytes, -1, ValueError),
+        (_validate_max_authority_summary_bytes, "1024", TypeError),
+    ],
+)
+def test_validate_summary_parse_budgets_reject_invalid_values(
+    validator: object,
+    value: object,
+    error_type: type[Exception],
+) -> None:
+    with pytest.raises(error_type):
+        validator(value)  # type: ignore[operator]
+
+
 def test_validate_detector_fault_rejects_unknown_value() -> None:
     with pytest.raises(ValueError, match="unsupported detector fault"):
         _validate_detector_fault("not-a-fault")
+
+
+def test_validate_subprocess_output_fault_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="unsupported subprocess output fault"):
+        _validate_subprocess_output_fault("not-a-fault")
 
 
 def test_detected_exit_between_frames_refuses_missing_stream_end() -> None:
@@ -645,3 +868,15 @@ def test_default_detector_report_parse_budget_is_large_enough_for_clean_report()
     report = run_detected_scenario("vulnerable_attack").detector
 
     assert len(report.model_dump_json().encode("utf-8")) < DEFAULT_DETECTOR_REPORT_MAX_BYTES
+
+
+def test_default_summary_parse_budgets_are_large_enough_for_clean_outputs() -> None:
+    result = run_detected_scenario("vulnerable_attack")
+
+    assert result.victim is not None
+    assert result.authority is not None
+    assert len(result.victim.model_dump_json().encode("utf-8")) < DEFAULT_VICTIM_SUMMARY_MAX_BYTES
+    assert (
+        len(result.authority.model_dump_json().encode("utf-8"))
+        < DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES
+    )
