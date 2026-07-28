@@ -1,0 +1,310 @@
+{
+  "schema_version": "nooa-receipt-bundle-conformance-v1",
+  "wire_schema_version": "nooa-receipt-bundle-v1",
+  "bundle_keys": [
+    "schema_version",
+    "receipt_source",
+    "receipt_coverage",
+    "declared_receipt_count",
+    "receipts"
+  ],
+  "receipt_keys": [
+    "schema_version",
+    "receipt_id",
+    "receipt_type",
+    "source",
+    "run_id",
+    "target",
+    "effect_type",
+    "issued_at",
+    "attributes"
+  ],
+  "completeness_signals": [
+    "truncated",
+    "receipt_count_mismatch"
+  ],
+  "max_json_integer": 9007199254740991,
+  "default_max_bundle_bytes": 1048576,
+  "default_max_receipts": 1048576,
+  "max_bundle_bytes_includes_terminating_lf": true,
+  "receipts": {
+    "receipt_a": {
+      "schema_version": "nooa-receipt-v1",
+      "receipt_id": "receipt-a",
+      "receipt_type": "approval.issued",
+      "source": "approval-authority",
+      "run_id": "assessment-1",
+      "target": "contractor@prod-db",
+      "effect_type": "identity.grant",
+      "issued_at": "2026-07-27T00:00:00Z",
+      "attributes": {
+        "request_id": "req-1",
+        "approved": true
+      }
+    },
+    "receipt_payload_encoding": {
+      "schema_version": "nooa-receipt-v1",
+      "receipt_id": "receipt-encoding",
+      "receipt_type": "export.caf\u00e9-\u6f22",
+      "source": "collector-caf\u00e9-\u6f22",
+      "run_id": "assessment-encoding",
+      "target": "s3://caf\u00e9-\u6f22",
+      "effect_type": "data.export",
+      "issued_at": "2026-07-27T00:00:01Z",
+      "attributes": {
+        "ratio": 0.1,
+        "big": 9007199254740991,
+        "nested": {
+          "label": "caf\u00e9-\u6f22"
+        }
+      }
+    }
+  },
+  "writer_vectors": [
+    {
+      "name": "empty_bundle",
+      "bundle_kwargs": {
+        "receipt_source": "",
+        "receipt_coverage": "unknown",
+        "declared_receipt_count": 0
+      },
+      "receipt_refs": [],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "single_receipt",
+      "bundle_kwargs": {
+        "receipt_source": "approval-authority",
+        "receipt_coverage": "asserted_complete",
+        "declared_receipt_count": 1
+      },
+      "receipt_refs": [
+        "receipt_a"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"approval-authority\",\"receipt_coverage\":\"asserted_complete\",\"declared_receipt_count\":1,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-a\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}}]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "payload_encoding",
+      "bundle_kwargs": {
+        "receipt_source": "collector-caf\u00e9-\u6f22",
+        "receipt_coverage": "partial",
+        "declared_receipt_count": 1
+      },
+      "receipt_refs": [
+        "receipt_payload_encoding"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"collector-caf\u00e9-\u6f22\",\"receipt_coverage\":\"partial\",\"declared_receipt_count\":1,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-encoding\",\"receipt_type\":\"export.caf\u00e9-\u6f22\",\"source\":\"collector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"effect_type\":\"data.export\",\"issued_at\":\"2026-07-27T00:00:01Z\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "multi_receipt",
+      "bundle_kwargs": {
+        "receipt_source": "mixed-collector",
+        "receipt_coverage": "partial",
+        "declared_receipt_count": 2
+      },
+      "receipt_refs": [
+        "receipt_a",
+        "receipt_payload_encoding"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"mixed-collector\",\"receipt_coverage\":\"partial\",\"declared_receipt_count\":2,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-a\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}},{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-encoding\",\"receipt_type\":\"export.caf\u00e9-\u6f22\",\"source\":\"collector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"effect_type\":\"data.export\",\"issued_at\":\"2026-07-27T00:00:01Z\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "declared_count_mismatch",
+      "bundle_kwargs": {
+        "receipt_source": "approval-authority",
+        "receipt_coverage": "asserted_complete",
+        "declared_receipt_count": 2
+      },
+      "receipt_refs": [
+        "receipt_a"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"approval-authority\",\"receipt_coverage\":\"asserted_complete\",\"declared_receipt_count\":2,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-a\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}}]}\n",
+      "expect": {
+        "completeness_signals": [
+          "receipt_count_mismatch"
+        ]
+      }
+    }
+  ],
+  "reader_vectors": [
+    {
+      "name": "internal_json_whitespace",
+      "bundle_kwargs": {
+        "receipt_source": "approval-authority",
+        "receipt_coverage": "asserted_complete",
+        "declared_receipt_count": 1
+      },
+      "receipt_refs": [
+        "receipt_a"
+      ],
+      "payload_utf8": "{ \"schema_version\" : \"nooa-receipt-bundle-v1\" , \"receipt_source\" : \"approval-authority\" , \"receipt_coverage\" : \"asserted_complete\" , \"declared_receipt_count\" : 1 , \"receipts\" : [ { \"schema_version\" : \"nooa-receipt-v1\" , \"receipt_id\" : \"receipt-a\" , \"receipt_type\" : \"approval.issued\" , \"source\" : \"approval-authority\" , \"run_id\" : \"assessment-1\" , \"target\" : \"contractor@prod-db\" , \"effect_type\" : \"identity.grant\" , \"issued_at\" : \"2026-07-27T00:00:00Z\" , \"attributes\" : { \"request_id\" : \"req-1\" , \"approved\" : true } } ] }\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "exact_document_byte_budget",
+      "max_bundle_bytes": 134,
+      "bundle_kwargs": {
+        "receipt_source": "",
+        "receipt_coverage": "unknown",
+        "declared_receipt_count": 0
+      },
+      "receipt_refs": [],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "later_document_unread",
+      "bundle_kwargs": {
+        "receipt_source": "",
+        "receipt_coverage": "unknown",
+        "declared_receipt_count": 0
+      },
+      "receipt_refs": [],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"approval-authority\",\"receipt_coverage\":\"asserted_complete\",\"declared_receipt_count\":1,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-a\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}}]}\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": [],
+        "remaining_payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"approval-authority\",\"receipt_coverage\":\"asserted_complete\",\"declared_receipt_count\":1,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-a\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}}]}\n"
+      }
+    },
+    {
+      "name": "one_byte_under_document_budget",
+      "max_bundle_bytes": 133,
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "input_too_large_error",
+        "limit_name": "max_bundle_bytes",
+        "limit_value": 133
+      }
+    },
+    {
+      "name": "receipt_count_budget",
+      "max_receipts": 1,
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"mixed-collector\",\"receipt_coverage\":\"partial\",\"declared_receipt_count\":2,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-a\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}},{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-encoding\",\"receipt_type\":\"export.caf\u00e9-\u6f22\",\"source\":\"collector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"effect_type\":\"data.export\",\"issued_at\":\"2026-07-27T00:00:01Z\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "outcome": "input_too_large_error",
+        "limit_name": "max_receipts",
+        "limit_value": 1
+      }
+    },
+    {
+      "name": "exact_receipt_count_budget",
+      "max_receipts": 2,
+      "bundle_kwargs": {
+        "receipt_source": "mixed-collector",
+        "receipt_coverage": "partial",
+        "declared_receipt_count": 2
+      },
+      "receipt_refs": [
+        "receipt_a",
+        "receipt_payload_encoding"
+      ],
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"mixed-collector\",\"receipt_coverage\":\"partial\",\"declared_receipt_count\":2,\"receipts\":[{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-a\",\"receipt_type\":\"approval.issued\",\"source\":\"approval-authority\",\"run_id\":\"assessment-1\",\"target\":\"contractor@prod-db\",\"effect_type\":\"identity.grant\",\"issued_at\":\"2026-07-27T00:00:00Z\",\"attributes\":{\"request_id\":\"req-1\",\"approved\":true}},{\"schema_version\":\"nooa-receipt-v1\",\"receipt_id\":\"receipt-encoding\",\"receipt_type\":\"export.caf\u00e9-\u6f22\",\"source\":\"collector-caf\u00e9-\u6f22\",\"run_id\":\"assessment-encoding\",\"target\":\"s3://caf\u00e9-\u6f22\",\"effect_type\":\"data.export\",\"issued_at\":\"2026-07-27T00:00:01Z\",\"attributes\":{\"ratio\":0.1,\"big\":9007199254740991,\"nested\":{\"label\":\"caf\u00e9-\u6f22\"}}}]}\n",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": true,
+        "truncated": false,
+        "completeness_signals": []
+      }
+    },
+    {
+      "name": "truncated_document",
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": false,
+        "truncated": true,
+        "completeness_signals": [
+          "truncated"
+        ]
+      }
+    },
+    {
+      "name": "empty_stream",
+      "payload_utf8": "",
+      "expect": {
+        "outcome": "ok",
+        "bundle_present": false,
+        "truncated": true,
+        "completeness_signals": [
+          "truncated"
+        ]
+      }
+    },
+    {
+      "name": "invalid_receipt_coverage",
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v1\",\"receipt_source\":\"\",\"receipt_coverage\":\"bogus\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "invalid_utf8",
+      "payload_base64": "eyJzY2hlbWFfdmVyc2lvbiI6Im5vb2EtcmVjZWlwdC1idW5kbGUtdjEiLCJyZWNlaXB0X3NvdXJjZSI6Iv8iLCJyZWNlaXB0X2NvdmVyYWdlIjoidW5rbm93biIsImRlY2xhcmVkX3JlY2VpcHRfY291bnQiOjAsInJlY2VpcHRzIjpbXX0K",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "future_version",
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v2\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "unsupported_version_error",
+        "schema_version": "nooa-receipt-bundle-v2"
+      }
+    },
+    {
+      "name": "future_version_double_digit",
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v10\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "unsupported_version_error",
+        "schema_version": "nooa-receipt-bundle-v10"
+      }
+    },
+    {
+      "name": "zero_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v0\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "prerelease_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":\"nooa-receipt-bundle-v2-beta\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    },
+    {
+      "name": "prefixed_version_is_invalid",
+      "payload_utf8": "{\"schema_version\":\"xnooa-receipt-bundle-v2\",\"receipt_source\":\"\",\"receipt_coverage\":\"unknown\",\"declared_receipt_count\":0,\"receipts\":[]}\n",
+      "expect": {
+        "outcome": "invalid_document_error"
+      }
+    }
+  ]
+}

@@ -10,6 +10,20 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Receipt Bundle Conformance Vectors Follow-On
+
+`codex/security-receipt-bundle-conformance-vectors` adds checked reference vectors for the public receipt-bundle transport without changing `src/nooa/**`. The fixture pins representative `write_receipt_bundle()` bytes, including LF termination, ordered keys, compact UTF-8 encoding, multi-receipt arrays, and declared-count mismatch, then exercises `read_receipt_bundle()` against selected clean, over-bound, invalid UTF-8, malformed, and version-classified documents.
+
+```mermaid
+flowchart LR
+    F["receipt bundle fixture"] --> W["writer bytes"]
+    F --> R["reader outcomes"]
+    W --> C["LF JSON contract"]
+    R --> D["bundle / signals / errors"]
+```
+
+These vectors are regression references, not a trust claim. A byte-conforming bundle can still be forged or semantically false, a clean result still does not prove collection completeness, and independent writers remain free to use different accepted JSON formatting.
+
 ## Receipt Bundle Transport Follow-On
 
 `codex/security-receipt-bundle-transport` replaces the harness's example-local receipt JSON reader with the public `ReceiptBundle` transport. The authority emits one bounded LF-terminated bundle, the detector reads it through `read_receipt_bundle()`, and `require_complete_receipt_bundle()` refuses a truncated or declared-count-mismatched document before the example reaches receipt run-scope or profile policy.

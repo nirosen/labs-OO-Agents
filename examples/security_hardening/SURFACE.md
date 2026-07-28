@@ -60,6 +60,8 @@ The public receipt-bundle completeness signals are ordered:
 | `truncated` | EOF arrived before the required LF document terminator. |
 | `receipt_count_mismatch` | `declared_receipt_count` differs from the receipt copies parsed from the document. |
 
+The checked receipt-bundle vectors in `tests/security/fixtures/receipt_bundle_conformance_v1.json` pin representative writer bytes and selected reader outcomes for the current contract: compact LF-terminated UTF-8 output, multi-receipt arrays, declared-count mismatch, accepted internal JSON whitespace, one-document stream position, exact byte and receipt budgets, visible truncation, invalid UTF-8, malformed model values, and future-version classification. They are regression references for this implementation's current wire behavior, not authenticity proofs, exhaustive malformed-input coverage, or a requirement that independent writers copy NOOA's exact accepted formatting.
+
 A clean result means only that the reader saw one terminated document with a matching declared count. The writer can still omit receipts before declaring a truthful count, forge a source label, or emit semantically false receipt copies. The bundle gate does not authenticate bytes, prove collection coverage, establish run scope, enforce receipt-id uniqueness, correlate receipts to effects, or make an empty clean bundle evidence that no receipts exist.
 
 ## Receipt Scope Validation
