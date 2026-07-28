@@ -8,7 +8,8 @@ end. The identity-approval profile also wires a separate approval authority and
 receipt pipe; the data-export profile leaves those unwired and scores a
 receipt-free destination policy. Both profiles construct one
 :class:`~nooa.security.DetectorInput` inside the same detector code path before
-running their application-local scorer.
+running their application-local scorer, then emit report metadata on stdout and
+finding rows through a separate :class:`~nooa.security.FindingBundle`.
 
 The split shows where a separately controlled detector and optional approval
 issuer can run. This branch expects V2 effect egress so EOF before
@@ -16,19 +17,22 @@ writer-declared completion becomes a detector refusal. When an authority
 receipt pipe is present, the example also wraps the profile scorer with one
 receipt run-scope gate keyed by the supervisor-selected ``run_id`` so a stale
 receipt copy becomes a refusal before policy runs. It does not authenticate
-pipe contents, receipt sources, or refusal text; make same-user subprocesses a
+channel contents, receipt sources, or refusal text; make same-user subprocesses a
 trust boundary; provide sandboxing or attestation; prove that an issued token
 was honored; or turn detector findings into enforcement. The receipt path now
 uses the public LF-terminated bundle reader so EOF before the bundle terminator
 becomes an explicit detector refusal before run-scope or profile policy runs.
-After the detector subprocess emits its report, the supervisor admits only a
-bounded report payload to parsing and checks both the report scope and finding
-row scopes against the supervisor-selected ``run_id`` before accepting the
-detector output as scored. The supervisor also admits victim and authority
-summary payloads through their own bounded parse checks and rejects visible
-victim scenario drift before assembling ``DetectedScenario``. These bounds are
+After the detector subprocess emits its report and finding bundle, the
+supervisor admits only a bounded report payload to parsing, reads one bounded
+LF-terminated finding document from a supervisor-owned temporary file,
+cross-checks ``declared_finding_count``, and checks both report and finding row
+scopes against the supervisor-selected ``run_id`` before accepting the detector
+output as scored. The supervisor also admits victim and authority summary
+payloads through their own bounded parse checks and rejects visible victim
+scenario drift before assembling ``DetectedScenario``. The stdout bounds are
 parse-admission checks after ``communicate()`` has already collected stdout;
-they are not pre-read memory limits, and well-formed child lies remain possible.
+the finding-bundle bound applies when the supervisor later reads the temporary
+file. Neither makes well-formed child lies impossible.
 
     uv run python -m examples.security_hardening.detector_harness demo
 """
@@ -44,7 +48,8 @@ from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Self, cast
+from tempfile import TemporaryFile
+from typing import BinaryIO, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -94,13 +99,20 @@ from examples.security_hardening.identity_approval import (
     observe_identity_grant,
 )
 from nooa.security import (
+    DEFAULT_FINDING_BUNDLE_MAX_BYTES,
     DEFAULT_RECEIPT_BUNDLE_MAX_BYTES,
     EFFECT_EGRESS_COMPLETENESS_SIGNALS,
     EFFECT_EGRESS_SCHEMA_VERSION_V2,
+    FINDING_BUNDLE_COMPLETENESS_SIGNALS,
     RECEIPT_BUNDLE_COMPLETENESS_SIGNALS,
     DetectorInput,
     EffectEgressCompletenessSignal,
     EffectEgressReadResult,
+    FindingBundle,
+    FindingBundleCompletenessSignal,
+    FindingBundleIncompleteError,
+    FindingBundleInputTooLargeError,
+    FindingBundleReadResult,
     FindingScopeError,
     ReceiptBundleCompletenessSignal,
     ReceiptBundleIncompleteError,
@@ -109,33 +121,50 @@ from nooa.security import (
     ReceiptScopeError,
     SecurityFinding,
     detector_input_from_egress,
+    finding_bundle_completeness_signals,
     framework_guard_observer,
     install_agent_call_effect_recorder,
     install_effect_recorder,
     install_effect_sink,
     read_effect_egress,
+    read_finding_bundle,
     read_receipt_bundle,
     receipt_bundle_completeness_signals,
+    require_complete_finding_bundle,
     require_complete_receipt_bundle,
     require_valid_finding_scope,
     require_valid_receipt_scope,
     validate_finding_scope,
     validate_receipt_scope,
+    write_finding_bundle,
 )
 
-_DETECTOR_REPORT_SCHEMA_VERSION: Literal["nooa-detector-harness-example-v3"] = (
-    "nooa-detector-harness-example-v3"
+_DETECTOR_REPORT_SCHEMA_VERSION: Literal["nooa-detector-harness-example-v4"] = (
+    "nooa-detector-harness-example-v4"
 )
-_DETECTED_SCENARIO_SCHEMA_VERSION: Literal["nooa-detector-scenario-example-v3"] = (
-    "nooa-detector-scenario-example-v3"
+_DETECTED_SCENARIO_SCHEMA_VERSION: Literal["nooa-detector-scenario-example-v4"] = (
+    "nooa-detector-scenario-example-v4"
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DETECTOR_RECEIPT_MAX_BYTES = DEFAULT_RECEIPT_BUNDLE_MAX_BYTES
+DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES = DEFAULT_FINDING_BUNDLE_MAX_BYTES
 DEFAULT_DETECTOR_REPORT_MAX_BYTES = 1024 * 1024
 DEFAULT_VICTIM_SUMMARY_MAX_BYTES = 1024 * 1024
 DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES = 1024 * 1024
-_DETECTOR_FAULTS = ("none", "blank_finding_run_id", "stale_finding_run_id")
-DetectorFault = Literal["none", "blank_finding_run_id", "stale_finding_run_id"]
+_DETECTOR_FAULTS = (
+    "none",
+    "blank_finding_run_id",
+    "stale_finding_run_id",
+    "truncate_finding_document",
+    "drop_finding_count_mismatch",
+)
+DetectorFault = Literal[
+    "none",
+    "blank_finding_run_id",
+    "stale_finding_run_id",
+    "truncate_finding_document",
+    "drop_finding_count_mismatch",
+]
 _SUBPROCESS_OUTPUT_FAULTS = (
     "none",
     "malformed_detector_report",
@@ -205,7 +234,7 @@ class DetectorReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["nooa-detector-harness-example-v3"] = (
+    schema_version: Literal["nooa-detector-harness-example-v4"] = (
         _DETECTOR_REPORT_SCHEMA_VERSION
     )
     victim_profile: str = Field(min_length=1)
@@ -216,13 +245,15 @@ class DetectorReport(BaseModel):
     effect_egress_completeness_gate_passed: bool = False
     receipt_bundle_completeness_signals: tuple[ReceiptBundleCompletenessSignal, ...] = ()
     receipt_bundle_completeness_gate_passed: bool = False
+    finding_bundle_completeness_signals: tuple[FindingBundleCompletenessSignal, ...] = ()
+    finding_bundle_completeness_gate_passed: bool = False
     receipt_source: str = ""
     receipt_coverage: ReceiptCoverage = "unknown"
     receipt_count: int = Field(default=0, ge=0)
     declared_receipt_count: int | None = Field(default=None, ge=0)
+    declared_finding_count: int | None = Field(default=None, ge=0)
     scored: bool
     refusal_reason: str | None = None
-    findings: tuple[SecurityFinding, ...] = ()
 
     @model_validator(mode="after")
     def _validate_report(self) -> Self:
@@ -260,11 +291,28 @@ class DetectorReport(BaseModel):
                 "receipt_bundle_completeness_gate_passed cannot be true when "
                 "receipt_bundle_completeness_signals is non-empty"
             )
+        canonical_finding_bundle_signals = tuple(
+            signal
+            for signal in FINDING_BUNDLE_COMPLETENESS_SIGNALS
+            if signal in self.finding_bundle_completeness_signals
+        )
+        if self.finding_bundle_completeness_signals != canonical_finding_bundle_signals:
+            raise ValueError(
+                "finding_bundle_completeness_signals must use canonical unique order"
+            )
+        if (
+            self.finding_bundle_completeness_gate_passed
+            and self.finding_bundle_completeness_signals
+        ):
+            raise ValueError(
+                "finding_bundle_completeness_gate_passed cannot be true when "
+                "finding_bundle_completeness_signals is non-empty"
+            )
         if self.scored and self.refusal_reason is not None:
             raise ValueError("scored detector report cannot carry refusal_reason")
+        if self.scored and self.declared_finding_count is None:
+            raise ValueError("scored detector report requires declared_finding_count")
         if not self.scored:
-            if self.findings:
-                raise ValueError("refused detector report cannot carry findings")
             if self.refusal_reason is None:
                 raise ValueError("refused detector report requires refusal_reason")
         return self
@@ -322,13 +370,14 @@ class DetectedScenario(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["nooa-detector-scenario-example-v3"] = (
+    schema_version: Literal["nooa-detector-scenario-example-v4"] = (
         _DETECTED_SCENARIO_SCHEMA_VERSION
     )
     victim_profile: str = Field(min_length=1)
     victim: VictimSummary | None = None
     authority: AuthoritySummary | None = None
     detector: DetectorReport
+    findings: tuple[SecurityFinding, ...] = ()
     victim_returncode: int
     authority_returncode: int | None = None
     detector_returncode: int
@@ -356,6 +405,13 @@ class DetectedScenario(BaseModel):
                 raise ValueError("detected scenario requires a successful authority subprocess")
         if self.detector_returncode != 0:
             raise ValueError("detected scenario requires a successful detector subprocess")
+        if not self.detector.scored and self.findings:
+            raise ValueError("refused detector scenario cannot carry findings")
+        if (
+            self.detector.declared_finding_count is not None
+            and self.detector.declared_finding_count != len(self.findings)
+        ):
+            raise ValueError("declared_finding_count must match admitted findings")
         return self
 
 
@@ -369,8 +425,8 @@ def score_detector_input(
     declared_receipt_count: int | None = None,
     receipt_bundle_completeness_signals: tuple[ReceiptBundleCompletenessSignal, ...] = (),
     receipt_bundle_completeness_gate_passed: bool = False,
-) -> DetectorReport:
-    """Run the example-local deterministic scorer over one detector input."""
+) -> tuple[DetectorReport, FindingBundle]:
+    """Run one scorer and return report metadata plus out-of-band finding rows."""
     if not isinstance(detector_input, DetectorInput):
         raise TypeError(
             "score_detector_input expected DetectorInput, "
@@ -395,15 +451,25 @@ def score_detector_input(
     try:
         findings = scorer(detector_input)
     except UnscoreableDetectorInputError as exc:
-        return DetectorReport(
-            **report_fields,
-            scored=False,
-            refusal_reason=str(exc),
+        return (
+            DetectorReport(
+                **report_fields,
+                declared_finding_count=0,
+                scored=False,
+                refusal_reason=str(exc),
+            ),
+            FindingBundle(producer=scorer_name),
         )
-    return DetectorReport(
-        **report_fields,
-        scored=True,
-        findings=findings,
+    return (
+        DetectorReport(
+            **report_fields,
+            declared_finding_count=len(findings),
+            scored=True,
+        ),
+        FindingBundle(
+            producer=scorer_name,
+            findings=findings,
+        ),
     )
 
 
@@ -446,6 +512,7 @@ def receipt_scope_gated_scorer(
 def score_fd(
     effect_fd: int,
     receipt_fd: int | None,
+    finding_fd: int,
     *,
     profile_name: str = _IDENTITY_PROFILE.name,
     run_id: str,
@@ -453,7 +520,7 @@ def score_fd(
     max_receipt_bytes: int = DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     fault: DetectorFault = "none",
 ) -> DetectorReport:
-    """Assemble one detector input from effect and receipt descriptors, then score it."""
+    """Assemble one detector input, emit one finding bundle, then return report metadata."""
     profile = _profile_from_name(profile_name)
     fault = _validate_detector_fault(fault)
     with os.fdopen(effect_fd, "rb", closefd=True) as effect_fh:
@@ -478,7 +545,7 @@ def score_fd(
         try:
             receipt_bundle = require_complete_receipt_bundle(receipt_bundle_result)
         except ReceiptBundleIncompleteError as exc:
-            return _receipt_bundle_refusal_report(
+            report = _receipt_bundle_refusal_report(
                 profile=profile,
                 input_id=input_id,
                 run_id=run_id,
@@ -486,6 +553,12 @@ def score_fd(
                 receipt_bundle_result=receipt_bundle_result,
                 refusal_reason=f"detector receipt bundle completeness gate refused input: {exc}",
             )
+            _write_detector_finding_bundle(
+                finding_fd,
+                FindingBundle(producer=profile.scorer_name),
+                fault=fault,
+            )
+            return report
         receipts = receipt_bundle.receipts
         receipt_source = receipt_bundle.receipt_source
         receipt_coverage = cast(ReceiptCoverage, receipt_bundle.receipt_coverage)
@@ -505,7 +578,7 @@ def score_fd(
         receipt_coverage=receipt_coverage,
         require_complete=False,
     )
-    report = score_detector_input(
+    report, finding_bundle = score_detector_input(
         detector_input,
         victim_profile=profile.name,
         scorer_name=profile.scorer_name,
@@ -515,7 +588,14 @@ def score_fd(
         receipt_bundle_completeness_signals=receipt_bundle_signals,
         receipt_bundle_completeness_gate_passed=receipt_bundle_gate_passed,
     )
-    return _inject_detector_fault(report, fault=fault, run_id=run_id)
+    report, finding_bundle = _inject_detector_fault(
+        report,
+        finding_bundle,
+        fault=fault,
+        run_id=run_id,
+    )
+    _write_detector_finding_bundle(finding_fd, finding_bundle, fault=fault)
+    return report
 
 
 def _receipt_bundle_refusal_report(
@@ -556,6 +636,7 @@ def _receipt_bundle_refusal_report(
         declared_receipt_count=(
             bundle.declared_receipt_count if bundle is not None else None
         ),
+        declared_finding_count=0,
         scored=False,
         refusal_reason=refusal_reason,
     )
@@ -563,32 +644,60 @@ def _receipt_bundle_refusal_report(
 
 def _inject_detector_fault(
     report: DetectorReport,
+    finding_bundle: FindingBundle,
     *,
     fault: DetectorFault,
     run_id: str,
-) -> DetectorReport:
+) -> tuple[DetectorReport, FindingBundle]:
     """Apply one example-only detector output fault after scoring."""
     if fault == "none":
-        return report
+        return report, finding_bundle
     if not report.scored:
         raise ValueError(f"{fault} requires a scored detector report")
-    if not report.findings:
+    if not finding_bundle.findings:
         raise ValueError(f"{fault} requires at least one detector finding")
     if fault in {"blank_finding_run_id", "stale_finding_run_id"}:
-        first, *remaining = report.findings
+        first, *remaining = finding_bundle.findings
         faulted_finding = SecurityFinding.model_validate(
             {
                 **first.model_dump(mode="python"),
                 "run_id": "" if fault == "blank_finding_run_id" else f"{run_id}/stale",
             }
         )
-        return DetectorReport.model_validate(
+        return report, FindingBundle.model_validate(
             {
-                **report.model_dump(mode="python"),
+                **finding_bundle.model_dump(mode="python"),
                 "findings": (faulted_finding, *remaining),
             }
         )
+    if fault == "drop_finding_count_mismatch":
+        return report, FindingBundle.model_validate(
+            {
+                **finding_bundle.model_dump(mode="python"),
+                "findings": tuple(finding_bundle.findings[1:]),
+            }
+        )
+    if fault == "truncate_finding_document":
+        return report, finding_bundle
     raise AssertionError(f"unhandled detector fault: {fault}")
+
+
+def _write_detector_finding_bundle(
+    finding_fd: int,
+    finding_bundle: FindingBundle,
+    *,
+    fault: DetectorFault,
+) -> None:
+    """Write the detector's finding bundle to its dedicated inherited descriptor."""
+    with os.fdopen(finding_fd, "wb", closefd=True) as finding_fh:
+        if fault == "truncate_finding_document":
+            payload = finding_bundle.model_dump_json().encode("utf-8")
+            written = finding_fh.write(payload)
+            if written != len(payload):
+                raise OSError(f"finding bundle writer wrote {written} of {len(payload)} bytes")
+            finding_fh.flush()
+            return
+        write_finding_bundle(finding_fh, finding_bundle)
 
 
 def _admit_summary_payload[SummaryModelT: BaseModel](
@@ -711,19 +820,106 @@ def _admit_detector_report(
                 f"expected_run_id={expected_run_id!r}, reported_run_id={report.run_id!r}"
             ),
         )
+    return report
+
+
+def _admit_finding_bundle(
+    fh: BinaryIO,
+    *,
+    report: DetectorReport,
+    expected_run_id: str,
+    max_bundle_bytes: int,
+) -> tuple[DetectorReport, tuple[SecurityFinding, ...]]:
+    """Read one finding bundle and fail closed on visible cross-channel drift."""
+    max_bundle_bytes = _validate_max_finding_bundle_bytes(max_bundle_bytes)
+    try:
+        result = read_finding_bundle(fh, max_bundle_bytes=max_bundle_bytes)
+    except FindingBundleInputTooLargeError as exc:
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=f"supervisor finding bundle parse admission refused output: {exc}",
+            ),
+            (),
+        )
+    except ValueError:
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=(
+                    "supervisor finding bundle parse admission refused output: "
+                    "invalid FindingBundle payload"
+                ),
+            ),
+            (),
+        )
+    report = _with_finding_bundle_diagnostics(report, result, gate_passed=False)
+    try:
+        bundle = require_complete_finding_bundle(result)
+    except FindingBundleIncompleteError as exc:
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=f"supervisor finding bundle completeness gate refused output: {exc}",
+            ),
+            (),
+        )
+    report = _with_finding_bundle_diagnostics(report, result, gate_passed=True)
+    if report.declared_finding_count != len(bundle.findings):
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=(
+                    "supervisor finding bundle count gate refused output: "
+                    f"declared_finding_count={report.declared_finding_count!r}, "
+                    f"finding_count={len(bundle.findings)!r}"
+                ),
+            ),
+            (),
+        )
     try:
         require_valid_finding_scope(
             validate_finding_scope(
-                report.findings,
+                bundle.findings,
                 expected_run_id=expected_run_id,
             )
         )
     except FindingScopeError as exc:
-        return _supervisor_refuse_parsed_report(
-            report,
-            refusal_reason=f"supervisor finding scope gate refused output: {exc}",
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=f"supervisor finding scope gate refused output: {exc}",
+            ),
+            (),
         )
-    return report
+    if not report.scored and bundle.findings:
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=(
+                    "supervisor finding bundle coherence gate refused output: "
+                    "refused detector report cannot carry findings"
+                ),
+            ),
+            (),
+        )
+    return report, bundle.findings
+
+
+def _with_finding_bundle_diagnostics(
+    report: DetectorReport,
+    result: FindingBundleReadResult,
+    *,
+    gate_passed: bool,
+) -> DetectorReport:
+    """Attach supervisor-visible finding bundle diagnostics to one parsed report."""
+    return DetectorReport.model_validate(
+        {
+            **report.model_dump(mode="python"),
+            "finding_bundle_completeness_signals": finding_bundle_completeness_signals(result),
+            "finding_bundle_completeness_gate_passed": gate_passed,
+        }
+    )
 
 
 def _supervisor_refuse_parsed_report(
@@ -731,12 +927,12 @@ def _supervisor_refuse_parsed_report(
     *,
     refusal_reason: str,
 ) -> DetectorReport:
-    """Preserve parsed report diagnostics while clearing unaccepted findings."""
+    """Preserve parsed report diagnostics while clearing unaccepted finding count."""
     return DetectorReport.model_validate(
         {
             **report.model_dump(mode="python"),
             "scored": False,
-            "findings": (),
+            "declared_finding_count": None,
             "refusal_reason": refusal_reason,
         }
     )
@@ -964,19 +1160,21 @@ def run_detected_scenario(
     subprocess_output_fault: SubprocessOutputFault = "none",
     emit_guard_effect: bool = False,
     max_receipt_bytes: int = DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
+    max_finding_bundle_bytes: int = DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
     max_authority_document_bytes: int = DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES,
     max_detector_report_bytes: int = DEFAULT_DETECTOR_REPORT_MAX_BYTES,
     max_victim_summary_bytes: int = DEFAULT_VICTIM_SUMMARY_MAX_BYTES,
     max_authority_summary_bytes: int = DEFAULT_AUTHORITY_SUMMARY_MAX_BYTES,
     timeout: float = 10.0,
 ) -> DetectedScenario:
-    """Run one configured victim profile and detector over supervisor-owned pipes."""
+    """Run one configured victim profile and detector over supervisor-owned channels."""
     profile = _profile_for_scenario(scenario)
     victim_fault = _validate_victim_fault(victim_fault)
     authority_fault = _validate_authority_fault(authority_fault)
     detector_fault = _validate_detector_fault(detector_fault)
     subprocess_output_fault = _validate_subprocess_output_fault(subprocess_output_fault)
     max_receipt_bytes = _validate_max_receipt_bytes(max_receipt_bytes)
+    max_finding_bundle_bytes = _validate_max_finding_bundle_bytes(max_finding_bundle_bytes)
     max_authority_document_bytes = _validate_max_authority_document_bytes(
         max_authority_document_bytes
     )
@@ -997,6 +1195,7 @@ def run_detected_scenario(
 
     run_id = f"{profile.run_id_prefix}/{scenario}"
     input_id = f"detector-input-{scenario}"
+    finding_file = TemporaryFile()
     effect_read_fd, effect_write_fd = os.pipe()
     open_fds = [effect_read_fd, effect_write_fd]
     effect_read_identity = _fd_identity(effect_read_fd)
@@ -1035,6 +1234,7 @@ def run_detected_scenario(
         detector = _spawn_detector_subprocess(
             effect_fd=effect_read_fd,
             receipt_fd=receipt_read_fd,
+            finding_fd=finding_file.fileno(),
             profile_name=profile.name,
             run_id=run_id,
             input_id=input_id,
@@ -1126,6 +1326,7 @@ def run_detected_scenario(
         _terminate_process(victim)
         _terminate_process(authority)
         _terminate_process(detector)
+        finding_file.close()
         raise
     finally:
         for fd in open_fds:
@@ -1143,59 +1344,73 @@ def run_detected_scenario(
         _terminate_process(victim)
         _terminate_process(authority)
         _terminate_process(detector)
+        finding_file.close()
         raise
 
-    if authority is not None and authority.returncode != 0:
-        raise RuntimeError(
-            _subprocess_failure_message("authority", authority.returncode, authority_stderr)
-        )
-    if detector.returncode != 0:
-        raise RuntimeError(
-            _subprocess_failure_message("detector", detector.returncode, detector_stderr)
-        )
+    try:
+        if authority is not None and authority.returncode != 0:
+            raise RuntimeError(
+                _subprocess_failure_message("authority", authority.returncode, authority_stderr)
+            )
+        if detector.returncode != 0:
+            raise RuntimeError(
+                _subprocess_failure_message("detector", detector.returncode, detector_stderr)
+            )
 
-    victim_stdout, authority_stdout, detector_stdout = _inject_subprocess_output_fault(
-        victim_stdout,
-        authority_stdout,
-        detector_stdout,
-        fault=subprocess_output_fault,
-        scenario=scenario,
-        profile=profile,
-        victim_returncode=victim.returncode,
-    )
-    victim_summary = (
-        _admit_victim_summary(
+        victim_stdout, authority_stdout, detector_stdout = _inject_subprocess_output_fault(
             victim_stdout,
-            expected_scenario=scenario,
-            max_summary_bytes=max_victim_summary_bytes,
-        )
-        if victim.returncode == 0
-        else None
-    )
-    authority_summary = (
-        _admit_authority_summary(
             authority_stdout,
-            max_summary_bytes=max_authority_summary_bytes,
+            detector_stdout,
+            fault=subprocess_output_fault,
+            scenario=scenario,
+            profile=profile,
+            victim_returncode=victim.returncode,
         )
-        if authority is not None
-        else None
-    )
-    detector_report = _admit_detector_report(
-        detector_stdout,
-        profile=profile,
-        input_id=input_id,
-        expected_run_id=run_id,
-        max_report_bytes=max_detector_report_bytes,
-    )
-    return DetectedScenario(
-        victim_profile=profile.name,
-        victim=victim_summary,
-        authority=authority_summary,
-        detector=detector_report,
-        victim_returncode=victim.returncode,
-        authority_returncode=authority.returncode if authority is not None else None,
-        detector_returncode=detector.returncode,
-    )
+        victim_summary = (
+            _admit_victim_summary(
+                victim_stdout,
+                expected_scenario=scenario,
+                max_summary_bytes=max_victim_summary_bytes,
+            )
+            if victim.returncode == 0
+            else None
+        )
+        authority_summary = (
+            _admit_authority_summary(
+                authority_stdout,
+                max_summary_bytes=max_authority_summary_bytes,
+            )
+            if authority is not None
+            else None
+        )
+        detector_report = _admit_detector_report(
+            detector_stdout,
+            profile=profile,
+            input_id=input_id,
+            expected_run_id=run_id,
+            max_report_bytes=max_detector_report_bytes,
+        )
+        findings: tuple[SecurityFinding, ...] = ()
+        if detector_report.declared_finding_count is not None:
+            finding_file.seek(0)
+            detector_report, findings = _admit_finding_bundle(
+                finding_file,
+                report=detector_report,
+                expected_run_id=run_id,
+                max_bundle_bytes=max_finding_bundle_bytes,
+            )
+        return DetectedScenario(
+            victim_profile=profile.name,
+            victim=victim_summary,
+            authority=authority_summary,
+            detector=detector_report,
+            findings=findings,
+            victim_returncode=victim.returncode,
+            authority_returncode=authority.returncode if authority is not None else None,
+            detector_returncode=detector.returncode,
+        )
+    finally:
+        finding_file.close()
 
 
 def format_result(result: DetectedScenario) -> str:
@@ -1230,7 +1445,7 @@ def format_result(result: DetectedScenario) -> str:
                 else "n/a"
             ),
             str(result.detector.scored),
-            str(len(result.detector.findings)),
+            str(len(result.findings)),
             result.detector.refusal_reason or "",
         ),
     ]
@@ -1274,6 +1489,7 @@ def _spawn_detector_subprocess(
     *,
     effect_fd: int,
     receipt_fd: int | None,
+    finding_fd: int,
     profile_name: str,
     run_id: str,
     input_id: str,
@@ -1285,6 +1501,8 @@ def _spawn_detector_subprocess(
         "detector",
         "--effect-fd",
         str(effect_fd),
+        "--finding-fd",
+        str(finding_fd),
         "--profile",
         profile_name,
         "--run-id",
@@ -1296,7 +1514,7 @@ def _spawn_detector_subprocess(
         "--fault",
         fault,
     ]
-    pass_fds = [effect_fd]
+    pass_fds = [effect_fd, finding_fd]
     if receipt_fd is not None:
         args.extend(["--receipt-fd", str(receipt_fd)])
         pass_fds.append(receipt_fd)
@@ -1410,6 +1628,18 @@ def _validate_max_receipt_bytes(max_receipt_bytes: int) -> int:
     return max_receipt_bytes
 
 
+def _validate_max_finding_bundle_bytes(max_bundle_bytes: int) -> int:
+    """Validate one positive strict integer finding-bundle budget."""
+    if not isinstance(max_bundle_bytes, int) or isinstance(max_bundle_bytes, bool):
+        raise TypeError(
+            "detector harness expected int max_finding_bundle_bytes, "
+            f"got {type(max_bundle_bytes).__name__}"
+        )
+    if max_bundle_bytes <= 0:
+        raise ValueError("detector harness requires max_finding_bundle_bytes > 0")
+    return max_bundle_bytes
+
+
 def _validate_max_authority_document_bytes(max_document_bytes: int) -> int:
     """Validate one positive strict integer authority document budget."""
     if not isinstance(max_document_bytes, int) or isinstance(max_document_bytes, bool):
@@ -1468,6 +1698,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     detector_parser.add_argument("--effect-fd", type=int, required=True)
     detector_parser.add_argument("--receipt-fd", type=int)
+    detector_parser.add_argument("--finding-fd", type=int, required=True)
     detector_parser.add_argument(
         "--profile",
         choices=tuple(_DETECTOR_PROFILES),
@@ -1554,6 +1785,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_DETECTOR_RECEIPT_MAX_BYTES,
     )
     demo_parser.add_argument(
+        "--max-finding-bundle-bytes",
+        type=int,
+        default=DEFAULT_DETECTOR_FINDING_BUNDLE_MAX_BYTES,
+    )
+    demo_parser.add_argument(
         "--max-authority-document-bytes",
         type=int,
         default=DEFAULT_AUTHORITY_DOCUMENT_MAX_BYTES,
@@ -1586,6 +1822,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             score_fd(
                 args.effect_fd,
                 args.receipt_fd,
+                args.finding_fd,
                 profile_name=args.profile,
                 run_id=args.run_id,
                 input_id=args.input_id,
@@ -1649,6 +1886,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             subprocess_output_fault=cast(SubprocessOutputFault, args.subprocess_output_fault),
             emit_guard_effect=args.emit_guard_effect,
             max_receipt_bytes=args.max_receipt_bytes,
+            max_finding_bundle_bytes=args.max_finding_bundle_bytes,
             max_authority_document_bytes=args.max_authority_document_bytes,
             max_detector_report_bytes=args.max_detector_report_bytes,
             max_victim_summary_bytes=args.max_victim_summary_bytes,

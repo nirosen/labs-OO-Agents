@@ -24,6 +24,35 @@ flowchart LR
 
 This is a conformance contract, not a trust claim. The pattern does not authenticate bytes, guarantee support for a matching future version, make malformed content recoverable, or change the current reader behavior.
 
+## Finding Bundle Handoff Follow-On
+
+`codex/security-finding-bundle-handoff` adds the public `FindingBundle` transport and moves detector rows out of the example-local `DetectorReport` JSON. The detector emits report metadata on stdout with `declared_finding_count`, writes one LF-terminated bundle through a dedicated inherited descriptor backed by a supervisor-owned temporary file, and the supervisor accepts rows only after bundle completeness, cross-channel count, and finding-scope gates all pass.
+
+```mermaid
+flowchart LR
+    D["detector subprocess"] --> R["DetectorReport stdout<br/>declared_finding_count"]
+    D --> W["write_finding_bundle()"]
+    W --> T["supervisor-owned<br/>temporary file"]
+    R --> A["report admission<br/>+ run_id check"]
+    T --> B["read_finding_bundle()<br/>+ completeness gate"]
+    A --> C["declared count check"]
+    B --> C
+    C --> S["validate_finding_scope()"]
+    S -- "accepted" --> O["DetectedScenario.findings"]
+    B -. "truncated / invalid / over-bound" .-> X["scored=False"]
+    C -. "count mismatch / refused report rows" .-> X
+    S -. "missing / stale run_id" .-> X
+```
+
+Run the new finding transport faults:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault truncate_finding_document
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault drop_finding_count_mismatch
+```
+
+The temporary file is a liveness choice for the example: the detector can finish its bundle write before the supervisor reads it, without a second stdout protocol or pipe backpressure. It is not a trust boundary. A clean bundle is only one terminated document with supplied rows; it is not a verdict, severity model, enforcement action, detector-coverage proof, finding-id uniqueness guarantee, or evidence-reference validator. `FindingBundle.producer` is a caller assertion and does not constrain row-level `SecurityFinding.producer`; an empty clean bundle is not evidence that nothing was found.
+
 ## Supervisor Output Admission Follow-On
 
 `codex/security-supervisor-output-admission` completes the detector harness supervisor's example-local parse boundary without adding a public `nooa.security` API. The supervisor now admits victim summary JSON, authority summary JSON, and detector report JSON through separate bounded checks after `communicate()` returns. Detector report parse failures reuse its existing `scored=False` refusal channel; victim and authority summary failures raise `SupervisorAdmissionError` before the harness builds `DetectedScenario`. The victim summary path also rejects visible drift in the echoed `scenario` field.
@@ -32,7 +61,7 @@ This is a conformance contract, not a trust claim. The pattern does not authenti
 flowchart LR
     V["victim summary JSON"] --> VA["bounded admission<br/>+ scenario check"]
     A["authority summary JSON"] --> AA["bounded admission"]
-    D["detector report JSON"] --> DA["bounded admission<br/>+ run/finding scope"]
+    D["detector report JSON"] --> DA["bounded admission<br/>+ report run scope"]
     VA -- "accepted" --> S["DetectedScenario"]
     AA -- "accepted" --> S
     DA -- "accepted" --> S
@@ -54,14 +83,15 @@ This is example hardening, not child authentication. All three payloads remain s
 
 ## Finding Scope Gate Follow-On
 
-`codex/security-finding-scope-gate` adds the opt-in finding scope helper and uses it at the supervisor side of the detector-report handoff. The detector still emits an ordinary `DetectorReport`; before `run_detected_scenario()` accepts that report, the supervisor admits only a bounded payload to parsing, checks the report `run_id`, and refuses blank-scoped or stale-scoped `SecurityFinding` rows against the supervisor-selected scope.
+`codex/security-finding-scope-gate` adds the opt-in finding scope helper and uses it at the supervisor side of the detector handoff. On the current branch, the later Finding Bundle Handoff above moves rows out of `DetectorReport` JSON: before `run_detected_scenario()` accepts them, the supervisor admits report metadata, reads the separate `FindingBundle`, checks the report `run_id`, and refuses blank-scoped or stale-scoped `SecurityFinding` rows against the supervisor-selected scope.
 
 ```mermaid
 flowchart LR
     S["supervisor-selected run_id"] --> A["report parse admission"]
-    D["detector report JSON"] --> A
+    D["detector report metadata"] --> A
     A --> R["report run_id check"]
-    R --> V["validate_finding_scope()"]
+    B["FindingBundle rows"] --> V["validate_finding_scope()"]
+    R --> V
     V -- "clean" --> Q["DetectedScenario"]
     R -. "mismatch" .-> X["scored=False"]
     V -. "missing / mismatch" .-> X
