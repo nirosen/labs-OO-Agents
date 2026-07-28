@@ -186,15 +186,18 @@ flowchart LR
 
 These vectors are interoperability regression references, not an authenticity claim. A conforming writer can still forge records or omit effects before closing, and an external writer can remain acceptable to the reader without copying NOOA's exact JSON formatting.
 
-## Security Review Joint Branch: End-to-End Detector Pipeline V6
+## Security Review Joint Branch: End-to-End Detector Pipeline V7
 
-`codex/security-hardening-e2e-detector-pipeline-v6` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress plus public receipt-bundle transport for reader-visible refusal semantics, refuses degraded receipt transport before receipt scope or identity policy runs, refuses visible stale authority receipt scope before identity policy runs, validates detector-report and finding scope at the supervisor boundary before accepting detector output, exercises the same detector handoff across identity approval and data export victims, and carries checked receipt-bundle conformance vectors for the new transport boundary.
+`codex/security-hardening-e2e-detector-pipeline-v7` is the current presentation branch for the full example composition. It adds no new runtime API beyond the smaller slices below. The current path keeps application authorization policy outside NOOA, moves detector scoring outside the victim process, uses V2 effect egress plus public receipt-bundle transport for reader-visible refusal semantics, refuses degraded receipt transport before receipt scope or identity policy runs, refuses visible stale authority receipt scope before identity policy runs, validates detector-report and finding scope at the supervisor boundary before accepting detector output, admits every parsed child stdout payload through example-local bounded checks, exercises the same detector handoff across identity approval and data export victims, and carries checked receipt-bundle conformance vectors for the new transport boundary.
 
 ```mermaid
 flowchart LR
     I["prompt injection<br/>or unsafe task context"] --> V1["identity victim"]
     I --> V2["export victim"]
+    V1 --> VS["victim summary JSON"]
+    V2 --> VS
     V1 --> A["approval authority<br/>identity only"]
+    A --> AS["authority summary JSON"]
     V1 --> EP["V2 effect pipe"]
     V2 --> EP
     A --> RP["ReceiptBundle pipe"]
@@ -210,19 +213,25 @@ flowchart LR
     DI --> S2["export scorer"]
     S1 --> RPT["DetectorReport JSON"]
     S2 --> RPT
-    RPT --> RA["report parse admission<br/>+ report run_id check"]
+    VS --> VA["victim summary admission<br/>+ scenario check"]
+    AS --> AA["authority summary admission"]
+    RPT --> RA["detector report admission<br/>+ report run_id check"]
     RA --> FG["finding scope gate"]
-    FG --> O["accepted detector output"]
-    ER -. "gap / truncation / missing end / count mismatch" .-> X["refused"]
+    VA --> O["DetectedScenario"]
+    AA --> O
+    FG --> O
+    ER -. "gap / truncation / missing end / count mismatch" .-> X["DetectorReport<br/>scored=False"]
     RR -. "truncated / receipt count mismatch" .-> X
     G -. "receipt run_id mismatch" .-> X
-    RA -. "over-bound / report run_id mismatch" .-> X
+    RA -. "over-bound / invalid / report run_id mismatch" .-> X
     FG -. "blank / mismatched finding run_id" .-> X
+    VA -. "over-bound / invalid / scenario drift" .-> Y["SupervisorAdmissionError"]
+    AA -. "over-bound / invalid" .-> Y
 ```
 
-The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v6). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes.
+The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v7). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes. The matrix includes only paths that return `DetectedScenario`; victim and authority summary admission faults remain exception-path coverage in `tests/security/test_detector_harness.py`.
 
-This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, a valid-looking V2 terminator or receipt bundle remains only as trustworthy as the boundary that produced it, count agreement does not prove omitted receipts did not happen, matching receipt or finding `run_id` values are not proof of authenticity, and the detector-report byte bound applies only after `communicate()` has already collected stdout.
+This is still a same-user, same-host example with no authentication, signing, sandboxing, attestation, production IAM boundary, or completeness proof. Two example victims do not establish general coverage, a valid-looking V2 terminator or receipt bundle remains only as trustworthy as the boundary that produced it, count agreement does not prove omitted receipts did not happen, matching receipt or finding `run_id` values are not proof of authenticity, a well-formed victim or authority summary can still lie, and the three stdout byte bounds apply only after `communicate()` has already collected stdout.
 
 ## V2 Effect Egress Stream-End Follow-On
 
