@@ -177,6 +177,8 @@ def test_receipt_bundle_conformance_fixture_matches_public_contract() -> None:
     for vector in version_vectors:
         expected = vector["expect"]
         schema_version = expected["schema_version"]
+        payload_value = json.loads(_vector_payload(vector)[:-1].decode("utf-8"))
+        assert payload_value["schema_version"] == schema_version
         fullmatch = (
             isinstance(schema_version, str)
             and re.fullmatch(RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN, schema_version)
