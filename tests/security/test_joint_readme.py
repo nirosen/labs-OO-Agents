@@ -13,6 +13,7 @@ import pytest
 from examples.security_hardening.approval_authority import AuthorityFault
 from examples.security_hardening.detector_harness import (
     DetectorFault,
+    FindingAdmissionRefusal,
     SubprocessOutputFault,
     run_detected_scenario,
 )
@@ -48,6 +49,7 @@ class _MatrixRow(NamedTuple):
     effect_signals: tuple[str, ...]
     receipt_signals: tuple[str, ...]
     finding_signals: tuple[str, ...]
+    finding_admission_refusal: FindingAdmissionRefusal | None
     scored: bool
     findings: int
 
@@ -68,14 +70,18 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
     rows: list[_MatrixRow] = []
     for line in lines[2:]:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        assert len(cells) == 11, line
+        assert len(cells) == 12, line
         effect_signals = ast.literal_eval(_strip_code(cells[6]))
         receipt_signals = ast.literal_eval(_strip_code(cells[7]))
         finding_signals = ast.literal_eval(_strip_code(cells[8]))
-        scored = ast.literal_eval(_strip_code(cells[9]))
+        finding_admission_refusal = ast.literal_eval(_strip_code(cells[9]))
+        scored = ast.literal_eval(_strip_code(cells[10]))
         assert isinstance(effect_signals, tuple)
         assert isinstance(receipt_signals, tuple)
         assert isinstance(finding_signals, tuple)
+        assert finding_admission_refusal is None or isinstance(
+            finding_admission_refusal, str
+        )
         assert isinstance(scored, bool)
         rows.append(
             _MatrixRow(
@@ -88,8 +94,11 @@ def _matrix_rows() -> tuple[_MatrixRow, ...]:
                 effect_signals=effect_signals,
                 receipt_signals=receipt_signals,
                 finding_signals=finding_signals,
+                finding_admission_refusal=cast(
+                    FindingAdmissionRefusal | None, finding_admission_refusal
+                ),
                 scored=scored,
-                findings=int(_strip_code(cells[10])),
+                findings=int(_strip_code(cells[11])),
             )
         )
     return tuple(rows)
@@ -100,7 +109,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
-    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V10" in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V11" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -111,6 +120,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V7" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V8" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V9" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V10" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
@@ -174,11 +184,12 @@ def test_joint_readme_matrix_reproduces_detector_paths() -> None:
         assert result.detector.effect_egress_completeness_signals == row.effect_signals
         assert result.detector.receipt_bundle_completeness_signals == row.receipt_signals
         assert result.detector.finding_bundle_completeness_signals == row.finding_signals
+        assert result.detector.finding_admission_refusal == row.finding_admission_refusal
         assert result.detector.scored is row.scored
         assert len(result.findings) == row.findings
 
 
-def test_joint_readme_keeps_id_uniqueness_refusal_in_fault_column() -> None:
+def test_joint_readme_exposes_id_uniqueness_refusal_stage() -> None:
     rows = _matrix_rows()
     duplicate_rows = tuple(row for row in rows if row.detector_fault == "duplicate_finding_id")
 
@@ -193,7 +204,24 @@ def test_joint_readme_keeps_id_uniqueness_refusal_in_fault_column() -> None:
             effect_signals=(),
             receipt_signals=(),
             finding_signals=(),
+            finding_admission_refusal="duplicate_finding_id",
             scored=False,
             findings=0,
         ),
     )
+
+
+def test_joint_readme_exposes_current_finding_admission_refusal_stages() -> None:
+    rows = _matrix_rows()
+    expected = {
+        "blank_finding_run_id": "scope_drift",
+        "stale_finding_run_id": "scope_drift",
+        "duplicate_finding_id": "duplicate_finding_id",
+        "drop_finding_count_mismatch": "count_mismatch",
+    }
+
+    assert {
+        row.detector_fault: row.finding_admission_refusal
+        for row in rows
+        if row.detector_fault in expected
+    } == expected
