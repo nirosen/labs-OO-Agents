@@ -15,6 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 from pydantic_core import PydanticSerializationError
 
 RECEIPT_BUNDLE_SCHEMA_VERSION: Literal["nooa-receipt-bundle-v1"] = "nooa-receipt-bundle-v1"
+RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN: str = r"nooa-receipt-bundle-v[1-9][0-9]*"
+RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE: Literal["full"] = "full"
 RECEIPT_BUNDLE_KEYS: frozenset[str] = frozenset(
     {
         "schema_version",
@@ -41,7 +43,7 @@ RECEIPT_SCOPE_SIGNALS: tuple[ReceiptScopeSignal, ...] = (
     "run_id_mismatch",
 )
 
-_RECEIPT_BUNDLE_SCHEMA_VERSION_RE = re.compile(r"nooa-receipt-bundle-v[1-9][0-9]*")
+_RECEIPT_BUNDLE_SCHEMA_VERSION_RE = re.compile(RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN)
 
 
 class SecurityReceipt(BaseModel):

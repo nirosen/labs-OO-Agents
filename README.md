@@ -62,6 +62,29 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Receipt Bundle Version Contract
+
+> Branch: `codex/security-receipt-bundle-version-contract`
+
+This slice changes no receipt-bundle parsing behavior. It publishes the version-token rule that `read_receipt_bundle()` already uses to distinguish a malformed `schema_version` from a well-formed future bundle version, then pins that rule in the checked receipt-bundle conformance fixture. Third-party readers no longer need to reverse-engineer a private regex to reproduce the same malformed-vs-unsupported split.
+
+```mermaid
+flowchart LR
+    V["receipt bundle<br/>schema_version"] --> P["RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN<br/>full token match"]
+    P -- "current v1 token" --> R["v1 parser path"]
+    P -- "future matching token" --> U["UnsupportedReceiptBundleVersionError"]
+    P -. "non-matching token" .-> M["invalid receipt bundle document"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN` and `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE`; conformance-fixture header assertions for both |
+| Security claim | Independent receipt-bundle readers can reproduce NOOA's current version-token classification rule without guessing at private implementation detail. |
+| Non-claim | Publishing the pattern does not authenticate bundle bytes, promise support for every matching future token, make unsupported versions safe to parse, or change any receipt-bundle runtime behavior. |
+| Base slice | `codex/security-receipt-bundle-conformance-vectors` |
+| Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `tests/security/fixtures/receipt_bundle_conformance_v1.json`, `tests/security/test_receipt_bundle_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_receipt_bundle_conformance.py tests/security/test_surface_guide.py`; `pytest tests/security`; `git diff --quiet 5b1a0e9 -- ':(glob)examples/**/*.py'`; `pytest`; `ruff check src/nooa/security tests/security` |
+
 ## Security Review Follow-On: Receipt Bundle Conformance Vectors
 
 > Branch: `codex/security-receipt-bundle-conformance-vectors`

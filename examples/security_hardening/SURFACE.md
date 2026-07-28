@@ -35,6 +35,8 @@ The checked transport vectors in `tests/security/fixtures/security_transport_con
 
 `write_receipt_bundle()` writes one LF-terminated UTF-8 JSON document. `read_receipt_bundle()` parses at most one bounded document line, leaves later bytes unread, and returns `ReceiptBundleReadResult`; `require_complete_receipt_bundle()` turns reader-visible truncation or declared-count mismatch into `ReceiptBundleIncompleteError` before downstream code consumes receipt copies.
 
+Receipt-bundle version classification is also public: readers can apply `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN` with `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE == "full"` to reproduce the same malformed-vs-unsupported split as `read_receipt_bundle()`. The pattern names well-formed version tokens only; it does not promise support for every matching version.
+
 ```mermaid
 flowchart LR
     R["SecurityReceipt copies"] --> W["write_receipt_bundle()"]
@@ -266,6 +268,8 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `RECEIPT_BUNDLE_COMPLETENESS_SIGNALS` | Conformance implementer | Canonical receipt-bundle completeness-signal order. |
 | `RECEIPT_BUNDLE_KEYS` | Conformance implementer | Exact receipt-bundle document key set. |
 | `RECEIPT_BUNDLE_SCHEMA_VERSION` | Conformance implementer | Receipt-bundle schema version token. |
+| `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN` | Conformance implementer | Future receipt-bundle version token pattern. |
+| `RECEIPT_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE` | Conformance implementer | Whole-token receipt-bundle pattern match rule. |
 | `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
 <!-- SECURITY_EXPORT_INDEX_END -->
 
