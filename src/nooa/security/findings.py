@@ -40,6 +40,12 @@ FINDING_EVIDENCE_REF_SIGNALS: tuple[FindingEvidenceRefSignal, ...] = (
     "unknown_evidence_ref",
 )
 
+FindingRequiredEvidenceRefSignal = Literal["missing_required_evidence_ref"]
+# Tuple order is public because FindingRequiredEvidenceRefError.reasons preserves it.
+FINDING_REQUIRED_EVIDENCE_REF_SIGNALS: tuple[FindingRequiredEvidenceRefSignal, ...] = (
+    "missing_required_evidence_ref",
+)
+
 FindingScopeSignal = Literal["missing_run_id", "run_id_mismatch"]
 # Tuple order is public because FindingScopeError.reasons preserves it.
 FINDING_SCOPE_SIGNALS: tuple[FindingScopeSignal, ...] = (
@@ -617,6 +623,145 @@ def require_valid_finding_evidence_ref_membership(
         )
     if finding_evidence_ref_signals(validation):
         raise FindingEvidenceRefError(validation)
+    return validation.findings
+
+
+@dataclass(frozen=True)
+class FindingRequiredEvidenceRefValidation:
+    """Required evidence-reference diagnostics for one finding iterable.
+
+    This result preserves the input order in ``findings`` and reports only
+    supplied rows that do not contain one caller-selected
+    ``required_evidence_ref`` exact string. It does not authenticate findings,
+    evidence identifiers, or the required ref; prove that the required ref
+    resolves to anything real or supports a finding; require any additional
+    references; or prove detector coverage.
+
+    A clean empty result means only that no supplied finding contradicted this
+    one presence requirement. Direct construction only asserts these
+    diagnostic fields; it does not perform the check that
+    :func:`validate_finding_required_evidence_ref` performs.
+    """
+
+    findings: tuple[SecurityFinding, ...]
+    required_evidence_ref: str
+    missing_required_evidence_ref_finding_ids: tuple[str, ...] = ()
+
+
+class FindingRequiredEvidenceRefError(RuntimeError):
+    """Raised when supplied findings omit one caller-selected required ref.
+
+    This error reports only diagnostics visible in a
+    :class:`FindingRequiredEvidenceRefValidation`. It does not establish
+    finding or evidence authenticity, detector coverage, or semantic
+    correctness.
+    """
+
+    def __init__(self, validation: FindingRequiredEvidenceRefValidation) -> None:
+        if not isinstance(validation, FindingRequiredEvidenceRefValidation):
+            raise TypeError(
+                "FindingRequiredEvidenceRefError expected "
+                f"FindingRequiredEvidenceRefValidation, got {type(validation).__name__}"
+            )
+        reasons = finding_required_evidence_ref_signals(validation)
+        if not reasons:
+            raise ValueError(
+                "FindingRequiredEvidenceRefError requires at least one "
+                "required-evidence-ref signal"
+            )
+        self.required_evidence_ref = validation.required_evidence_ref
+        self.missing_required_evidence_ref_finding_ids = (
+            validation.missing_required_evidence_ref_finding_ids
+        )
+        self.reasons = reasons
+        super().__init__(
+            "finding rows omit required evidence ref: "
+            f"required_evidence_ref={validation.required_evidence_ref!r}, "
+            "missing_required_evidence_ref_finding_ids="
+            f"{validation.missing_required_evidence_ref_finding_ids!r}"
+        )
+
+
+def finding_required_evidence_ref_signals(
+    validation: FindingRequiredEvidenceRefValidation,
+) -> tuple[FindingRequiredEvidenceRefSignal, ...]:
+    """Return canonical required-evidence-ref diagnostics for one finding iterable."""
+    if not isinstance(validation, FindingRequiredEvidenceRefValidation):
+        raise TypeError(
+            "finding_required_evidence_ref_signals expected "
+            f"FindingRequiredEvidenceRefValidation, got {type(validation).__name__}"
+        )
+    signals: list[FindingRequiredEvidenceRefSignal] = []
+    if validation.missing_required_evidence_ref_finding_ids:
+        signals.append("missing_required_evidence_ref")
+    return tuple(signals)
+
+
+def validate_finding_required_evidence_ref(
+    findings: Iterable[SecurityFinding],
+    *,
+    required_evidence_ref: str,
+) -> FindingRequiredEvidenceRefValidation:
+    """Materialize findings and report rows missing one required exact ref.
+
+    ``findings`` is consumed once, preserved in input order, and stored as the
+    tuple returned by :func:`require_valid_finding_required_evidence_ref` when
+    no required-evidence-ref signal is present. ``required_evidence_ref`` must
+    be a non-empty caller-selected exact string; this helper does not mint or
+    authenticate it.
+
+    The helper checks only whether each supplied finding contains that exact
+    string in ``evidence_refs``. It does not authenticate findings, producers,
+    identifiers, or the required ref; dereference identifiers; prove that the
+    present ref supports the finding; require any other evidence; or prove
+    detector coverage.
+    """
+    if not isinstance(required_evidence_ref, str):
+        raise TypeError(
+            "validate_finding_required_evidence_ref expected str required_evidence_ref, "
+            f"got {type(required_evidence_ref).__name__}"
+        )
+    if not required_evidence_ref:
+        raise ValueError(
+            "validate_finding_required_evidence_ref requires non-empty "
+            "required_evidence_ref"
+        )
+    if isinstance(findings, (str, bytes, bytearray)) or not isinstance(findings, Iterable):
+        raise TypeError(
+            "validate_finding_required_evidence_ref expected iterable of "
+            f"SecurityFinding, got {type(findings).__name__}"
+        )
+
+    materialized = tuple(findings)
+    for index, finding in enumerate(materialized):
+        if not isinstance(finding, SecurityFinding):
+            raise TypeError(
+                "validate_finding_required_evidence_ref expected SecurityFinding at "
+                f"index {index}, got {type(finding).__name__}"
+            )
+
+    return FindingRequiredEvidenceRefValidation(
+        findings=materialized,
+        required_evidence_ref=required_evidence_ref,
+        missing_required_evidence_ref_finding_ids=tuple(
+            finding.finding_id
+            for finding in materialized
+            if required_evidence_ref not in finding.evidence_refs
+        ),
+    )
+
+
+def require_valid_finding_required_evidence_ref(
+    validation: FindingRequiredEvidenceRefValidation,
+) -> tuple[SecurityFinding, ...]:
+    """Return supplied findings or fail closed when one required ref is absent."""
+    if not isinstance(validation, FindingRequiredEvidenceRefValidation):
+        raise TypeError(
+            "require_valid_finding_required_evidence_ref expected "
+            f"FindingRequiredEvidenceRefValidation, got {type(validation).__name__}"
+        )
+    if finding_required_evidence_ref_signals(validation):
+        raise FindingRequiredEvidenceRefError(validation)
     return validation.findings
 
 

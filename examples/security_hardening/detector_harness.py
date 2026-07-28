@@ -31,13 +31,15 @@ supervisor admits only a bounded report payload to parsing, reads one bounded
 LF-terminated finding document from a supervisor-owned temporary file,
 cross-checks ``declared_finding_count``, checks both report and finding row
 scopes against the supervisor-selected ``run_id``, and refuses repeated
-``finding_id`` values before accepting the detector output as scored. Existing
-scope and report-coherence refusals retain precedence; the ID-uniqueness gate
-runs only after those checks pass. For current finding-admission failures, the
-supervisor clears any child-supplied value and sets one example-local
-``finding_admission_refusal`` field so consumers need not parse refusal text to
-identify the failed stage. The supervisor also admits victim and authority
-summary payloads through their own
+``finding_id`` values before requiring each admitted row to cite the
+supervisor-selected ``input_id``. The report admission path also rejects a
+visible ``detector_input_id`` echo that does not match that supervisor-selected
+value. Existing scope and report-coherence refusals retain precedence; the
+ID-uniqueness gate runs only after those checks pass, and the required-ref gate
+runs last. For current finding-admission failures, the supervisor clears any
+child-supplied value and sets one example-local ``finding_admission_refusal``
+field so consumers need not parse refusal text to identify the failed stage.
+The supervisor also admits victim and authority summary payloads through their own
 bounded parse checks and rejects visible victim scenario drift before
 assembling ``DetectedScenario``. The stdout bounds are parse-admission checks
 after ``communicate()`` has already collected stdout; the finding-bundle bound
@@ -125,6 +127,7 @@ from nooa.security import (
     FindingBundleReadResult,
     FindingEvidenceRefError,
     FindingIdUniquenessError,
+    FindingRequiredEvidenceRefError,
     FindingScopeError,
     ReceiptBundleCompletenessSignal,
     ReceiptBundleIncompleteError,
@@ -147,10 +150,12 @@ from nooa.security import (
     require_complete_receipt_bundle,
     require_valid_finding_evidence_ref_membership,
     require_valid_finding_id_uniqueness,
+    require_valid_finding_required_evidence_ref,
     require_valid_finding_scope,
     require_valid_receipt_scope,
     validate_finding_evidence_ref_membership,
     validate_finding_id_uniqueness,
+    validate_finding_required_evidence_ref,
     validate_finding_scope,
     validate_receipt_scope,
     write_finding_bundle,
@@ -173,6 +178,7 @@ _DETECTOR_FAULTS = (
     "blank_finding_run_id",
     "stale_finding_run_id",
     "duplicate_finding_id",
+    "drop_required_evidence_ref",
     "truncate_finding_document",
     "drop_finding_count_mismatch",
 )
@@ -181,6 +187,7 @@ DetectorFault = Literal[
     "blank_finding_run_id",
     "stale_finding_run_id",
     "duplicate_finding_id",
+    "drop_required_evidence_ref",
     "truncate_finding_document",
     "drop_finding_count_mismatch",
 ]
@@ -205,12 +212,14 @@ FindingAdmissionRefusal = Literal[
     "scope_drift",
     "refused_report_rows",
     "duplicate_finding_id",
+    "missing_required_evidence_ref",
 ]
 _FINDING_ADMISSION_REFUSALS: tuple[FindingAdmissionRefusal, ...] = (
     "count_mismatch",
     "scope_drift",
     "refused_report_rows",
     "duplicate_finding_id",
+    "missing_required_evidence_ref",
 )
 DetectorScorer = Callable[[DetectorInput], tuple[SecurityFinding, ...]]
 
@@ -669,6 +678,7 @@ def score_fd(
         finding_bundle,
         fault=fault,
         run_id=run_id,
+        input_id=input_id,
     )
     _write_detector_finding_bundle(finding_fd, finding_bundle, fault=fault)
     return report
@@ -724,6 +734,7 @@ def _inject_detector_fault(
     *,
     fault: DetectorFault,
     run_id: str,
+    input_id: str,
 ) -> tuple[DetectorReport, FindingBundle]:
     """Apply one example-only detector output fault after scoring."""
     if fault == "none":
@@ -760,6 +771,25 @@ def _inject_detector_fault(
             {
                 **finding_bundle.model_dump(mode="python"),
                 "findings": faulted_findings,
+            }
+        )
+    if fault == "drop_required_evidence_ref":
+        first, *remaining = finding_bundle.findings
+        faulted_evidence_refs = tuple(
+            evidence_ref for evidence_ref in first.evidence_refs if evidence_ref != input_id
+        )
+        if faulted_evidence_refs == first.evidence_refs:
+            raise ValueError(f"{fault} requires a finding that cites input_id")
+        faulted_finding = SecurityFinding.model_validate(
+            {
+                **first.model_dump(mode="python"),
+                "evidence_refs": faulted_evidence_refs,
+            }
+        )
+        return report, FindingBundle.model_validate(
+            {
+                **finding_bundle.model_dump(mode="python"),
+                "findings": (faulted_finding, *remaining),
             }
         )
     if fault == "drop_finding_count_mismatch":
@@ -913,6 +943,15 @@ def _admit_detector_report(
                 f"expected_run_id={expected_run_id!r}, reported_run_id={report.run_id!r}"
             ),
         )
+    if report.detector_input_id != input_id:
+        return _supervisor_refuse_parsed_report(
+            report,
+            refusal_reason=(
+                "supervisor detector report input ID gate refused output: "
+                f"expected_input_id={input_id!r}, "
+                f"reported_input_id={report.detector_input_id!r}"
+            ),
+        )
     return report
 
 
@@ -921,6 +960,7 @@ def _admit_finding_bundle(
     *,
     report: DetectorReport,
     expected_run_id: str,
+    expected_input_id: str,
     max_bundle_bytes: int,
 ) -> tuple[DetectorReport, tuple[SecurityFinding, ...]]:
     """Read one finding bundle and fail closed on visible cross-channel drift."""
@@ -1017,6 +1057,26 @@ def _admit_finding_bundle(
                 report,
                 refusal_reason=f"supervisor finding ID uniqueness gate refused output: {exc}",
                 finding_admission_refusal="duplicate_finding_id",
+            ),
+            (),
+        )
+    try:
+        # Use the supervisor-selected ID, not the detector report's echoed value.
+        require_valid_finding_required_evidence_ref(
+            validate_finding_required_evidence_ref(
+                bundle.findings,
+                required_evidence_ref=expected_input_id,
+            )
+        )
+    except FindingRequiredEvidenceRefError as exc:
+        return (
+            _supervisor_refuse_parsed_report(
+                report,
+                refusal_reason=(
+                    "supervisor finding required evidence-ref gate refused output: "
+                    f"{exc}"
+                ),
+                finding_admission_refusal="missing_required_evidence_ref",
             ),
             (),
         )
@@ -1529,6 +1589,7 @@ def run_detected_scenario(
                 finding_file,
                 report=detector_report,
                 expected_run_id=run_id,
+                expected_input_id=input_id,
                 max_bundle_bytes=max_finding_bundle_bytes,
             )
         return DetectedScenario(

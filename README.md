@@ -62,6 +62,30 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Finding Required Evidence Ref
+
+> Branch: `codex/security-finding-required-evidence-ref`
+
+This slice adds one opt-in public helper for a narrow finding-consumer question: whether every supplied `SecurityFinding` row contains one caller-selected exact `required_evidence_ref`. The example supervisor uses that helper after finding scope, report coherence, and ID uniqueness have passed, with its independently selected `input_id` as the required ref. The same slice also closes the earlier metadata gap by refusing a detector report whose echoed `detector_input_id` does not match that supervisor-selected value before finding admission begins.
+
+```mermaid
+flowchart LR
+    S["supervisor-selected input_id"] --> R["detector report input ID gate"]
+    R --> V["validate_finding_required_evidence_ref()"]
+    F["admitted FindingBundle rows"] --> V
+    V -- "required ref present" --> A["DetectedScenario.findings"]
+    V -. "missing_required_evidence_ref" .-> X["scored=False"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `FindingRequiredEvidenceRefValidation`, `FindingRequiredEvidenceRefSignal`, `FindingRequiredEvidenceRefError`, canonical `FINDING_REQUIRED_EVIDENCE_REF_SIGNALS`, `validate_finding_required_evidence_ref()`, `require_valid_finding_required_evidence_ref()`, `finding_required_evidence_ref_signals()`, supervisor report `detector_input_id` admission, example-local `drop_required_evidence_ref`, and a final required-ref finding-admission stage |
+| Security claim | Applications can opt into an exact presence check for one caller-selected finding evidence ref, and the example supervisor refuses both visible detector-report input-ID drift and admitted finding rows that omit its selected `input_id` after existing scope, coherence, and uniqueness gates pass. |
+| Non-claim | Presence is not provenance. This does not authenticate findings, reports, scorers, evidence IDs, or the required ref; prove that the cited ref resolves to anything real or supports a finding; require any other evidence; prove detector coverage; or stop a detector that simply echoes the supervisor-supplied `input_id`. Refusal text includes raw identifiers that a deployment may need to redact. |
+| Base slice | `codex/security-hardening-e2e-detector-pipeline-v12` |
+| Review files | `src/nooa/security/findings.py`, `src/nooa/security/__init__.py`, `examples/security_hardening/detector_harness.py`, `tests/security/test_findings.py`, `tests/security/test_detector_harness.py`, `tests/security/test_surface_guide.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_findings.py tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `ruff check src/nooa/security examples/security_hardening tests/security`; `pyright src/nooa/security/findings.py examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Finding Evidence-Ref Membership
 
 > Branch: `codex/security-finding-evidence-ref-membership`

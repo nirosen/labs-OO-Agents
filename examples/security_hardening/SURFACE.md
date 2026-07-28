@@ -163,7 +163,29 @@ flowchart LR
 
 A clean result means only that every supplied non-empty `evidence_ref` matched one exact string in the supplied allowed-ID set. Directly constructing `FindingEvidenceRefValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate findings, producers, identifiers, or the allowed set; dereference identifiers against any external system; prove that present references support a finding; require findings to cite evidence; prove detector coverage; establish cross-bundle meaning; normalize strings; or make the same-user detector subprocess a trust boundary.
 
-The `detector_harness.py` example shows one application-owned integration: each profile scorer is wrapped inside the detector process with `evidence_ref_membership_gated_scorer()`, which derives its allowed set from the current `DetectorInput.input_id`, effect IDs, and receipt IDs before the finding bundle is written. That placement checks scorer conformance only. A hostile detector can bypass the wrapper, and the supervisor does not yet retain the full evidence-ID set needed to repeat the same membership check independently. A different future supervisor-side required-ref gate could ask whether every admitted finding cites the supervisor-selected `input_id`; that is not the same question as membership and is intentionally out of scope here.
+The `detector_harness.py` example shows one application-owned integration: each profile scorer is wrapped inside the detector process with `evidence_ref_membership_gated_scorer()`, which derives its allowed set from the current `DetectorInput.input_id`, effect IDs, and receipt IDs before the finding bundle is written. That placement checks scorer conformance only. A hostile detector can bypass the wrapper, and the supervisor does not yet retain the full evidence-ID set needed to repeat the same membership check independently. The separate required-ref helper below asks whether every admitted finding cites one supervisor-selected anchor; that is not the same question as membership.
+
+## Finding Required Evidence Ref Validation
+
+`validate_finding_required_evidence_ref()` is an opt-in consumer helper for one narrow problem: keeping supplied finding rows from omitting one caller-selected exact `required_evidence_ref`. It materializes the finding iterable once, preserves order, reports the finding IDs whose rows omit that exact string, and leaves multiple-anchor policy to callers that want to invoke it more than once. `require_valid_finding_required_evidence_ref()` turns that visible omission into a fail-closed boundary for callers that want one.
+
+```mermaid
+flowchart LR
+    F["SecurityFinding rows"] --> V["validate_finding_required_evidence_ref()"]
+    R["required_evidence_ref"] --> V
+    V --> C["FindingRequiredEvidenceRefValidation"]
+    C -- "no signals" --> Q["require_valid_finding_required_evidence_ref()"]
+    Q --> D["aggregation or review"]
+    C -. "missing_required_evidence_ref" .-> X["caller refusal"]
+```
+
+| Helper fact | Meaning |
+| --- | --- |
+| `missing_required_evidence_ref` | At least one supplied finding omitted the caller-selected required exact ref. |
+
+A clean result means only that every supplied finding row contained one exact string selected by the caller. Directly constructing `FindingRequiredEvidenceRefValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate findings, producers, identifiers, or the required ref; dereference identifiers against any external system; prove that the present ref supports a finding; require any other evidence; prove detector coverage; establish cross-bundle meaning; normalize strings; or make the same-user detector subprocess a trust boundary.
+
+The `detector_harness.py` example shows one application-owned supervisor integration: after report scope, report-input-ID, finding-bundle, finding-scope, report-coherence, and finding-ID-uniqueness checks pass, the supervisor requires every admitted finding to cite its own selected `input_id`. That value is compared against the supervisor's local variable, never the detector report's echoed `detector_input_id`; using the report field would make the check self-referential. The same slice also refuses visible report `detector_input_id` drift before finding admission starts. Even so, this remains a drift and scorer-bug check rather than provenance: the detector receives the selected `input_id` and can echo it mechanically.
 
 ## Finding Scope Validation
 
@@ -352,6 +374,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `FindingEvidenceRefValidation` | Finding consumer | Materialized finding iterable plus visible evidence-ref membership diagnostics. |
 | `FindingEvidenceRefSignal` | Finding consumer | Public evidence-ref membership diagnostic type alias. |
 | `FindingEvidenceRefError` | Finding consumer | Fail-closed evidence-ref membership refusal. |
+| `FindingRequiredEvidenceRefValidation` | Finding consumer | Materialized finding iterable plus visible required-ref diagnostics. |
+| `FindingRequiredEvidenceRefSignal` | Finding consumer | Public required-ref diagnostic type alias. |
+| `FindingRequiredEvidenceRefError` | Finding consumer | Fail-closed required-ref refusal. |
 | `FindingScopeValidation` | Finding consumer | Materialized finding iterable plus visible run-scope diagnostics. |
 | `FindingScopeSignal` | Finding consumer | Public run-scope diagnostic type alias. |
 | `FindingScopeError` | Finding consumer | Fail-closed run-scope refusal. |
@@ -391,6 +416,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `validate_finding_evidence_ref_membership` | Finding consumer | Materialize one finding iterable and diagnose refs outside one supplied ID set. |
 | `require_valid_finding_evidence_ref_membership` | Finding consumer | Fail closed on public finding evidence-ref diagnostics. |
 | `finding_evidence_ref_signals` | Finding consumer | Return canonical finding evidence-ref diagnostics. |
+| `validate_finding_required_evidence_ref` | Finding consumer | Materialize one finding iterable and diagnose omission of one required exact ref. |
+| `require_valid_finding_required_evidence_ref` | Finding consumer | Fail closed on public finding required-ref diagnostics. |
+| `finding_required_evidence_ref_signals` | Finding consumer | Return canonical finding required-ref diagnostics. |
 | `detector_input_from_egress` | Detector author | Build one detector handoff bundle from parsed egress. |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | Conformance implementer | Default per-frame byte budget. |
 | `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` | Conformance implementer | Default retained-record budget. |
@@ -427,6 +455,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `FINDING_BUNDLE_SCHEMA_VERSION_PATTERN_MATCH_MODE` | Conformance implementer | Whole-token finding-bundle pattern match rule. |
 | `FINDING_EVIDENCE_REF_SIGNALS` | Conformance implementer | Canonical finding evidence-ref diagnostic order. |
 | `FINDING_ID_UNIQUENESS_SIGNALS` | Conformance implementer | Canonical finding-ID diagnostic order. |
+| `FINDING_REQUIRED_EVIDENCE_REF_SIGNALS` | Conformance implementer | Canonical finding required-ref diagnostic order. |
 | `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
 | `FINDING_SCOPE_SIGNALS` | Conformance implementer | Canonical finding run-scope diagnostic order. |
 <!-- SECURITY_EXPORT_INDEX_END -->
@@ -439,7 +468,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - Receipt-bundle termination and count agreement distinguish visible transport degradation only. They do not authenticate producers, prove omitted receipts did not happen, or make count agreement sufficient evidence.
 - Finding-bundle termination distinguishes visible transport degradation only. It does not authenticate producers, prove omitted findings did not happen, or make an empty clean bundle evidence that nothing was found.
 - Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
-- Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values, `validate_finding_id_uniqueness()` can reject repeated `finding_id` values within one supplied iterable, and `validate_finding_evidence_ref_membership()` can reject refs outside one caller-supplied allowed-ID set only; NOOA still does not authenticate finding producers, verify detector coverage, establish uniqueness across bundles, dereference evidence refs, or prove that present references support a finding.
+- Findings remain caller-supplied rows. `validate_finding_scope()` can reject blank or mismatched `run_id` values, `validate_finding_id_uniqueness()` can reject repeated `finding_id` values within one supplied iterable, `validate_finding_evidence_ref_membership()` can reject refs outside one caller-supplied allowed-ID set, and `validate_finding_required_evidence_ref()` can reject omission of one caller-selected exact ref only; NOOA still does not authenticate finding producers, verify detector coverage, establish uniqueness across bundles, dereference evidence refs, or prove that present references support a finding.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.
 - Collector byte and record budgets are resource backstops, not authenticity or authorization guarantees.
 - Framework guard-shaped records are labels for mapped outcomes, not proof of exception origin or vulnerability.

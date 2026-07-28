@@ -10,6 +10,27 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Finding Required Evidence Ref Follow-On
+
+`codex/security-finding-required-evidence-ref` adds the public opt-in `FindingRequiredEvidenceRefValidation` helper and wires its first supervisor-side consumer after finding scope, report coherence, and ID uniqueness have already passed. The supervisor uses its own selected `input_id` as the required exact ref, not the detector report's echoed field, and now also refuses a report whose `detector_input_id` drifts from that selected value before it admits any finding rows.
+
+```mermaid
+flowchart LR
+    S["supervisor-selected input_id"] --> R["report input ID gate"]
+    R --> B["admitted FindingBundle rows"]
+    B --> V["validate_finding_required_evidence_ref()"]
+    V -- "anchor present" --> O["DetectedScenario.findings"]
+    V -. "missing_required_evidence_ref" .-> X["scored=False"]
+```
+
+Run the new supervisor-visible finding fault:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --detector-fault drop_required_evidence_ref
+```
+
+This is a visible anchor-presence gate, not provenance or authenticity. A detector receives the supervisor-selected `input_id` and can echo it mechanically; the helper does not prove the finding derives from that input, that any cited ref resolves to real evidence, that other refs are sufficient, or that detector coverage is complete. The example refusal string includes raw input and finding identifiers that a real deployment may need to redact.
+
 ## Finding Evidence-Ref Membership Follow-On
 
 `codex/security-finding-evidence-ref-membership` adds the public opt-in `FindingEvidenceRefValidation` helper and wires one detector-side `evidence_ref_membership_gated_scorer()` wrapper into both example profiles. The wrapper builds one allowed-ID set from the current `DetectorInput.input_id`, effect IDs, and receipt IDs, then refuses a scorer result that cites any other exact string before the finding bundle is written.
