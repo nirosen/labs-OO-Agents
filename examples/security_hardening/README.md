@@ -10,6 +10,32 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Supervisor Output Admission Follow-On
+
+`codex/security-supervisor-output-admission` completes the detector harness supervisor's example-local parse boundary without adding a public `nooa.security` API. The supervisor now admits victim summary JSON, authority summary JSON, and detector report JSON through separate bounded checks after `communicate()` returns. Detector report parse failures reuse its existing `scored=False` refusal channel; victim and authority summary failures raise `SupervisorAdmissionError` before the harness builds `DetectedScenario`. The victim summary path also rejects visible drift in the echoed `scenario` field.
+
+```mermaid
+flowchart LR
+    V["victim summary JSON"] --> VA["bounded admission<br/>+ scenario check"]
+    A["authority summary JSON"] --> AA["bounded admission"]
+    D["detector report JSON"] --> DA["bounded admission<br/>+ run/finding scope"]
+    VA -- "accepted" --> S["DetectedScenario"]
+    AA -- "accepted" --> S
+    DA -- "accepted" --> S
+    VA -. "invalid / over-bound / drift" .-> X["SupervisorAdmissionError"]
+    AA -. "invalid / over-bound" .-> X
+    DA -. "invalid / over-bound / drift" .-> R["scored=False"]
+```
+
+Run representative admission faults:
+
+```bash
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --subprocess-output-fault malformed_detector_report
+uv run python -m examples.security_hardening.detector_harness demo --scenario vulnerable_attack --subprocess-output-fault stale_victim_scenario
+```
+
+This is example hardening, not child authentication. All three payloads remain subprocess-controlled; a well-formed lie still passes these shape and scope checks. The three byte limits are parse-admission checks after `communicate()` already collected stdout, not pre-read memory limits, and `DetectorReport`, `VictimSummary`, `AuthoritySummary`, and `DetectedScenario` remain example artifacts rather than stable NOOA transport schemas.
+
 ## Finding Scope Gate Follow-On
 
 `codex/security-finding-scope-gate` adds the opt-in finding scope helper and uses it at the supervisor side of the detector-report handoff. The detector still emits an ordinary `DetectorReport`; before `run_detected_scenario()` accepts that report, the supervisor admits only a bounded payload to parsing, checks the report `run_id`, and refuses blank-scoped or stale-scoped `SecurityFinding` rows against the supervisor-selected scope.

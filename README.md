@@ -62,6 +62,34 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Supervisor Output Admission
+
+> Branch: `codex/security-supervisor-output-admission`
+
+This slice adds no `nooa.security` runtime API. It completes the example supervisor's subprocess-output admission boundary around the existing detector harness: victim summaries, authority summaries, and detector reports now each pass through a bounded parse-admission step after `communicate()` returns. A malformed or over-bound detector report becomes `scored=False`; malformed or over-bound victim/authority summaries become a typed example-local `SupervisorAdmissionError`; and a victim summary whose echoed `scenario` drifts from the supervisor-selected scenario is rejected before `DetectedScenario` is assembled.
+
+```mermaid
+flowchart LR
+    V["victim stdout"] --> VA["victim summary admission<br/>max_victim_summary_bytes"]
+    A["authority stdout"] --> AA["authority summary admission<br/>max_authority_summary_bytes"]
+    D["detector stdout"] --> DA["detector report admission<br/>max_detector_report_bytes"]
+    VA -- "valid + scenario match" --> S["DetectedScenario"]
+    AA -- "valid" --> S
+    DA -- "valid + scope clean" --> S
+    VA -. "over-bound / invalid / scenario drift" .-> X["SupervisorAdmissionError"]
+    AA -. "over-bound / invalid" .-> X
+    DA -. "over-bound / invalid / scope drift" .-> R["DetectorReport<br/>scored=False"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Example-local `SupervisorAdmissionError`, `SubprocessOutputFault`, `max_victim_summary_bytes`, `max_authority_summary_bytes`, bounded victim/authority summary admission helpers, detector malformed-payload refusal, and runnable malformed/scope-drift output faults |
+| Security claim | The example supervisor now applies bounded parse admission to every child stdout payload it parses and refuses visible malformed, over-bound, or self-reported victim-scenario drift before downstream scenario consumers accept it. |
+| Non-claim | This does not authenticate any child process or summary field, prove that a well-formed summary is true, make echoed `VictimSummary.scenario` trusted provenance, or cap memory before `communicate()` collects stdout. Detector, victim, and authority outputs remain same-user subprocess-controlled example artifacts, not stable NOOA schemas. |
+| Base slice | `codex/security-finding-scope-gate` |
+| Review files | `examples/security_hardening/detector_harness.py`, `tests/security/test_detector_harness.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_detector_harness.py tests/security/test_surface_guide.py`; `pytest tests/security`; `git diff --quiet 7d4e9d5 -- src/nooa`; `pytest`; `ruff check examples/security_hardening tests/security`; `pyright examples/security_hardening/detector_harness.py` |
+
 ## Security Review Follow-On: Finding Scope Gate
 
 > Branch: `codex/security-finding-scope-gate`

@@ -112,6 +112,11 @@ accepts the detector output as scored. A visible mismatch becomes an
 example-local `scored=False` refusal. The `max_detector_report_bytes` option is a
 parse-admission bound after `subprocess.communicate()` already collected
 stdout; it is not a pre-read memory limit or detector authentication boundary.
+The current harness also admits victim and authority summary payloads through
+example-local bounded parse checks before it builds `DetectedScenario`, and it
+rejects visible victim `scenario` drift against the supervisor-selected
+scenario. Those summary checks are not public `nooa.security` APIs and do not
+make same-user child output trustworthy; well-formed child lies remain possible.
 
 ## Egress Contract
 
