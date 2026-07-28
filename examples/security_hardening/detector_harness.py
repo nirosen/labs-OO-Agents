@@ -29,8 +29,11 @@ cross-checks ``declared_finding_count``, checks both report and finding row
 scopes against the supervisor-selected ``run_id``, and refuses repeated
 ``finding_id`` values before accepting the detector output as scored. Existing
 scope and report-coherence refusals retain precedence; the ID-uniqueness gate
-runs only after those checks pass. The supervisor also admits victim and
-authority summary payloads through their own
+runs only after those checks pass. For current finding-admission failures, the
+supervisor clears any child-supplied value and sets one example-local
+``finding_admission_refusal`` field so consumers need not parse refusal text to
+identify the failed stage. The supervisor also admits victim and authority
+summary payloads through their own
 bounded parse checks and rejects visible victim scenario drift before
 assembling ``DetectedScenario``. The stdout bounds are parse-admission checks
 after ``communicate()`` has already collected stdout; the finding-bundle bound
@@ -190,6 +193,18 @@ SubprocessOutputFault = Literal[
 ]
 SupervisorAdmissionRole = Literal["victim", "authority"]
 SupervisorAdmissionReason = Literal["payload_too_large", "invalid_payload", "scenario_mismatch"]
+FindingAdmissionRefusal = Literal[
+    "count_mismatch",
+    "scope_drift",
+    "refused_report_rows",
+    "duplicate_finding_id",
+]
+_FINDING_ADMISSION_REFUSALS: tuple[FindingAdmissionRefusal, ...] = (
+    "count_mismatch",
+    "scope_drift",
+    "refused_report_rows",
+    "duplicate_finding_id",
+)
 DetectorScorer = Callable[[DetectorInput], tuple[SecurityFinding, ...]]
 
 
@@ -261,6 +276,7 @@ class DetectorReport(BaseModel):
     receipt_count: int = Field(default=0, ge=0)
     declared_receipt_count: int | None = Field(default=None, ge=0)
     declared_finding_count: int | None = Field(default=None, ge=0)
+    finding_admission_refusal: FindingAdmissionRefusal | None = None
     scored: bool
     refusal_reason: str | None = None
 
@@ -317,6 +333,16 @@ class DetectorReport(BaseModel):
                 "finding_bundle_completeness_gate_passed cannot be true when "
                 "finding_bundle_completeness_signals is non-empty"
             )
+        if self.finding_admission_refusal is not None:
+            if self.finding_admission_refusal not in _FINDING_ADMISSION_REFUSALS:
+                raise ValueError("finding_admission_refusal must be a known refusal")
+            if not self.finding_bundle_completeness_gate_passed:
+                raise ValueError(
+                    "finding_admission_refusal requires "
+                    "finding_bundle_completeness_gate_passed=True"
+                )
+            if self.scored:
+                raise ValueError("scored detector report cannot carry finding_admission_refusal")
         if self.scored and self.refusal_reason is not None:
             raise ValueError("scored detector report cannot carry refusal_reason")
         if self.scored and self.declared_finding_count is None:
@@ -834,6 +860,7 @@ def _admit_detector_report(
                 "invalid DetectorReport payload"
             ),
         )
+    report = _clear_supervisor_finding_admission_refusal(report)
     if report.run_id != expected_run_id:
         return _supervisor_refuse_parsed_report(
             report,
@@ -904,6 +931,7 @@ def _admit_finding_bundle(
                     f"declared_finding_count={report.declared_finding_count!r}, "
                     f"finding_count={len(bundle.findings)!r}"
                 ),
+                finding_admission_refusal="count_mismatch",
             ),
             (),
         )
@@ -919,6 +947,7 @@ def _admit_finding_bundle(
             _supervisor_refuse_parsed_report(
                 report,
                 refusal_reason=f"supervisor finding scope gate refused output: {exc}",
+                finding_admission_refusal="scope_drift",
             ),
             (),
         )
@@ -930,6 +959,7 @@ def _admit_finding_bundle(
                     "supervisor finding bundle coherence gate refused output: "
                     "refused detector report cannot carry findings"
                 ),
+                finding_admission_refusal="refused_report_rows",
             ),
             (),
         )
@@ -942,6 +972,7 @@ def _admit_finding_bundle(
             _supervisor_refuse_parsed_report(
                 report,
                 refusal_reason=f"supervisor finding ID uniqueness gate refused output: {exc}",
+                finding_admission_refusal="duplicate_finding_id",
             ),
             (),
         )
@@ -960,6 +991,17 @@ def _with_finding_bundle_diagnostics(
             **report.model_dump(mode="python"),
             "finding_bundle_completeness_signals": finding_bundle_completeness_signals(result),
             "finding_bundle_completeness_gate_passed": gate_passed,
+            "finding_admission_refusal": None,
+        }
+    )
+
+
+def _clear_supervisor_finding_admission_refusal(report: DetectorReport) -> DetectorReport:
+    """Clear child-supplied values for one supervisor-owned diagnostic field."""
+    return DetectorReport.model_validate(
+        {
+            **report.model_dump(mode="python"),
+            "finding_admission_refusal": None,
         }
     )
 
@@ -968,11 +1010,13 @@ def _supervisor_refuse_parsed_report(
     report: DetectorReport,
     *,
     refusal_reason: str,
+    finding_admission_refusal: FindingAdmissionRefusal | None = None,
 ) -> DetectorReport:
     """Preserve parsed report diagnostics while marking its finding rows unaccepted."""
     return DetectorReport.model_validate(
         {
             **report.model_dump(mode="python"),
+            "finding_admission_refusal": finding_admission_refusal,
             "scored": False,
             "refusal_reason": refusal_reason,
         }
