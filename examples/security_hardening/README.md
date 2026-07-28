@@ -10,6 +10,21 @@ For the consolidated export map, V1/V2 egress rules, minimal integration, and ca
 2. Run [`minimal_detector.py`](minimal_detector.py) for the focused two-process boundary path that keeps `DetectorInput` construction on the detector side.
 3. Move to [`detector_harness.py`](detector_harness.py) for the full example composition with victim profiles, approval receipts, and refusal scenarios.
 
+## Receipt Scope Validation Follow-On
+
+`codex/security-receipt-scope-validation` adds one opt-in core helper for applications that already chose an assessment `run_id` and want to reject supplied receipt copies that are blank-scoped or stale-scoped before they hand them to policy. The helper materializes the receipt iterable once, preserves order, and leaves all identity-specific profile rules in the application layer.
+
+```mermaid
+flowchart LR
+    A["authority or backend receipt copies"] --> V["validate_receipt_scope()<br/>expected_run_id"]
+    V --> R["ReceiptScopeValidation"]
+    R -- "clean" --> Q["require_valid_receipt_scope()"]
+    Q --> D["DetectorInput or caller policy"]
+    R -. "missing_run_id / run_id_mismatch" .-> X["caller refuses bundle"]
+```
+
+This is a run-scope consistency helper, not a trusted detector. Directly constructing `ReceiptScopeValidation` asserts diagnostics; it does not perform the check, and no current example auto-invokes the helper on behalf of `DetectorInput`. It does not authenticate the source, prove receipt coverage, check receipt-id uniqueness, inspect profile semantics, correlate a receipt to an effect, or make an empty clean bundle evidence that no receipts exist.
+
 ## Minimal Out-of-Process Recipe Follow-On
 
 `codex/security-minimal-out-of-process-recipe` adds a small boundary-first example that sits between the single-process `SURFACE.md` snippet and the full detector harness. The supervisor gives one child only the V2 effect-pipe write end and one child only the effect-pipe read end; the detector child builds `DetectorInput` from public APIs and either emits one example finding or refuses an incomplete stream.

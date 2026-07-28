@@ -62,6 +62,30 @@ class SupportAgent(Agent):
 
 This design supports familiar Python testing, tracing, refactoring, and version-control workflows — **just like the rest of your software**. Read the paper for the design principles and evaluation results: [NVIDIA OO Agents: Native Python Object-Oriented Agents](https://arxiv.org/abs/2607.20709).
 
+## Security Review Follow-On: Receipt Scope Validation
+
+> Branch: `codex/security-receipt-scope-validation`
+
+This slice adds one opt-in core helper on top of the existing `SecurityReceipt` transport shape. Applications that already selected an assessment `run_id` can materialize one supplied receipt iterable, preserve its order, and fail closed on blank or mismatched receipt scopes before passing those copies to detector policy. The transport model itself stays permissive: blank `run_id` values remain valid until a caller chooses to enforce one expected scope.
+
+```mermaid
+flowchart LR
+    R["SecurityReceipt copies"] --> V["validate_receipt_scope()<br/>expected_run_id"]
+    V --> S["ReceiptScopeValidation"]
+    S -- "no scope signals" --> Q["require_valid_receipt_scope()"]
+    Q --> D["DetectorInput or caller policy"]
+    S -. "missing_run_id<br/>run_id_mismatch" .-> X["caller refusal"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | Public `ReceiptScopeValidation`, `ReceiptScopeSignal`, `ReceiptScopeError`, canonical `RECEIPT_SCOPE_SIGNALS`, `validate_receipt_scope()`, `receipt_scope_signals()`, and `require_valid_receipt_scope()` |
+| Security claim | Applications can make one narrow receipt handoff invariant explicit: every supplied receipt copy must carry the caller-selected non-empty `run_id` before downstream policy consumes it. |
+| Non-claim | Directly constructing `ReceiptScopeValidation` does not perform the check. This helper does not authenticate receipt sources or `expected_run_id`, verify collection coverage, enforce receipt-id uniqueness, inspect application-specific receipt semantics, correlate receipts to effects, prove backend truth, or make an empty clean bundle evidence that no receipts exist. |
+| Base slice | `codex/security-minimal-out-of-process-recipe` |
+| Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `tests/security/test_receipts.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_receipts.py tests/security/test_surface_guide.py`; `pytest tests/security`; `pytest`; `ruff check src/nooa/security tests/security` |
+
 ## Security Review Follow-On: Minimal Out-of-Process Recipe
 
 > Branch: `codex/security-minimal-out-of-process-recipe`

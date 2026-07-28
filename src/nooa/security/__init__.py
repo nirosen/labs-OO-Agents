@@ -49,7 +49,16 @@ from nooa.security.install import (
     install_effect_recorder,
 )
 from nooa.security.observers import framework_guard_observer
-from nooa.security.receipts import SecurityReceipt
+from nooa.security.receipts import (
+    RECEIPT_SCOPE_SIGNALS,
+    ReceiptScopeError,
+    ReceiptScopeSignal,
+    ReceiptScopeValidation,
+    SecurityReceipt,
+    receipt_scope_signals,
+    require_valid_receipt_scope,
+    validate_receipt_scope,
+)
 from nooa.security.sinks import (
     EffectRecordSinkBackend,
     EffectSink,
@@ -92,7 +101,11 @@ __all__ = [
     "EffectSink",
     "FdEffectSink",
     "JsonlEffectSink",
+    "RECEIPT_SCOPE_SIGNALS",
     "ReceiptCoverage",
+    "ReceiptScopeError",
+    "ReceiptScopeSignal",
+    "ReceiptScopeValidation",
     "SecurityFinding",
     "SecurityReceipt",
     "UnsupportedEffectEgressVersionError",
@@ -104,4 +117,7 @@ __all__ = [
     "install_effect_sink",
     "read_effect_egress",
     "require_complete_effect_egress",
+    "receipt_scope_signals",
+    "require_valid_receipt_scope",
+    "validate_receipt_scope",
 ]

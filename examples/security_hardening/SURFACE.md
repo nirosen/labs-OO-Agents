@@ -29,6 +29,26 @@ All four types are portable shapes. Frozen field bindings do not make nested val
 
 The checked transport vectors in `tests/security/fixtures/security_transport_conformance_v1.json` pin the current compact UTF-8 JSON bytes for representative `SecurityReceipt`, `SecurityFinding`, and `DetectorInput` instances, then validate those bytes back through the public models. They are regression references for the current `-v1` shapes, not authenticity proofs, total field-space coverage, or policy semantics.
 
+## Receipt Scope Validation
+
+`validate_receipt_scope()` is an opt-in collector helper for one narrow problem: keeping a supplied receipt bundle scoped to one caller-selected `expected_run_id`. It materializes the iterable once, preserves order, and reports only blank or mismatched `run_id` values. `require_valid_receipt_scope()` turns those visible diagnostics into a fail-closed boundary for callers that want one.
+
+```mermaid
+flowchart LR
+    R["SecurityReceipt copies"] --> V["validate_receipt_scope()<br/>expected_run_id"]
+    V --> C["ReceiptScopeValidation"]
+    C -- "no signals" --> Q["require_valid_receipt_scope()"]
+    Q --> D["DetectorInput or caller policy"]
+    C -. "missing_run_id<br/>run_id_mismatch" .-> X["caller refusal"]
+```
+
+| Helper fact | Meaning |
+| --- | --- |
+| `missing_run_id` | At least one supplied receipt had an empty `run_id`. |
+| `run_id_mismatch` | At least one supplied receipt had a non-empty `run_id` different from `expected_run_id`. |
+
+A clean result means only that none of the supplied copies contradicted the requested scope. Directly constructing `ReceiptScopeValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate receipt sources, verify coverage, check receipt-id uniqueness, correlate receipts to effects, inspect application attributes, or prove that an empty bundle is complete.
+
 ## Egress Contract
 
 `FdEffectSink` writes LF-delimited UTF-8 JSON frames to a borrowed blocking descriptor. `read_effect_egress()` parses those frames and returns `EffectEgressReadResult`; `require_complete_effect_egress()` turns known reader-visible degradation into `EffectEgressIncompleteError`.
@@ -143,6 +163,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | --- | --- | --- |
 | `EffectRecord` | Transport author | Observed-effect telemetry shape. |
 | `SecurityReceipt` | Transport author | Backend or authority receipt shape. |
+| `ReceiptScopeValidation` | Collector author | Materialized receipt bundle plus visible run-scope diagnostics. |
+| `ReceiptScopeSignal` | Collector author | Public run-scope diagnostic type alias. |
+| `ReceiptScopeError` | Collector author | Fail-closed run-scope refusal. |
 | `DetectorInput` | Detector author | Detector-facing evidence bundle. |
 | `SecurityFinding` | Detector author | Caller-owned finding shape. |
 | `ReceiptCoverage` | Detector author | Caller assertion for receipt collection coverage. |
@@ -169,6 +192,9 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `read_effect_egress` | Reader author | Parse framed effect egress. |
 | `require_complete_effect_egress` | Reader author | Fail closed on public completeness signals. |
 | `effect_egress_completeness_signals` | Reader author | Return canonical reader-visible diagnostics. |
+| `validate_receipt_scope` | Collector author | Materialize one receipt iterable and diagnose visible run-scope drift. |
+| `require_valid_receipt_scope` | Collector author | Fail closed on public receipt run-scope signals. |
+| `receipt_scope_signals` | Collector author | Return canonical receipt run-scope diagnostics. |
 | `detector_input_from_egress` | Detector author | Build one detector handoff bundle from parsed egress. |
 | `DEFAULT_EFFECT_EGRESS_MAX_FRAME_BYTES` | Conformance implementer | Default per-frame byte budget. |
 | `DEFAULT_EFFECT_EGRESS_MAX_RECORDS` | Conformance implementer | Default retained-record budget. |
@@ -187,6 +213,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 | `EFFECT_EGRESS_SUPPORTED_SCHEMA_VERSIONS` | Conformance implementer | Implemented reader and writer versions. |
 | `MAX_EFFECT_EGRESS_JSON_INTEGER` | Conformance implementer | Largest portable JSON integer. |
 | `MAX_EFFECT_EGRESS_SEQUENCE` | Conformance implementer | Largest accepted sequence number. |
+| `RECEIPT_SCOPE_SIGNALS` | Conformance implementer | Canonical receipt run-scope diagnostic order. |
 <!-- SECURITY_EXPORT_INDEX_END -->
 
 ## Consolidated Boundaries
@@ -194,7 +221,7 @@ This index is checked by `tests/security/test_surface_guide.py`. Grouping is edi
 - Effect telemetry is observed evidence, not backend truth or prevention.
 - Same-process event stores, descriptors, subprocesses under one user, and unsandboxed supervisors are not trusted boundaries.
 - V2 stream-end frames distinguish declared completion from stream cessation only. They do not authenticate records, prove omitted effects did not happen, or make count agreement sufficient evidence.
-- Receipts remain caller-supplied copies. NOOA does not verify receipt sources, receipt coverage, run scope, or receipt-to-effect correlation.
+- Receipts remain caller-supplied copies. `validate_receipt_scope()` can reject blank or mismatched `run_id` values in the supplied bundle only; NOOA still does not authenticate receipt sources, verify receipt coverage, or correlate receipts to effects.
 - `DetectorInput` is a handoff object, not a detector. `SecurityFinding` is a transport shape, not a verdict, severity model, or enforcement action.
 - Collector byte and record budgets are resource backstops, not authenticity or authorization guarantees.
 - Framework guard-shaped records are labels for mapped outcomes, not proof of exception origin or vulnerability.
