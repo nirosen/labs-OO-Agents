@@ -7,10 +7,12 @@ from __future__ import annotations
 import os
 from io import BytesIO
 from tempfile import TemporaryFile
+from typing import BinaryIO
 
 import pytest
 from pydantic import ValidationError
 
+import examples.security_hardening.detector_harness as detector_harness
 from examples.security_hardening.approval_authority import (
     AuthoritySummary,
 )
@@ -344,6 +346,43 @@ def test_detected_vulnerable_scenario_scores_authority_empty_receipts_and_emits_
     assert result.detector.declared_receipt_count == 0
     assert result.detector.declared_finding_count == 1
     assert len(result.findings) == 1
+
+
+def test_detected_scenario_closes_setup_resources_when_pipe_allocation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_pipe = os.pipe
+    real_temporary_file = TemporaryFile
+    finding_files: list[BinaryIO] = []
+    opened_fds: list[int] = []
+    pipe_calls = 0
+
+    def tracked_temporary_file() -> BinaryIO:
+        finding_file = real_temporary_file()
+        finding_files.append(finding_file)
+        return finding_file
+
+    def failing_pipe() -> tuple[int, int]:
+        nonlocal pipe_calls
+        pipe_calls += 1
+        if pipe_calls == 3:
+            raise OSError("simulated pipe allocation failure")
+        read_fd, write_fd = real_pipe()
+        opened_fds.extend([read_fd, write_fd])
+        return read_fd, write_fd
+
+    monkeypatch.setattr(detector_harness, "TemporaryFile", tracked_temporary_file)
+    monkeypatch.setattr(detector_harness.os, "pipe", failing_pipe)
+
+    with pytest.raises(OSError, match="simulated pipe allocation failure"):
+        detector_harness.run_detected_scenario("vulnerable_attack")
+
+    assert len(finding_files) == 1
+    assert finding_files[0].closed is True
+    assert len(opened_fds) == 4
+    for fd in opened_fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
 
 
 def test_detected_authorized_scenario_uses_authority_receipt_and_emits_no_finding() -> None:

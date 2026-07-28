@@ -1200,10 +1200,8 @@ def run_detected_scenario(
 
     run_id = f"{profile.run_id_prefix}/{scenario}"
     input_id = f"detector-input-{scenario}"
-    finding_file = TemporaryFile()
-    effect_read_fd, effect_write_fd = os.pipe()
-    open_fds = [effect_read_fd, effect_write_fd]
-    effect_read_identity = _fd_identity(effect_read_fd)
+    finding_file: BinaryIO | None = None
+    open_fds: list[int] = []
     receipt_read_fd: int | None = None
     receipt_write_fd: int | None = None
     approval_request_read_fd: int | None = None
@@ -1214,24 +1212,29 @@ def run_detected_scenario(
     receipt_write_identity: tuple[int, int, int] | None = None
     approval_request_read_identity: tuple[int, int, int] | None = None
     approval_response_write_identity: tuple[int, int, int] | None = None
-    if profile.uses_approval_authority:
-        receipt_read_fd, receipt_write_fd = os.pipe()
-        approval_request_read_fd, approval_request_write_fd = os.pipe()
-        approval_response_read_fd, approval_response_write_fd = os.pipe()
-        open_fds.extend(
-            [
-                receipt_read_fd,
-                receipt_write_fd,
-                approval_request_read_fd,
-                approval_request_write_fd,
-                approval_response_read_fd,
-                approval_response_write_fd,
-            ]
-        )
-        receipt_read_identity = _fd_identity(receipt_read_fd)
-        receipt_write_identity = _fd_identity(receipt_write_fd)
-        approval_request_read_identity = _fd_identity(approval_request_read_fd)
-        approval_response_write_identity = _fd_identity(approval_response_write_fd)
+    try:
+        finding_file = TemporaryFile()
+        effect_read_fd, effect_write_fd = os.pipe()
+        open_fds.extend([effect_read_fd, effect_write_fd])
+        effect_read_identity = _fd_identity(effect_read_fd)
+        if profile.uses_approval_authority:
+            receipt_read_fd, receipt_write_fd = os.pipe()
+            open_fds.extend([receipt_read_fd, receipt_write_fd])
+            approval_request_read_fd, approval_request_write_fd = os.pipe()
+            open_fds.extend([approval_request_read_fd, approval_request_write_fd])
+            approval_response_read_fd, approval_response_write_fd = os.pipe()
+            open_fds.extend([approval_response_read_fd, approval_response_write_fd])
+            receipt_read_identity = _fd_identity(receipt_read_fd)
+            receipt_write_identity = _fd_identity(receipt_write_fd)
+            approval_request_read_identity = _fd_identity(approval_request_read_fd)
+            approval_response_write_identity = _fd_identity(approval_response_write_fd)
+    except BaseException:
+        for fd in open_fds:
+            os.close(fd)
+        if finding_file is not None:
+            finding_file.close()
+        raise
+    assert finding_file is not None
     detector: subprocess.Popen[str] | None = None
     authority: subprocess.Popen[str] | None = None
     victim: subprocess.Popen[str] | None = None
