@@ -778,9 +778,12 @@ def _inject_subprocess_output_fault(
             raise ValueError(f"{fault} requires a successful victim summary")
         if fault == "malformed_victim_summary":
             return "{", authority_stdout, detector_stdout
-        summary = VictimSummary.model_validate_json(victim_stdout)
+        scenario_field = f'"scenario":"{scenario}"'
+        stale_scenario_field = f'"scenario":"{scenario}-stale"'
+        if scenario_field not in victim_stdout:
+            raise ValueError("stale_victim_scenario requires the expected serialized scenario")
         return (
-            summary.model_copy(update={"scenario": f"{scenario}-stale"}).model_dump_json(),
+            victim_stdout.replace(scenario_field, stale_scenario_field, 1),
             authority_stdout,
             detector_stdout,
         )
