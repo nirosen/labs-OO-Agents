@@ -121,7 +121,7 @@ flowchart LR
 
 A clean result means only that the supplied rows carried distinct `receipt_id` values within one materialized iterable. Directly constructing `ReceiptIdUniquenessValidation` asserts diagnostics; it does not perform the check. The helper does not authenticate receipts, sources, or identifiers; prove that distinct identifiers denote distinct receipts; establish uniqueness across bundles, runs, or sources; dereference or correlate identifiers against any external system; prove receipt coverage or that omitted receipts do not exist; or make the same-user authority subprocess a trust boundary.
 
-The `detector_harness.py` example shows one application-owned integration: after the identity-approval path admits one complete receipt bundle, it wraps the profile scorer with `receipt_id_uniqueness_gated_scorer()` outside the existing receipt-scope gate. A repeated receipt ID therefore becomes an example-local refusal before run-scope or policy runs. That placement does not make uniqueness automatic for `DetectorInput`, and a hostile detector can bypass the wrapper.
+The `detector_harness.py` example shows one application-owned integration: after the identity-approval path admits one complete receipt bundle, it wraps the profile scorer with `receipt_id_uniqueness_gated_scorer()` outside the existing receipt-scope gate. A repeated receipt ID therefore becomes an example-local refusal before run-scope or policy runs. The example chooses that order so one repeated ID does not appear twice in a later scope diagnostic; the public helpers do not require callers to use the same ordering. That placement does not make uniqueness automatic for `DetectorInput`, and a hostile detector can bypass the wrapper.
 
 ## Receipt Scope Validation
 
