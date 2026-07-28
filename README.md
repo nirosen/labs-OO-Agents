@@ -300,12 +300,12 @@ flowchart LR
     P2 --> RPT
     RPT --> RA["report parse admission<br/>+ report run_id check"]
     RA --> FG["finding scope gate"]
-    FG --> F["finding or refusal"]
+    FG --> F["accepted detector output"]
     C -. "gap / truncation / missing end / count mismatch" .-> X["scored=False"]
     RB -. "truncated / receipt count mismatch" .-> X
     G -. "receipt run_id mismatch" .-> X
     RA -. "over-bound / report run_id mismatch" .-> X
-    FG -. "finding run_id mismatch" .-> X
+    FG -. "blank / mismatched finding run_id" .-> X
 ```
 
 <!-- JOINT_SCENARIO_MATRIX_START -->

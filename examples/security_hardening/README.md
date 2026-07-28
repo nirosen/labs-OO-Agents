@@ -189,7 +189,7 @@ flowchart LR
     RR -. "truncated / receipt count mismatch" .-> X
     G -. "receipt run_id mismatch" .-> X
     RA -. "over-bound / report run_id mismatch" .-> X
-    FG -. "finding run_id mismatch" .-> X
+    FG -. "blank / mismatched finding run_id" .-> X
 ```
 
 The checked scenario matrix lives in the root [`README.md`](../../README.md#security-review-joint-branch-end-to-end-detector-pipeline-v6). This page keeps the progressive rationale and per-slice details; the root matrix is the single source of truth for runnable joint-branch outcomes.
