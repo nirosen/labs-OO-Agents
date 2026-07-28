@@ -96,6 +96,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     text = _readme_text(readme_path)
 
     assert text.count("## Security Review Joint Branch:") == 1
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V8" in text
     assert "## End-to-End Detector Pipeline Joint Branch" not in text
     assert "> Branch: `codex/security-hardening-e2e-detector-pipeline`\n" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V2" not in text
@@ -103,6 +104,7 @@ def test_joint_readmes_have_one_current_joint_section(readme_path: Path) -> None
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V4" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V5" not in text
     assert "## Security Review Joint Branch: End-to-End Detector Pipeline V6" not in text
+    assert "## Security Review Joint Branch: End-to-End Detector Pipeline V7" not in text
 
 
 def test_root_joint_readme_has_scenario_matrix() -> None:
