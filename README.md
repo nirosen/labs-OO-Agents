@@ -85,6 +85,29 @@ flowchart LR
 | Review files | `src/nooa/security/receipts.py`, `src/nooa/security/__init__.py`, `tests/security/fixtures/receipt_bundle_conformance_v1.json`, `tests/security/test_receipt_bundle_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `README.md` |
 | Validation | `pytest tests/security/test_receipt_bundle_conformance.py tests/security/test_surface_guide.py`; `pytest tests/security`; `git diff --quiet 5b1a0e9 -- ':(glob)examples/**/*.py'`; `pytest`; `ruff check src/nooa/security tests/security` |
 
+## Security Review Follow-On: Finding Bundle Conformance Vectors
+
+> Branch: `codex/security-finding-bundle-conformance-vectors`
+
+This slice adds no `src/nooa` runtime behavior. It adds checked LF-terminated reference vectors for the public finding-bundle transport introduced in the previous slice. The vectors pin representative `write_finding_bundle()` bytes, then exercise `read_finding_bundle()` across clean, internally spaced, truncated, over-bound, invalid UTF-8, malformed, and version-classified documents so reviewers can catch drift in the new wire contract without mistaking conformance for detector trust.
+
+```mermaid
+flowchart LR
+    F["finding bundle fixture"] --> W["write_finding_bundle()<br/>exact bytes"]
+    F --> R["read_finding_bundle()<br/>selected outcomes"]
+    W --> B["LF JSON<br/>key order + UTF-8"]
+    R --> S["bundle / signals / errors"]
+```
+
+| Review item | Detail |
+| --- | --- |
+| Adds | `tests/security/fixtures/finding_bundle_conformance_v1.json`, exact-byte writer checks, selected reader-outcome checks, a surface-guide reference, and README guidance |
+| Security claim | Reviewers can now detect accidental drift in the current `FindingBundle` writer bytes and selected reader classifications, including visible truncation, bounded admission, strict JSON portability, and the published malformed-vs-unsupported version split. |
+| Non-claim | The vectors do not authenticate findings or producers, prove detector coverage, cover every malformed document, make a clean bundle trustworthy, or require independent writers to copy NOOA's exact JSON formatting when they already satisfy the accepted reader contract. |
+| Base slice | `codex/security-finding-bundle-handoff` |
+| Review files | `tests/security/fixtures/finding_bundle_conformance_v1.json`, `tests/security/test_finding_bundle_conformance.py`, `examples/security_hardening/SURFACE.md`, `examples/security_hardening/README.md`, `examples/README.md`, `README.md` |
+| Validation | `pytest tests/security/test_finding_bundle_conformance.py`; `pytest tests/security`; `git diff --quiet b72680e -- src/nooa ':(glob)examples/**/*.py'`; `ruff check tests/security`; `pytest` |
+
 ## Security Review Follow-On: Finding Bundle Handoff
 
 > Branch: `codex/security-finding-bundle-handoff`

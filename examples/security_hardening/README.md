@@ -24,6 +24,20 @@ flowchart LR
 
 This is a conformance contract, not a trust claim. The pattern does not authenticate bytes, guarantee support for a matching future version, make malformed content recoverable, or change the current reader behavior.
 
+## Finding Bundle Conformance Vectors Follow-On
+
+`codex/security-finding-bundle-conformance-vectors` adds checked reference vectors for the public finding-bundle transport without changing `src/nooa/**`. The fixture pins representative `write_finding_bundle()` bytes, including LF termination, ordered keys, compact UTF-8 encoding, and multi-finding arrays, then exercises `read_finding_bundle()` against selected clean, over-bound, invalid UTF-8, malformed, and version-classified documents.
+
+```mermaid
+flowchart LR
+    F["finding bundle fixture"] --> W["writer bytes"]
+    F --> R["reader outcomes"]
+    W --> C["LF JSON contract"]
+    R --> D["bundle / signals / errors"]
+```
+
+These vectors are regression references, not a trust claim. A byte-conforming bundle can still be forged or semantically false, a clean result still does not prove detector coverage, and independent writers remain free to use different accepted JSON formatting.
+
 ## Finding Bundle Handoff Follow-On
 
 `codex/security-finding-bundle-handoff` adds the public `FindingBundle` transport and moves detector rows out of the example-local `DetectorReport` JSON. The detector emits report metadata on stdout with `declared_finding_count`, writes one LF-terminated bundle through a dedicated inherited descriptor backed by a supervisor-owned temporary file, and the supervisor accepts rows only after bundle completeness, cross-channel count, and finding-scope gates all pass. A refused parsed report keeps its detector-declared count as diagnostic metadata even though `DetectedScenario.findings` stays empty.

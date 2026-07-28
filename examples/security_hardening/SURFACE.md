@@ -98,6 +98,8 @@ The public finding-bundle completeness signals are ordered:
 | --- | --- |
 | `truncated` | EOF arrived before the required LF document terminator. |
 
+The checked finding-bundle vectors in `tests/security/fixtures/finding_bundle_conformance_v1.json` pin representative writer bytes and selected reader outcomes for the current contract: compact LF-terminated UTF-8 output, multi-finding arrays, accepted internal JSON whitespace, one-document stream position, exact byte and finding budgets, visible truncation, strict JSON portability failures, invalid UTF-8, and future-version classification. They are regression references for this implementation's current wire behavior, not authenticity proofs, exhaustive malformed-input coverage, or a requirement that independent writers copy NOOA's exact accepted formatting.
+
 A clean result means only that the reader saw one terminated document with the supplied rows. The writer can still omit findings, forge a bundle producer label, emit semantically false rows, or disagree with row-level `SecurityFinding.producer`; `FindingBundle.producer` does not constrain row-level producers. The bundle gate does not authenticate bytes, prove detector coverage, establish run scope, enforce finding-id uniqueness, dereference evidence refs, assign severity or verdict, or make an empty clean bundle evidence that nothing was found.
 
 ## Receipt Scope Validation
